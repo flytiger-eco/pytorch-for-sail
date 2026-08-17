@@ -1,6 +1,11 @@
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <type_traits>
 
+#ifdef USE_PPU
+#include <cuda.h>
+#include <cuda_runtime.h>
+#endif
+
 #include <ATen/core/Tensor.h>
 #include <ATen/AccumulateType.h>
 #include <ATen/Dispatch.h>
@@ -84,6 +89,9 @@
 #include <ATen/native/transformers/cuda/mem_eff_attention/kernel_forward.h>
 #include <ATen/native/transformers/cuda/mem_eff_attention/kernels/cutlassF.h>
 #include <ATen/native/transformers/cuda/mem_eff_attention/pytorch_utils.h>
+#ifdef USE_PPU
+#include <xformers/csrc/attention/cuda/fmha/mem_eff_api.h>
+#endif
 #else
 // MemoryEfficient Attention Specific Imports for ROCM
 #ifndef DISABLE_AOTRITON
@@ -186,6 +194,17 @@ namespace native {
 
 namespace {
 
+#ifdef USE_PPU
+std::string getDeviceArchitecture() {
+  int deviceID = 0;
+  cudaError_t err = cudaGetDevice(&deviceID);
+  TORCH_CHECK(err == cudaSuccess, "Error getting current device ID: ", cudaGetErrorString(err));
+  cudaDeviceProp prop;
+  err = cudaGetDeviceProperties(&prop, deviceID);
+  TORCH_CHECK(err == cudaSuccess, "Error getting device properties: ", cudaGetErrorString(err));
+  return std::to_string(prop.major) + "." + std::to_string(prop.minor);
+}
+#endif
 
 static constexpr int TRANSFORM_BIAS_RESCALE_VEC = 4;
 
@@ -1289,6 +1308,41 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, c10::SymInt, c10::SymInt> _efficient_
     const std::optional<at::Tensor>& seqlen_k,
     const std::optional<int64_t> window_size) {
 #if defined(USE_MEM_EFF_ATTENTION)
+#ifdef USE_PPU
+  // Get device arch
+  std::string arch = getDeviceArchitecture();
+  TORCH_CHECK(arch != "Error", "getDeviceArchitecture failed!");
+  // 1. Abstract for PPU1.0 and PPU1.5 path
+  // 2. PPU1.0 arch: SM80; PPU1.5 arch: SM89
+  if (arch == "8.0") {
+    // 1. see https://github.com/pytorch/pytorch/commit/9bd6d6e8b02ec1c6285b6ee785e38ec86ce2f1bd
+    // pytorch 2.4 update xformers impl here, add window size param for sliding window
+    // in PPU not support this feature for now since the xformers embedded here does not update if not necessary
+    // Warning will be raised if windows_size has value for better debug in the future.
+    // 2. see https://github.com/pytorch/pytorch/commit/4a384d813b0b824adbf423558419cfa298d89868
+    // pytorch ignore this causal_diagonal from pt2.4, so we just give nullptr for this param
+    // auto [res, logsumexp, seed_t, offset_t] = efficient_attention_forward_cutlass(
+    //     query, key, value, bias, seqstart_q, seqstart_k, max_seqlen_q_,
+    //     dropout_p, compute_logsumexp, custom_mask_type, scale,
+    //     causal_diagonal, seqlen_k);
+    char *pEnv_perf = std::getenv("SDPA_BACKEND_MEM_EFFI_CE");
+    if (!pEnv_perf) {
+      if (window_size.has_value()) {
+        TORCH_WARN_ONCE("Warning! window_size was used here!");
+      }
+      auto causal_diagonal = std::nullopt;
+      // Abstract for PPU1.0 path
+      auto [res, logsumexp, seed_t, offset_t, max_seqlen_q, max_seqlen_kv] = efficient_attention_forward_cutlass(
+          query, key, value, bias, seqstart_q, seqstart_k, max_seqlen_q_, max_seqlen_k_,
+          dropout_p, custom_mask_type, compute_logsumexp, scale, seqlen_k, window_size);
+      return std::make_tuple(res, logsumexp, seed_t, offset_t, max_seqlen_q, max_seqlen_kv);
+    }
+  } else if (arch != "8.9") {
+    // Not support Arch
+    TORCH_CHECK(false, "Unsupported CUDA architecture for memory efficient attention. Supported architectures are SM8.0 and SM8.9, but got: ", arch);
+  }
+#endif
+
 // TODO In theory it is possible to compile with _CUDA_ARCH < 5.0 and run on a
 // machine that is >= 5.0. In practice, this is not a problem but since
 // this would avoid runtime architecture checks, we should look into it

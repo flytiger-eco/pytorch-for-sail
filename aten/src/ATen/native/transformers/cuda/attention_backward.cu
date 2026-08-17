@@ -3,6 +3,11 @@
 #include <cstdint>
 #include <type_traits>
 
+#ifdef USE_PPU
+#include <cuda.h>
+#include <cuda_runtime.h>
+#endif
+
 #include <ATen/core/Tensor.h>
 #include <ATen/TensorOperators.h>
 
@@ -47,6 +52,9 @@
 #include <ATen/native/transformers/cuda/mem_eff_attention/kernels/cutlassB.h>
 #include <ATen/native/transformers/cuda/mem_eff_attention/gemm_kernel_utils.h>
 #include <ATen/native/transformers/cuda/mem_eff_attention/pytorch_utils.h>
+#ifdef USE_PPU
+#include <xformers/csrc/attention/cuda/fmha/mem_eff_api.h>
+#endif
 #else
 #include <ATen/native/transformers/hip/gemm_kernel_utils.h>
 // MemoryEfficient Attention Specific Imports for ROCM
@@ -66,6 +74,18 @@
 #endif
 
 namespace at::native {
+
+#ifdef USE_PPU
+std::string getDeviceArchitecture() {
+  int deviceID = 0;
+  cudaError_t err = cudaGetDevice(&deviceID);
+  TORCH_CHECK(err == cudaSuccess, "Error getting current device ID: ", cudaGetErrorString(err));
+  cudaDeviceProp prop;
+  err = cudaGetDeviceProperties(&prop, deviceID);
+  TORCH_CHECK(err == cudaSuccess, "Error getting device properties: ", cudaGetErrorString(err));
+  return std::to_string(prop.major) + "." + std::to_string(prop.minor);
+}
+#endif
 
 std::tuple<Tensor, Tensor, Tensor> _flash_attention_backward(
     const Tensor& grad_out,
@@ -360,6 +380,41 @@ _efficient_attention_backward(
   if (!grad_out_.defined()) {
     return std::make_tuple(Tensor{}, Tensor{}, Tensor{}, Tensor{});
   }
+#ifdef USE_PPU
+  // Get device arch
+  std::string arch = getDeviceArchitecture();
+  TORCH_CHECK(arch != "Error", "getDeviceArchitecture failed!");
+  // 1. Abstract for PPU1.0 and PPU1.5 path
+  // 2. PPU1.0 arch: SM80; PPU1.5 arch: SM89
+  if (arch == "8.0") {
+    // 1. see https://github.com/pytorch/pytorch/commit/9bd6d6e8b02ec1c6285b6ee785e38ec86ce2f1bd
+    // pytorch 2.4 update xformers impl here, add window size param for sliding window and shared_storage_dqdkdv param for saving torch.cat usage
+    // in PPU not support this feature for now since the xformers embedded here does not update if not necessary
+    // Warning will be raised if windows_size/shared_storage_dqdkdv has value for better debug in the future.
+    // 2. since window_size is optional params in PPU impl, we don't pass this here.
+    char *pEnv_perf = std::getenv("PPU_SDPA_BACKEND_MEM_EFFI_CE");
+    if (!pEnv_perf) {
+      if (window_size.has_value()) {
+        TORCH_WARN_ONCE("Warning! window_size was used here!");
+      }
+      if (shared_storage_dqdkdv == true) {
+        TORCH_WARN_ONCE("Warning! shared_storage_dqdkdv was used here!");
+      }
+      // Abstract for PPU1.0 path
+      // return [grad_q, grad_k, grad_v, grad_bias]
+      return mem_efficient_attention_backward_cutlass(
+          grad_out_, query, key, value, kernel_bias, out,
+          cu_seqlens_q_dummy, cu_seqlens_k_dummy, max_seqlen_q,
+          max_seqlen_k, logsumexp, dropout_p,
+          philox_seed, philox_offset, custom_mask_type,
+          bias_requires_grad, scale, num_splits_key.value_or(0), window_size);
+    }
+  } else if (arch != "8.9") {
+    // Not support Arch
+    TORCH_CHECK(false, "Unsupported architecture: ", arch, ". Only SM80 (8.0) and SM89 (8.9) are supported.");
+  }
+#endif
+
   // This path is used when we directly call _efficient_attention_forward
   // from python.
   // This is needed because SaveVariable automatically converts
