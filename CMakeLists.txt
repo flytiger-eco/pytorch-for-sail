@@ -249,6 +249,20 @@ endif()
 option(USE_PPU "Build for PPU" ON)
 option(USE_CUDA "Use CUDA" ON)
 option(USE_XPU "Use XPU" ON)
+# PPU dependencies are layout-compatible replacements for their CUDA counterparts.
+if(USE_PPU)
+  set(TORCH_FLASH_ATTENTION_ROOT
+      "${PROJECT_SOURCE_DIR}/third_party/ppu-flash-attention")
+  set(TORCH_CUTLASS_ROOT
+      "${PROJECT_SOURCE_DIR}/third_party/ppu_cutlass")
+else()
+  set(TORCH_FLASH_ATTENTION_ROOT
+      "${PROJECT_SOURCE_DIR}/third_party/flash-attention")
+  set(TORCH_CUTLASS_ROOT
+      "${PROJECT_SOURCE_DIR}/third_party/cutlass")
+endif()
+message(STATUS "FlashAttention source directory: ${TORCH_FLASH_ATTENTION_ROOT}")
+message(STATUS "CUTLASS source directory: ${TORCH_CUTLASS_ROOT}")
 cmake_dependent_option(
   BUILD_LAZY_CUDA_LINALG "Build cuda linalg ops as separate library" ON
   "USE_CUDA AND LINUX AND BUILD_PYTHON" OFF)

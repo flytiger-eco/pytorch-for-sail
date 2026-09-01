@@ -1885,13 +1885,13 @@ def main() -> None:
     if use_fa in ["True", "1", "TRUE"] and on_ppu:
         torch_root = os.path.dirname(os.path.abspath(__file__))
         patch_root = os.path.join(torch_root, "third_party")
-        fa_root = os.path.join(patch_root, "flash-attention")
-        cutlass_root = os.path.join(patch_root, "cutlass")
+        fa_root = os.path.join(patch_root, "ppu-flash-attention")
+        cutlass_root = os.path.join(patch_root, "ppu_cutlass")
         cutlass_include_root = os.path.join(cutlass_root, "include")
         if not os.path.exists(fa_root):
-            raise _missing_submodule_error(torch_root, "third_party/flash-attention")
+            raise _missing_submodule_error(torch_root, "third_party/ppu-flash-attention")
         if not os.path.exists(cutlass_root):
-            raise _missing_submodule_error(torch_root, "third_party/cutlass")
+            raise _missing_submodule_error(torch_root, "third_party/ppu_cutlass")
 
         cudafy_root = os.path.join(patch_root, "cudafy-for-sail")
         if not os.path.exists(cudafy_root):

@@ -174,15 +174,19 @@ file(GLOB native_transformers_hip_cpp "native/transformers/hip/*.cpp")
 file(GLOB native_transformers_xpu_cpp "native/transformers/xpu/*.cpp")
 file(GLOB native_quantized_cudnn_hip_cpp "native/quantized/cudnn/hip/*.cpp")
 file(GLOB native_utils_cpp "native/utils/*.cpp")
-file(GLOB flash_attention_cuda_kernels_cu ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cu)
+
 # Flash attention C++ sources
+file(GLOB flash_attention_cuda_kernels_cu ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src/*.cu)
 if(USE_PPU)
   file(GLOB flash_attention_cuda_cpp
-      "${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cpp"
-      "${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/flash_api.cpp"
-  )
+    ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src/*.cpp
+    ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/flash_api.cpp)
+  # PPU FA v2.7.2 lacks function definitions for hdim224, so compilation is disabled.
+  # The open-source version has the same issue.
+  file(GLOB ppu_hdim224_kernels_cu ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src/*hdim224*.cu)
+  list(REMOVE_ITEM flash_attention_cuda_kernels_cu ${ppu_hdim224_kernels_cu})
 else()
-  file(GLOB flash_attention_cuda_cpp ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cpp)
+  file(GLOB flash_attention_cuda_cpp ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src/*.cpp)
   file(GLOB native_flash_attn_api_cpp "native/transformers/cuda/flash_attn/flash_api.cpp")
 endif()
 
@@ -227,21 +231,14 @@ endif()
 file(GLOB mem_eff_attention_cuda_cu "native/transformers/cuda/mem_eff_attention/*.cu")
 file(GLOB mem_eff_attention_cuda_cpp "native/transformers/cuda/mem_eff_attention/*.cpp")
 
-# PPU FA v2.7.2 lacks function definitions for hdim224, so compilation is disabled.
-# The open-source version has the same issue.
-if(USE_PPU)
-  file(GLOB hdim224_kernels_cu ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*hdim224*.cu)
-  list(REMOVE_ITEM flash_attention_cuda_kernels_cu ${hdim224_kernels_cu})
-endif()
-
 if(USE_CUDA AND (USE_FLASH_ATTENTION OR USE_MEM_EFF_ATTENTION))
   add_library(flash_attention OBJECT EXCLUDE_FROM_ALL ${flash_attention_cuda_kernels_cu} ${flash_attention_cuda_cpp})
 
   target_include_directories(flash_attention SYSTEM PUBLIC
-    ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc
-    ${PROJECT_SOURCE_DIR}/third_party/flash-attention/include
-    ${PROJECT_SOURCE_DIR}/third_party/cutlass/include
-    ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src
+    ${TORCH_FLASH_ATTENTION_ROOT}/csrc
+    ${TORCH_FLASH_ATTENTION_ROOT}/include
+    ${TORCH_CUTLASS_ROOT}/include
+    ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src
   )
 
   target_compile_definitions(flash_attention PRIVATE
@@ -765,8 +762,8 @@ if(USE_CUDA AND NOT USE_ROCM)
   add_definitions(-DCUTLASS_ENABLE_TENSOR_CORE_MMA=1)
   add_definitions(-DCUTLASS_ENABLE_SM90_EXTENDED_MMA_SHAPES=1)
   add_definitions(-DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED)
-  list(APPEND ATen_CUDA_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/cutlass/include)
-  list(APPEND ATen_CUDA_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/cutlass/tools/util/include)
+  list(APPEND ATen_CUDA_INCLUDE ${TORCH_CUTLASS_ROOT}/include)
+  list(APPEND ATen_CUDA_INCLUDE ${TORCH_CUTLASS_ROOT}/tools/util/include)
 
   if($ENV{ATEN_STATIC_CUDA})
     if(CUDA_VERSION VERSION_LESS_EQUAL 12.9)
