@@ -563,13 +563,13 @@ endif()
 # if(USE_ROCM)
 #   append_filelist("libtorch_nativert_cuda_sources" Caffe2_HIP_SRCS)
 # endif()
+
 if(USE_PPU)
-  set(PPU_FLASH_ATTENTION_CU_DIR "third_party/flash-attention/csrc/flash_attn/src")
   set(PPU_OPTION "-O3 -std=c++17 -U__CUDA_NO_HALF_OPERATORS__ -U__CUDA_NO_HALF_CONVERSIONS__ -U__CUDA_NO_HALF2_OPERATORS__ -U__CUDA_NO_BFLOAT16_CONVERSIONS__ -mllvm -ppu-max-vreg-count=255 -mllvm -ppu-sink-matrix-addr=true -mllvm -ppu-max-alloca-byte-size=320 -mllvm -ppu-sink-async-addr=true -mllvm -ppu-sink-load-addr=true -mllvm -ppu-sink-store-addr=true -mllvm -ppu-alloca-half-ldst-simplify=true --expt-relaxed-constexpr --expt-extended-lambda --use_fast_math -DUSE_PPU -DUSE_AIU")
   # flash_attention sources
-  file(GLOB PPU_FA_KERNELS ${PROJECT_SOURCE_DIR}/${PPU_FLASH_ATTENTION_CU_DIR}/*.cu)
+  file(GLOB PPU_FA_KERNELS ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src/*.cu)
   # disable hdim224 compilation
-  file(GLOB PPU_HDIM224_KERNELS ${PROJECT_SOURCE_DIR}/${PPU_FLASH_ATTENTION_CU_DIR}/*hdim224*.cu)
+  file(GLOB PPU_HDIM224_KERNELS ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src/*hdim224*.cu)
   list(REMOVE_ITEM PPU_FA_KERNELS ${PPU_HDIM224_KERNELS})
   set_source_files_properties(${PPU_FA_KERNELS} PROPERTIES COMPILE_FLAGS ${PPU_OPTION})
   set_source_files_properties(${PPU_MEM_EFF_ATTENTION_CUDA_SOURCES} PROPERTIES COMPILE_FLAGS "--use_fast_math")
@@ -1087,15 +1087,14 @@ elseif(USE_CUDA)
       )
     if(USE_PPU)
       target_include_directories(torch_cuda PRIVATE
-          ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/
-      )
+        ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src)
     else()
       target_sources(torch_cuda PRIVATE $<TARGET_OBJECTS:flash_attention>)
       target_include_directories(torch_cuda SYSTEM PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc>
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/include>
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/cutlass/include>
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src>
+        $<BUILD_INTERFACE:${TORCH_FLASH_ATTENTION_ROOT}/csrc>
+        $<BUILD_INTERFACE:${TORCH_FLASH_ATTENTION_ROOT}/include>
+        $<BUILD_INTERFACE:${TORCH_CUTLASS_ROOT}/include>
+        $<BUILD_INTERFACE:${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src>
         $<INSTALL_INTERFACE:include>
       )
     endif()
