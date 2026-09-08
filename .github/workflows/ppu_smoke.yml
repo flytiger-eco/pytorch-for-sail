@@ -1,0 +1,27 @@
+# P0 smoke gate: PPU core operator and compile-chain smoke (ppu_smoke config).
+# Skeleton only -- validates the dispatch/runner path; test matrix comes later.
+name: ppu-smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name == 'workflow_dispatch' }}
+  cancel-in-progress: true
+
+jobs:
+  ppu-smoke:
+    name: ppu-smoke
+    runs-on: k8s-runner-group-cpu-flytiger
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Placeholder
+        run: |
+          echo "=== ppu-smoke (skeleton) ==="
+          echo "event=${GITHUB_EVENT_NAME} pr=${PR_NUMBER:-none} base=${GITHUB_BASE_REF:-none} head=${GITHUB_HEAD_REF:-none}"
+          echo "repo=${GITHUB_REPOSITORY} ref=${GITHUB_REF} sha=${GITHUB_SHA} runner=${RUNNER_NAME}"
+          echo "planned: ppu_smoke -- test_matmul_cuda / test_scaled_matmul_cuda / inductor/test_max_autotune / test_foreach"
