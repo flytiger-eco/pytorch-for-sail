@@ -174,16 +174,19 @@ file(GLOB native_transformers_hip_cpp "native/transformers/hip/*.cpp")
 file(GLOB native_transformers_xpu_cpp "native/transformers/xpu/*.cpp")
 file(GLOB native_quantized_cudnn_hip_cpp "native/quantized/cudnn/hip/*.cpp")
 file(GLOB native_utils_cpp "native/utils/*.cpp")
-file(GLOB flash_attention_cuda_kernels_cu ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cu)
-# Flash attention C++ sources
-if(USE_PPU)
-  file(GLOB flash_attention_cuda_cpp
-      "${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cpp"
-      "${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/flash_api.cpp"
-  )
-else()
-  file(GLOB flash_attention_cuda_cpp ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cpp)
-  file(GLOB native_flash_attn_api_cpp "native/transformers/cuda/flash_attn/flash_api.cpp")
+# Flash-attention sources are optional and must not be discovered when disabled.
+if(USE_FLASH_ATTENTION)
+  file(GLOB flash_attention_cuda_kernels_cu ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cu)
+  # Flash attention C++ sources
+  if(USE_PPU)
+    file(GLOB flash_attention_cuda_cpp
+        "${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cpp"
+        "${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/flash_api.cpp"
+    )
+  else()
+    file(GLOB flash_attention_cuda_cpp ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cpp)
+    file(GLOB native_flash_attn_api_cpp "native/transformers/cuda/flash_attn/flash_api.cpp")
+  endif()
 endif()
 
 # flash_attention hip sources
@@ -218,7 +221,7 @@ endif()
 
 
 #Mem_eff attention sources
-if(USE_PPU)
+if(USE_PPU AND USE_MEM_EFF_ATTENTION)
   message(STATUS "Compile Both Opensource Mem_efficient kernels and PPU Mem_efficient kernels")
   file(GLOB mem_eff_attention_cuda_kernels_cu "native/transformers/cuda/mem_eff_attention/kernels/*.cu")
   # PPU: xformers is now built as a shared library in third_party/xformers
@@ -229,12 +232,12 @@ file(GLOB mem_eff_attention_cuda_cpp "native/transformers/cuda/mem_eff_attention
 
 # PPU FA v2.7.2 lacks function definitions for hdim224, so compilation is disabled.
 # The open-source version has the same issue.
-if(USE_PPU)
+if(USE_PPU AND USE_FLASH_ATTENTION)
   file(GLOB hdim224_kernels_cu ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*hdim224*.cu)
   list(REMOVE_ITEM flash_attention_cuda_kernels_cu ${hdim224_kernels_cu})
 endif()
 
-if(USE_CUDA AND (USE_FLASH_ATTENTION OR USE_MEM_EFF_ATTENTION))
+if(USE_CUDA AND USE_FLASH_ATTENTION)
   add_library(flash_attention OBJECT EXCLUDE_FROM_ALL ${flash_attention_cuda_kernels_cu} ${flash_attention_cuda_cpp})
 
   target_include_directories(flash_attention SYSTEM PUBLIC
@@ -286,8 +289,8 @@ if(USE_MEM_EFF_ATTENTION)
   list(APPEND ATen_ATTENTION_KERNEL_SRCS ${mem_eff_attention_cuda_kernels_cu})
 endif()
 
-# PPU: Add xformers shared library (must be before linking)
-if(USE_PPU)
+# PPU: Add xformers shared library only when memory-efficient attention is enabled.
+if(USE_PPU AND USE_MEM_EFF_ATTENTION)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/xformers ${CMAKE_BINARY_DIR}/xformers_ppu)
   # Note: Include paths are set in third_party/xformers/CMakeLists.txt
 

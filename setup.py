@@ -628,7 +628,14 @@ def mirror_inductor_external_kernels() -> None:
     """
     Copy external kernels into Inductor so they are importable.
     """
-    cuda_is_disabled = not str2bool(os.getenv("USE_CUDA"))
+    # CMake defaults USE_PPU to ON in this fork, while Python build scripts may
+    # expose PPU mode only through PPU_SDK. Treat either indicator as PPU mode
+    # so the unavailable CUTLASS CuTeDSL grouped-GEMM template is skipped.
+    cuda_is_disabled = (
+        not str2bool(os.getenv("USE_CUDA"))
+        or str2bool(os.getenv("USE_PPU"))
+        or bool(os.getenv("PPU_SDK"))
+    )
     paths = [
         (
             CWD / "torch/_inductor/kernel/vendored_templates/cutedsl_grouped_gemm.py",
@@ -1880,46 +1887,45 @@ def main() -> None:
     on_ppu = os.environ.get("PPU_SDK")
     if on_ppu:
         Init_ppu_build_env()
-
-    use_fa = os.environ.get("USE_FLASH_ATTENTION")
-    if use_fa in ["True", "1", "TRUE"] and on_ppu:
         torch_root = os.path.dirname(os.path.abspath(__file__))
         patch_root = os.path.join(torch_root, "third_party")
-        fa_root = os.path.join(patch_root, "flash-attention")
         cutlass_root = os.path.join(patch_root, "cutlass")
-        cutlass_include_root = os.path.join(cutlass_root, "include")
-        if not os.path.exists(fa_root):
-            raise _missing_submodule_error(torch_root, "third_party/flash-attention")
         if not os.path.exists(cutlass_root):
             raise _missing_submodule_error(torch_root, "third_party/cutlass")
+        cutlass_include_root = os.path.join(cutlass_root, "include")
 
         cudafy_root = os.path.join(patch_root, "cudafy-for-sail")
         if not os.path.exists(cudafy_root):
             raise _missing_submodule_error(torch_root, "third_party/cudafy-for-sail")
 
-        run_cudafy_once(
-            torch_root,
-            "flash-attention",
-            "2.7.2",
-            fa_root,
-        )
+        # ACTLIZE/CUTLASS is required independently of flash-attention.
         run_cudafy_once(
             torch_root,
             "actlize",
             "v0.8.0",
             cutlass_include_root,
         )
-
-        fa_patch_file = os.path.join(patch_root, "flash_attention_namespace_config.patch")
-        # PPU cutlass fork lacks cutlass::platform::numeric_limits<half_t/bfloat16_t>;
-        # required by sparse semi-structured kernels (ComputeSparseTile.h).
-        # (CU->PPU alias/device_breakpoint fixes are emitted by cuda_compat_v0.8.0.py.)
         cutlass_patch_file = os.path.join(
             patch_root, "cutlass_platform_numeric_limits.patch"
         )
-
-        apply_patch(fa_patch_file, fa_root)
         apply_patch(cutlass_patch_file, cutlass_root)
+
+        use_fa = os.environ.get("USE_FLASH_ATTENTION")
+        if use_fa in ["True", "1", "TRUE"]:
+            fa_root = os.path.join(patch_root, "flash-attention")
+            if not os.path.exists(fa_root):
+                raise _missing_submodule_error(torch_root, "third_party/flash-attention")
+
+            run_cudafy_once(
+                torch_root,
+                "flash-attention",
+                "2.7.2",
+                fa_root,
+            )
+            fa_patch_file = os.path.join(
+                patch_root, "flash_attention_namespace_config.patch"
+            )
+            apply_patch(fa_patch_file, fa_root)
 
     install_requires = [
         "filelock",
