@@ -1,0 +1,423 @@
+name: ppu-linux-build
+
+# PPU torch whl 源码编译（GitHub 托管 larger runner 上执行）。
+# 与 _linux-build.yml 的区别：
+#   - 不依赖自托管 runner / S3 / sccache，产物走 GitHub artifact
+#   - 不经过 .ci/pytorch/build.sh，直接调用 .ci/ppu/build_wheel.sh（README 直编方式）
+#   - 镜像来自 PPU 私有 registry（已确认公网可达），通过宿主机 docker run + docker exec 驱动，
+#     以便在拉镜像之前先做磁盘检查和可选的 registry 登录
+
+on:
+  # 提交 / 更新 PR 时自动触发。
+  # 注意：pull_request 事件下 inputs 上下文整体为空（inputs 只对 workflow_call /
+  # workflow_dispatch 生效），因此本文件里所有 inputs.* 引用都必须带 || 兜底，
+  # 或改由下面 jobs.build.env 统一兜底后以 env.* 使用。
+  # 尤其 runs-on 解析成空字符串时 job 不会报错，而是一直排队到 timeout 才失败。
+  pull_request:
+
+  workflow_call:
+    inputs:
+      build-environment:
+        required: false
+        type: string
+        default: ppu-linux-ubuntu24.04-py3.12
+        description: Top-level label for what's being built. 仅用于日志/产物标识。
+      docker-image:
+        required: false
+        type: string
+        default: pkg.flytiger-eco.com/docker_build/pytorch:ubuntu24.04-py312.06
+        description: 编译所用镜像（含 PPU SDK 与 CUDA 工具链）。
+      runner:
+        required: false
+        type: string
+        default: ubuntu-24.04-16-cores
+        description: |
+          GitHub 托管 larger runner 标签（16 vCPU / 64GB RAM / 600GB SSD）。
+          注意：larger runner 的标签名由组织管理员在 Settings → Actions → Runners 里自定义，
+          此处默认值只是 GitHub 文档的命名约定，必须与实际注册名一致。
+          填错不会报错，job 会一直排队到 timeout-minutes 才失败。
+          退回标准托管 runner 可传 ubuntu-24.04（4 vCPU / 仅 ~14GB 可用磁盘，大概率不够）。
+      cuda-arch-list:
+        required: false
+        type: string
+        default: "8.0"
+        description: TORCH_CUDA_ARCH_LIST。PPU 语义下 8.0 = SM80+SM89 混合编译。
+      max-jobs:
+        required: false
+        type: string
+        default: "0"
+        description: 编译并行度。0 或空表示由脚本取 nproc-2。
+      sdk-install-dir:
+        required: false
+        type: string
+        default: /usr/local
+        description: 容器内 PPU SDK 解压目录，供 sdk_env.sh 使用。
+      pip-index-url:
+        required: false
+        type: string
+        default: ""
+        description: 容器内 pip index-url，留空则用镜像自带配置。
+      force-rebuild:
+        required: false
+        type: boolean
+        default: false
+        description: 置真时忽略 dist 下的 stamp，强制重新编译。
+      build-additional-packages:
+        required: false
+        type: string
+        default: ""
+        description: 保留参数。README 直编方式不处理额外包，脚本仅告警。
+      free-disk-space:
+        required: false
+        type: boolean
+        default: true
+        description: |
+          磁盘不够时删除 runner 预装的 Android SDK / dotnet / hostedtoolcache 等，腾出约 25GB。
+          已改为自适应：可用空间足够（larger runner 常见情形）时自动跳过，不白花清理时间。
+      timeout-minutes:
+        required: false
+        type: number
+        default: 350
+        description: job 超时。GitHub 托管 runner 单 job 硬上限为 360 分钟。
+
+    secrets:
+      DOCKER_REGISTRY_USERNAME:
+        required: false
+        description: PPU registry 用户名。留空则按匿名拉取处理。
+      DOCKER_REGISTRY_PASSWORD:
+        required: false
+        description: PPU registry 密码或 token。
+
+    outputs:
+      docker-image:
+        value: ${{ jobs.build.outputs.docker-image }}
+        description: 实际使用的编译镜像。
+      wheel-name:
+        value: ${{ jobs.build.outputs.wheel-name }}
+        description: 产出的 torch whl 文件名。
+      artifact-name:
+        value: ${{ jobs.build.outputs.artifact-name }}
+        description: 上传 whl 的 artifact 名称，供下游 test workflow 下载。
+      build-time-sec:
+        value: ${{ jobs.build.outputs.build-time-sec }}
+        description: 编译耗时（秒）。命中 stamp 复用时为空。
+
+  workflow_dispatch:
+    inputs:
+      build-environment:
+        required: false
+        type: string
+        default: ppu-linux-ubuntu24.04-py3.12
+      docker-image:
+        required: false
+        type: string
+        default: pkg.flytiger-eco.com/docker_build/pytorch:ubuntu24.04-py312.06
+      runner:
+        required: false
+        type: string
+        default: ubuntu-24.04-16-cores
+      cuda-arch-list:
+        required: false
+        type: string
+        default: "8.0"
+      max-jobs:
+        required: false
+        type: string
+        default: "0"
+      sdk-install-dir:
+        required: false
+        type: string
+        default: /usr/local
+      pip-index-url:
+        required: false
+        type: string
+        default: ""
+      force-rebuild:
+        required: false
+        type: boolean
+        default: false
+      build-additional-packages:
+        required: false
+        type: string
+        default: ""
+      free-disk-space:
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# 单次编译最长 350 分钟，PR 连续 push 时必须取消旧 run，否则会持续占满 larger runner 配额
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name == 'workflow_dispatch' }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    # 这三处（job name / runs-on / job outputs）不能用 env 上下文，只能就地兜底
+    name: build (${{ inputs.build-environment || 'ppu-linux-ubuntu24.04-py3.12' }})
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04-16-cores' }}
+    timeout-minutes: ${{ inputs.timeout-minutes || 350 }}
+    outputs:
+      docker-image: ${{ inputs.docker-image || 'pkg.flytiger-eco.com/docker_build/pytorch:ubuntu24.04-py312.06' }}
+      wheel-name: ${{ steps.collect.outputs.wheel-name }}
+      artifact-name: ${{ steps.collect.outputs.artifact-name }}
+      build-time-sec: ${{ steps.build.outputs.build-time-sec }}
+    env:
+      # secrets 上下文不能直接用在 step 的 if 里，先落到 job env 上做空值判断
+      REGISTRY_USERNAME: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+      # 以下为 inputs 的统一兜底：pull_request 事件下 inputs 全空，取这里的默认值，
+      # 值需与 workflow_call / workflow_dispatch 的 default 保持一致
+      BUILD_ENVIRONMENT: ${{ inputs.build-environment || 'ppu-linux-ubuntu24.04-py3.12' }}
+      DOCKER_IMAGE: ${{ inputs.docker-image || 'pkg.flytiger-eco.com/docker_build/pytorch:ubuntu24.04-py312.06' }}
+      TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list || '8.0' }}
+      MAX_JOBS: ${{ inputs.max-jobs || '0' }}
+      SDK_INSTALL_DIR: ${{ inputs.sdk-install-dir || '/usr/local' }}
+      PIP_INDEX_URL: ${{ inputs.pip-index-url }}
+      BUILD_ADDITIONAL_PACKAGES: ${{ inputs.build-additional-packages }}
+      FORCE_REBUILD: ${{ inputs.force-rebuild && '1' || '0' }}
+      # 布尔 input 缺省时为 null，而 GitHub 表达式里 null == false 成立，
+      # 没法靠 inputs.free-disk-space != false 区分“未传”和“显式传 false”，
+      # 因此 PR 场景直接按开启处理（该 step 本身会在空间充足时自动跳过）
+      FREE_DISK_SPACE: ${{ (github.event_name == 'pull_request' || inputs.free-disk-space) && '1' || '0' }}
+      # 容器内源码挂载点，同时作为 build_wheel.sh 的 REPO_DIR
+      REPO_DIR_IN_CONTAINER: /pytorch
+
+    steps:
+      - name: Show runner spec
+        run: |
+          # 用于确认 larger runner 真的生效了：标准托管 runner 是 4 vCPU / ~14GB 可用磁盘，
+          # larger runner 应看到 16+ vCPU 与几百 GB 可用空间。规格不对就是标签落到了普通 runner。
+          echo "[spec] runner-name=${RUNNER_NAME} os=${RUNNER_OS} arch=${RUNNER_ARCH}"
+          echo "[spec] nproc=$(nproc) mem=$(free -g | awk '/^Mem:/{print $2}')GB"
+          df -h /
+
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          # PR 场景显式签出 head commit。默认的 refs/pull/N/merge 会随 base 分支推进而变，
+          # 而下面的 stamp / ccache / artifact 键取自 head，两者不一致会让键无法真实代表源码
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # 源码编译必须带 third_party 子模块
+          submodules: recursive
+          # 编译本身不需要历史，但 setup.py 会读 git 描述信息，保留浅克隆即可
+          fetch-depth: 1
+
+      - name: Record source baseline commit
+        id: source-commit
+        run: |
+          # 直接取实际签出的 HEAD，保证 stamp / ccache / artifact 键与编译的源码一一对应
+          COMMIT=$(git rev-parse --short=7 HEAD)
+          echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "[source] baseline commit=${COMMIT}"
+
+      - name: Free disk space
+        if: env.FREE_DISK_SPACE == '1'
+        run: |
+          # larger runner 自带 300~600GB SSD，够用时没必要花一两分钟删预装包。
+          # 用 -P 保证单行输出，avail 单位是 1K 块
+          avail_gb=$(df -Pk / | awk 'NR==2 {print int($4 / 1024 / 1024)}')
+          echo "[disk] 根分区可用 ${avail_gb}GB"
+          if [[ "${avail_gb}" -ge 120 ]]; then
+            echo "[disk] 空间充足，跳过清理"
+            exit 0
+          fi
+
+          echo "[disk] 空间偏紧，开始清理预装包"
+          # 自托管 / 容器化 runner 上常常没有 sudo，缺失时退化为直接执行
+          SUDO=""
+          if command -v sudo >/dev/null 2>&1; then
+            SUDO="sudo"
+          fi
+          # 托管 runner 预装内容，PPU 编译一概不需要
+          $SUDO rm -rf /usr/local/lib/android \
+                      /usr/share/dotnet \
+                      /opt/ghc \
+                      /usr/local/.ghcup \
+                      /usr/local/share/powershell \
+                      /usr/share/swift \
+                      /opt/hostedtoolcache/CodeQL || true
+          $SUDO docker image prune --all --force >/dev/null 2>&1 || true
+          echo "=== 清理后 ==="
+          df -h /
+
+      - name: Login to PPU registry
+        if: env.REGISTRY_USERNAME != ''
+        run: |
+          echo "${REGISTRY_PASSWORD}" | docker login \
+            --username "${REGISTRY_USERNAME}" \
+            --password-stdin \
+            "${DOCKER_IMAGE%%/*}"
+
+      - name: Pull docker image
+        run: |
+          # 私有 registry 偶发抖动，重试 3 次
+          for attempt in 1 2 3; do
+            if docker pull "${DOCKER_IMAGE}"; then
+              exit 0
+            fi
+            echo "[pull] 第 ${attempt} 次失败，10s 后重试" >&2
+            sleep 10
+          done
+          echo "[pull] 无法拉取 ${DOCKER_IMAGE}。常见原因：" >&2
+          echo "[pull]   1) DOCKER_REGISTRY_USERNAME / PASSWORD 未配置或已失效（当前登录步骤会整个跳过）" >&2
+          echo "[pull]   2) 来自 fork 的 PR：GitHub 不向 fork PR 下发 secrets，登录必然跳过" >&2
+          echo "[pull]   3) 镜像 tag 不存在或已被清理" >&2
+          echo "[pull]   4) registry 对 GitHub Azure 出网 IP 有白名单限制" >&2
+          exit 1
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          # runner 上下文只能在 step 级使用，故路径不走 job env
+          path: ${{ runner.temp }}/ppu-ccache
+          key: ppu-ccache-${{ env.BUILD_ENVIRONMENT }}-${{ env.TORCH_CUDA_ARCH_LIST }}-${{ steps.source-commit.outputs.commit }}
+          restore-keys: |
+            ppu-ccache-${{ env.BUILD_ENVIRONMENT }}-${{ env.TORCH_CUDA_ARCH_LIST }}-
+            ppu-ccache-${{ env.BUILD_ENVIRONMENT }}-
+
+      - name: Start build container
+        id: container
+        env:
+          # 编译参数已全部落在 job env 上（带 inputs 兜底），此处只需额外带入 step 级产物
+          SOURCE_COMMIT: ${{ steps.source-commit.outputs.commit }}
+        run: |
+          # ccache 目录必须先存在，build_wheel.sh 靠 -d 判断决定是否启用
+          mkdir -p "${RUNNER_TEMP}/ppu-ccache"
+
+          # 镜像的 ENTRYPOINT 未知，显式覆盖成 bash 以保证容器常驻；
+          # 12h 兜底，防止 job 被取消后容器残留
+          container_name=$(docker run \
+            --detach \
+            --tty \
+            --entrypoint /bin/bash \
+            -e REPO_DIR="${REPO_DIR_IN_CONTAINER}" \
+            -e BUILD_ENVIRONMENT \
+            -e TORCH_CUDA_ARCH_LIST \
+            -e MAX_JOBS \
+            -e SDK_INSTALL_DIR \
+            -e PIP_INDEX_URL \
+            -e BUILD_ADDITIONAL_PACKAGES \
+            -e FORCE_REBUILD \
+            --security-opt seccomp=unconfined \
+            --cap-add=SYS_PTRACE \
+            -v "${GITHUB_WORKSPACE}:${REPO_DIR_IN_CONTAINER}" \
+            -v "${RUNNER_TEMP}/ppu-ccache:/root/.cache/ccache" \
+            -w "${REPO_DIR_IN_CONTAINER}" \
+            "${DOCKER_IMAGE}" \
+            -c 'sleep 12h'
+          )
+          echo "container-name=${container_name}" >> "$GITHUB_OUTPUT"
+
+          # 挂载进来的源码属主与容器内用户不一致，git 会拒绝操作
+          docker exec -t "${container_name}" bash -c \
+            "git config --global --add safe.directory ${REPO_DIR_IN_CONTAINER}"
+
+          # build_wheel.sh 优先读该文件作为 stamp 键
+          docker exec -t "${container_name}" bash -c \
+            "echo '${SOURCE_COMMIT}' > /tmp/ppu_source_commit"
+
+      - name: Check PPU SDK in image
+        env:
+          CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
+        run: |
+          MARKER="${SDK_INSTALL_DIR}/PPU_SDK/.ci_installed"
+          if docker exec -t "${CONTAINER_NAME}" test -f "${MARKER}"; then
+            echo "[sdk] 镜像已预置 SDK 标记: ${MARKER}"
+            exit 0
+          fi
+
+          if docker exec -t "${CONTAINER_NAME}" test -f .ci/ppu/install_sdk.sh; then
+            echo "[sdk] 未检测到标记，执行 .ci/ppu/install_sdk.sh"
+            docker exec -t "${CONTAINER_NAME}" bash .ci/ppu/install_sdk.sh
+            exit 0
+          fi
+
+          echo "[sdk] 失败: 镜像内不存在 ${MARKER}，且仓库中没有 .ci/ppu/install_sdk.sh。" >&2
+          echo "[sdk] sdk_env.sh 会因此直接退出。请二选一：" >&2
+          echo "[sdk]   a) 使用已预装 SDK 并落好标记的镜像" >&2
+          echo "[sdk]   b) 补充 .ci/ppu/install_sdk.sh 负责解压 SDK 并创建标记文件" >&2
+          exit 1
+
+      - name: Build PPU torch wheel
+        id: build
+        env:
+          CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
+        run: |
+          # build_wheel.sh 用到 bash 数组，必须用 bash 执行
+          docker exec -t "${CONTAINER_NAME}" bash .ci/ppu/build_wheel.sh
+
+          # 编译耗时由脚本写入容器内 /tmp；命中 stamp 复用时该文件不存在
+          # 这里不能加 -t：伪 TTY 会往输出里插 \r，污染 GITHUB_OUTPUT
+          if docker exec "${CONTAINER_NAME}" test -f /tmp/ppu_build_duration_sec; then
+            duration=$(docker exec "${CONTAINER_NAME}" cat /tmp/ppu_build_duration_sec | tr -d '\r\n')
+            echo "build-time-sec=${duration}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fix ownership of build outputs
+        if: always()
+        continue-on-error: true
+        run: |
+          # 容器以 root 写出 dist/ 与 ccache，runner 用户需要可读才能上传 artifact / 存 cache。
+          # 必须在 Collect wheel 之前做，否则 dist/ 不可读时 glob 会直接算出空结果
+          SUDO=""
+          if command -v sudo >/dev/null 2>&1; then
+            SUDO="sudo"
+          fi
+          $SUDO chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/ppu-ccache" dist 2>/dev/null || true
+
+      - name: Collect wheel
+        id: collect
+        env:
+          SOURCE_COMMIT: ${{ steps.source-commit.outputs.commit }}
+          BUILD_TIME_SEC: ${{ steps.build.outputs.build-time-sec }}
+        run: |
+          shopt -s nullglob
+          whls=(dist/torch-*.whl)
+          if [[ ${#whls[@]} -eq 0 ]]; then
+            echo "[collect] 错误: dist/ 下没有 torch-*.whl" >&2
+            ls -la dist 2>/dev/null || echo "[collect] dist 目录不存在" >&2
+            exit 1
+          fi
+
+          wheel_name=$(basename "${whls[0]}")
+          # artifact 名不得包含 " : < > | * ? \ /，把可能的非法字符折成 -
+          env_slug=$(printf '%s' "${BUILD_ENVIRONMENT}" | tr -c '[:alnum:]._-' '-')
+          artifact_name="ppu-wheel-${env_slug}-${SOURCE_COMMIT}"
+          echo "wheel-name=${wheel_name}" >> "$GITHUB_OUTPUT"
+          echo "artifact-name=${artifact_name}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### PPU build 产物"
+            echo ""
+            echo "- 镜像: \`${DOCKER_IMAGE}\`"
+            echo "- 架构: \`${TORCH_CUDA_ARCH_LIST}\`"
+            echo "- 基线 commit: \`${SOURCE_COMMIT}\`"
+            echo "- whl: \`${wheel_name}\` ($(du -h "${whls[0]}" | cut -f1))"
+            echo "- 编译耗时: \`${BUILD_TIME_SEC:-stamp 复用，未重新编译}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.collect.outputs.artifact-name }}
+          path: dist/torch-*.whl
+          if-no-files-found: error
+          retention-days: 14
+          # 同一 commit 重跑 workflow 时 artifact 名会重复，v4 默认会直接报错
+          overwrite: true
+
+      - name: Teardown container
+        if: always() && steps.container.outputs.container-name != ''
+        continue-on-error: true
+        env:
+          CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
+        run: |
+          docker rm -f "${CONTAINER_NAME}" || true
+          df -h /
