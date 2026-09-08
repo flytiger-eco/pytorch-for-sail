@@ -48,7 +48,77 @@ To use PyTorch-for-SAIL directly via Docker or install it from PyPI, please refe
 
 ## Build from Source
 
-If you need to build and install from source, please make sure to build inside the [PyTorch-for-SAIL Docker image](https://www.flytiger-eco.com/download?businessType=DOCKER).
+If you need to build and install from source, choose one of the following Docker-based workflows.
+
+### Method 1: Build with `Dockerfile.ubuntu-ppu`
+
+[`Dockerfile.ubuntu-ppu`](Dockerfile.ubuntu-ppu) builds the source tree into a wheel in a PPU SDK environment. The build context must be the repository root and must include the initialized `flash-attention`, `cutlass`, and `cudafy-for-sail` submodules.
+
+```bash
+# Initialize submodules before Docker sends the build context.
+git submodule sync
+git submodule update --init --recursive
+
+# Build the runtime image. This also builds a wheel, installs it with runtime
+# dependencies, and verifies that torch can be imported outside the source
+# directory with CUDA support compiled in.
+docker buildx build --load --progress=plain \
+  --target runtime \
+  -t pytorch-for-sail:ubuntu-ppu \
+  -f Dockerfile.ubuntu-ppu .
+```
+
+The default `BASE_IMAGE` is pinned to an immutable digest. `--build-arg BASE_IMAGE=<image>` can replace the base image, but the replacement should also be digest-pinned and must provide the same SDK path and toolchain layout. The build-time validation initializes the SDK environment, checks general build tools, and fails unless the installed wheel reports CUDA support as compiled. Build options can also be overridden, for example:
+
+```bash
+docker buildx build --load \
+  --build-arg MAX_JOBS=16 \
+  --build-arg TORCH_CUDA_ARCH_LIST=8.9 \
+  --build-arg USE_FLASH_ATTENTION=False \
+  --build-arg USE_MEM_EFF_ATTENTION=False \
+  --target runtime \
+  -t pytorch-for-sail:ubuntu-ppu-no-attention \
+  -f Dockerfile.ubuntu-ppu .
+```
+
+Start the built image with a shell:
+
+```bash
+docker run -it --rm --entrypoint /bin/bash pytorch-for-sail:ubuntu-ppu
+```
+
+The runtime image starts in `/workspace`; the source checkout remains available at `/workspace/pytorch-for-sail`. This keeps the installed wheel ahead of the source tree during normal Python imports.
+
+For workloads that require an accelerator device, add the device mapping required by the host environment.
+
+Verify the image independently after it is built:
+
+```bash
+docker run -t --rm --entrypoint /bin/bash pytorch-for-sail:ubuntu-ppu -lc '
+  set -euo pipefail
+  source /usr/local/PPU_SDK/envsetup.sh
+  cd /tmp
+  python3 -c "import sys, torch; compiled = torch.cuda._is_compiled(); print(torch.__version__); print(compiled); sys.exit(0 if compiled else 'torch was built without CUDA support')"
+'
+```
+
+To export the generated wheel without loading the runtime image, use the `artifact` target:
+
+```bash
+rm -rf wheels
+docker buildx build --progress=plain \
+  --target artifact \
+  --output type=local,dest=./wheels \
+  -f Dockerfile.ubuntu-ppu .
+```
+
+### Method 2: Build inside a downloaded Flytiger PPU Docker image
+
+Download a compatible PPU Docker image from the [Flytiger download page](https://www.flytiger-eco.com/download?businessType=DOCKER), then set `FLYTIGER_PPU_IMAGE` to its local image name or tag. This workflow keeps the source checkout on the host and performs the build in the container. If the download is an image archive, import it first:
+
+```bash
+docker load -i <downloaded-image-archive.tar>
+```
 
 ```bash
 # 1. Clone the PyTorch source code and initialize submodules
@@ -59,8 +129,17 @@ cd pytorch-for-sail
 git submodule sync
 git submodule update --init --recursive
 
+# 2. Start the downloaded PPU image with the source checkout mounted.
+# Replace the placeholder with the local image name or tag obtained above.
+export FLYTIGER_PPU_IMAGE=<downloaded-flytiger-ppu-image>
+docker run -it --rm \
+  -v "$(pwd):/workspace/pytorch-for-sail" \
+  -w /workspace/pytorch-for-sail \
+  --entrypoint /bin/bash \
+  "${FLYTIGER_PPU_IMAGE}"
+
 # Run the following commands inside the PyTorch-for-SAIL Docker container
-# 2. Configure the build environment
+# 3. Configure the build environment
 source /usr/local/PPU_SDK/envsetup.sh
 
 # Install build dependencies
@@ -76,7 +155,7 @@ export TORCH_CUDA_ARCH_LIST="8.0"
 # To build for SM89 only, comment out the line above and uncomment the following line.
 # export TORCH_CUDA_ARCH_LIST="8.9"
 
-# 3. Build the wheel package
+# 4. Build the wheel package with the configured build backend
 NCCL_INCLUDE_DIR=/usr/local/PPU_SDK/CUDA_SDK/include \
 NCCL_LIB_DIR=/usr/local/PPU_SDK/CUDA_SDK/lib64 \
 PYTORCH_VERSION=2.11.0 \
@@ -89,10 +168,10 @@ USE_DISTRIBUTED=True \
 USE_SYSTEM_NCCL=1 \
 BUILD_CAFFE2=False \
 BUILD_TEST=True \
-python3 setup.py bdist_wheel
+python3 -m pip wheel --no-build-isolation --no-deps -w dist .
 
-# 4. Install the built wheel package
-pip install dist/*.whl
+# 5. Install the built wheel package and its runtime dependencies
+python3 -m pip install --force-reinstall dist/*.whl
 ```
 
 ---

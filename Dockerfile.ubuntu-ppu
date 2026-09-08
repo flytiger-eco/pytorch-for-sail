@@ -1,0 +1,127 @@
+# Builds PyTorch-for-SAIL from source with a Flytiger PPU SDK.
+# The build context must be the PyTorch-for-SAIL repository root.
+ARG BASE_IMAGE=pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312@sha256:f34c9cab8d978074b4e40f004c3aa2c623e3222b865676d20dfe7f8ce1a196c9
+FROM ${BASE_IMAGE} AS build
+
+USER root
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG BUILD_ENVIRONMENT=ubuntu-ppu
+ARG MAX_JOBS=32
+ARG PYTORCH_BUILD_VERSION=2.11.0
+ARG PYTORCH_BUILD_NUMBER=0
+ARG TORCH_CUDA_ARCH_LIST=8.9
+ARG USE_FLASH_ATTENTION=True
+ARG USE_MEM_EFF_ATTENTION=True
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
+LABEL org.opencontainers.image.title="PyTorch-for-SAIL ubuntu-ppu build image" \
+      org.opencontainers.image.description="Builds and verifies a PyTorch-for-SAIL wheel with a PPU SDK"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    BUILD_ENVIRONMENT=${BUILD_ENVIRONMENT} \
+    PPU_SDK=/usr/local/PPU_SDK \
+    PPU_PATH=/usr/local/PPU_SDK \
+    PPU_HOME=/usr/local/PPU_SDK \
+    PPU_TARGET=x86_64-linux \
+    PPU_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include \
+    PPU_LIBRARY_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib \
+    CUDA_SDK=/usr/local/PPU_SDK/CUDA_SDK \
+    CUDA_TOOLKIT_ROOT=/usr/local/PPU_SDK/CUDA_SDK \
+    CUDA_PATH=/usr/local/PPU_SDK/CUDA_SDK \
+    CUDA_HOME=/usr/local/PPU_SDK/CUDA_SDK \
+    CUDACXX=/usr/local/PPU_SDK/CUDA_SDK/bin/nvcc \
+    MAX_JOBS=${MAX_JOBS} \
+    PYTORCH_VERSION=${PYTORCH_BUILD_VERSION} \
+    PYTORCH_BUILD_VERSION=${PYTORCH_BUILD_VERSION} \
+    PYTORCH_BUILD_NUMBER=${PYTORCH_BUILD_NUMBER} \
+    TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} \
+    NCCL_INCLUDE_DIR=/usr/local/PPU_SDK/CUDA_SDK/include \
+    NCCL_LIB_DIR=/usr/local/PPU_SDK/CUDA_SDK/lib64 \
+    USE_FLASH_ATTENTION=${USE_FLASH_ATTENTION} \
+    USE_MEM_EFF_ATTENTION=${USE_MEM_EFF_ATTENTION} \
+    USE_NCCL=True \
+    USE_DISTRIBUTED=True \
+    USE_SYSTEM_NCCL=1 \
+    BUILD_CAFFE2=False \
+    BUILD_TEST=True
+
+ENV PATH=/usr/local/PPU_SDK/ppu-smi/bin:/usr/local/PPU_SDK/asight/bin:/usr/local/PPU_SDK/CUDA_SDK/bin:/usr/local/PPU_SDK/bin:${PATH} \
+    LD_LIBRARY_PATH=/usr/local/PPU_SDK/ppu-smi/lib:/usr/local/PPU_SDK/targets/x86_64-linux/lib:/usr/local/PPU_SDK/CUDA_SDK/lib64:/usr/local/PPU_SDK/lib:${LD_LIBRARY_PATH} \
+    LIBRARY_PATH=/usr/local/PPU_SDK/targets/x86_64-linux/lib:/usr/local/PPU_SDK/CUDA_SDK/lib64:/usr/local/PPU_SDK/lib:${LIBRARY_PATH} \
+    PYTHONPATH=/usr/local/lib/python3.12/site-packages:/usr/lib/python3/dist-packages:${PYTHONPATH}
+
+# Install the build toolchain with APT rather than relying on cmake/ninja wheels from the base image's Python package index.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      ccache \
+      cmake \
+      git \
+      libffi-dev \
+      libgflags-dev \
+      libgoogle-glog-dev \
+      libjpeg-dev \
+      libopenblas-dev \
+      libpng-dev \
+      libprotobuf-dev \
+      libssl-dev \
+      libsndfile1-dev \
+      ninja-build \
+      pkg-config \
+      protobuf-compiler \
+      python3-dev \
+      python3-packaging \
+      python3-pip \
+      python3-pytest \
+      python3-requests \
+      python3-six \
+      python3-typing-extensions \
+      python3-yaml && \
+    rm -rf /var/lib/apt/lists/*
+
+# Initialize the SDK environment and validate general build tools before copying the full source tree.
+RUN source "${PPU_SDK}/envsetup.sh" >/dev/null && \
+    cmake --version >/dev/null && \
+    ninja --version >/dev/null && \
+    ccache --version >/dev/null && \
+    python3 -c 'import numpy, packaging, pytest, requests, typing_extensions, yaml'
+
+WORKDIR /workspace/pytorch-for-sail
+COPY . .
+
+# The build context must include initialized PPU-required submodules; do not fetch submodules over the network during the build.
+# cmake and ninja from requirements-build.txt use the APT packages installed above.
+RUN set -eux; \
+    test -d third_party/flash-attention; \
+    test -d third_party/cudafy-for-sail; \
+    test -d third_party/cutlass; \
+    rm -rf build dist; \
+    for optional_submodule in aiter composable_kernel; do \
+      mkdir -p "third_party/${optional_submodule}"; \
+      if [[ ! -f "third_party/${optional_submodule}/CMakeLists.txt" ]]; then \
+        printf 'cmake_minimum_required(VERSION 3.27)\nproject(optional_rocm_stub NONE)\n' \
+          > "third_party/${optional_submodule}/CMakeLists.txt"; \
+      fi; \
+    done; \
+    sed -E '/^(cmake|ninja)([<>=!~].*)?$/d' requirements-build.txt > /tmp/requirements-build-python.txt; \
+    PIP_INDEX_URL="${PIP_INDEX_URL}" python3 -m pip install --no-cache-dir --ignore-installed -r /tmp/requirements-build-python.txt wheel; \
+    python3 -c 'from importlib.metadata import version; from packaging.version import Version; assert Version("70.1.0") <= Version(version("setuptools")) < Version("82"); assert Version(version("typing_extensions")) >= Version("4.15.0")'; \
+    source "${PPU_SDK}/envsetup.sh" >/dev/null; \
+    python3 -m pip wheel --no-build-isolation --no-deps -w dist .; \
+    wheel=(dist/torch-*.whl); \
+    test -f "${wheel[0]}"; \
+    mkdir -p /opt/artifacts; \
+    cp "${wheel[0]}" /opt/artifacts/; \
+    PIP_INDEX_URL="${PIP_INDEX_URL}" python3 -m pip install --no-cache-dir --force-reinstall "${wheel[0]}"; \
+    cd /tmp; \
+    python3 -c 'import sys, torch; compiled = torch.cuda._is_compiled(); print(f"torch-version={torch.__version__}"); print(f"torch-cuda-compiled={compiled}"); sys.exit(0 if compiled else "torch was built without CUDA support")'
+
+# Export the wheel with --target artifact and BuildKit --output instead of copying it from a container manually.
+FROM scratch AS artifact
+COPY --from=build /opt/artifacts/ /
+
+# Keep the full build environment in the default target for additional testing in a PPU-enabled container.
+FROM build AS runtime
+WORKDIR /workspace
+CMD ["bash"]
