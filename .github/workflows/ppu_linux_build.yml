@@ -1,16 +1,19 @@
 name: ppu-linux-build
 
-# PPU torch whl 源码编译（默认在自托管 k8s runner 上执行）。
+# PPU torch whl 源码编译（GitHub 标准托管 runner 上执行）。
 # 与 _linux-build.yml 的区别：
-#   - 不依赖 S3 / sccache，产物走 GitHub artifact
+#   - 不依赖自托管 runner / S3 / sccache，产物走 GitHub artifact
 #   - 不经过 .ci/pytorch/build.sh，直接调用 .ci/ppu/build_wheel.sh（README 直编方式）
 #   - 镜像来自 PPU 私有 registry（已确认公网可达），通过宿主机 docker run + docker exec 驱动，
 #     以便在拉镜像之前先做磁盘检查和可选的 registry 登录
 #
-# 重要前提：上述 docker run / docker exec 要求 runner 能直接用 docker。
-# k8s 上的 ARC runner 如果跑在 kubernetes 模式（container hooks）下，Pod 内没有
-# Docker daemon，本 workflow 会在 Check docker availability 步骤就失败。
-# 那种情况需要改成 job 级 container: 写法（同 ppu_smoke.yml），而不是自己调 docker。
+# 标准托管 runner（ubuntu-24.04）规格：4 vCPU / 16GB RAM，GitHub 文档标称 14GB SSD，
+# 实际根分区约 75GB 但预装软件占掉大半，初始可用只有 20~30GB；另有临时盘 /mnt 约 65GB 可用。
+# 因此本文件针对标准 runner 做了两件事：
+#   1) 默认清理预装软件（Android SDK / dotnet / hostedtoolcache 等），腾出约 25GB
+#   2) 把 docker 存储目录迁到 /mnt，让镜像层不再和源码 / 编译产物抢根分区
+# 并行度只有 nproc-2=2，全量编译很可能撞到 GitHub 单 job 360 分钟硬上限；ccache 会被缓存，
+# 超时后重跑可以接着已缓存的对象文件继续推进。
 
 on:
   # 提交 / 更新 PR 时自动触发。
@@ -35,13 +38,12 @@ on:
       runner:
         required: false
         type: string
-        default: k8s-runner-group-cpu-flytiger
+        default: ubuntu-24.04
         description: |
-          编译所用 runner 标签，默认用组织自托管的 k8s runner group（同 ppu_smoke.yml）。
-          标签必须与实际注册名一致：填错不会报错，job 会一直排队到被取消。
-          不要填 GitHub 托管 larger runner（如 ubuntu-24.04-16-cores）：
-          该能力当前组织为 Unprovisioned（一台都未创建），除非管理员在
-          Settings → Actions → Runners 里先开通并把本仓库加入 runner group。
+          GitHub 标准托管 runner 标签（4 vCPU / 16GB RAM，根分区清理前仅 20~30GB 可用）。
+          标准标签由 GitHub 提供，无需组织管理员注册；若组织购买了 larger runner，
+          可传自定义标签（如 ubuntu-24.04-16-cores）以缩短编译时间。
+          标签写错不会报错，job 会一直排队到 timeout-minutes 才失败。
       cuda-arch-list:
         required: false
         type: string
@@ -51,7 +53,9 @@ on:
         required: false
         type: string
         default: "0"
-        description: 编译并行度。0 或空表示由脚本取 nproc-2。
+        description: |
+          编译并行度。0 或空表示由脚本取 nproc-2，标准 runner 上即为 2。
+          标准 runner 只有 16GB RAM，调大后 nvcc / ld 容易 OOM，不建议超过 nproc。
       sdk-install-dir:
         required: false
         type: string
@@ -77,14 +81,16 @@ on:
         type: boolean
         default: true
         description: |
-          磁盘不够时删除 runner 预装的 Android SDK / dotnet / hostedtoolcache 等，腾出约 25GB。
-          已改为自适应：可用空间足够时自动跳过，不白花清理时间。
-          注：这些预装目录是 GitHub 托管 runner 才有的，在自托管 k8s runner 上基本腾不出空间。
+          删除 runner 预装的 Android SDK / dotnet / hostedtoolcache 等，腾出约 25GB。
+          标准托管 runner 根分区初始可用仅 20~30GB，装不下镜像 + 编译产物，基本必须开启；
+          仅当换到磁盘充裕的 runner（可用 ≥150GB）时该步骤会自动跳过。
       timeout-minutes:
         required: false
         type: number
         default: 350
-        description: job 超时。自托管 runner 无 360 分钟硬上限，仅 GitHub 托管 runner 有。
+        description: |
+          job 超时。GitHub 托管 runner 单 job 硬上限为 360 分钟。
+          标准 runner 只有 2 路并行，首次全量编译可能超时；ccache 命中后重跑会显著变快。
 
     secrets:
       DOCKER_REGISTRY_USERNAME:
@@ -121,7 +127,7 @@ on:
       runner:
         required: false
         type: string
-        default: k8s-runner-group-cpu-flytiger
+        default: ubuntu-24.04
       cuda-arch-list:
         required: false
         type: string
@@ -154,7 +160,7 @@ on:
 permissions:
   contents: read
 
-# 单次编译最长 350 分钟，PR 连续 push 时必须取消旧 run，否则会长期占着自托管 runner 的并发名额
+# 单次编译最长 350 分钟，PR 连续 push 时必须取消旧 run，否则会持续占满并发配额
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name == 'workflow_dispatch' }}
   cancel-in-progress: true
@@ -167,7 +173,7 @@ jobs:
   build:
     # 这三处（job name / runs-on / job outputs）不能用 env 上下文，只能就地兜底
     name: build (${{ inputs.build-environment || 'ppu-linux-ubuntu24.04-py3.12' }})
-    runs-on: ${{ inputs.runner || 'k8s-runner-group-cpu-flytiger' }}
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: ${{ inputs.timeout-minutes || 350 }}
     outputs:
       docker-image: ${{ inputs.docker-image || 'pkg.flytiger-eco.com/docker_build/pytorch:ubuntu24.04-py312.06' }}
@@ -190,7 +196,7 @@ jobs:
       FORCE_REBUILD: ${{ inputs.force-rebuild && '1' || '0' }}
       # 布尔 input 缺省时为 null，而 GitHub 表达式里 null == false 成立，
       # 没法靠 inputs.free-disk-space != false 区分“未传”和“显式传 false”，
-      # 因此 PR 场景直接按开启处理（该 step 本身会在空间充足时自动跳过）
+      # 因此 PR 场景直接按开启处理（标准 runner 上必须清理）
       FREE_DISK_SPACE: ${{ (github.event_name == 'pull_request' || inputs.free-disk-space) && '1' || '0' }}
       # 容器内源码挂载点，同时作为 build_wheel.sh 的 REPO_DIR
       REPO_DIR_IN_CONTAINER: /pytorch
@@ -198,37 +204,11 @@ jobs:
     steps:
       - name: Show runner spec
         run: |
-          # 首次切到自托管 k8s runner，先把规格打出来：编译 PyTorch 峰值大致需要
-          # 60GB+ 可用磁盘，内存按每个并发编译进程 ~2GB 估。规格不足就要调 max-jobs 或换 runner。
-          # 注意 defaults.run.shell=bash 会带上 -e 与 pipefail，因此每条探测都要自带兜底，
-          # 否则容器镜像里缺 procps 之类的小工具就会让整个步骤直接失败
-          echo "[spec] runner-name=${RUNNER_NAME:-unknown} os=${RUNNER_OS} arch=${RUNNER_ARCH}"
-          echo "[spec] nproc=$(nproc 2>/dev/null || echo unknown)"
-          echo "[spec] mem=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}' || echo unknown)GB"
-          df -h / || true
-
-      - name: Check docker availability
-        run: |
-          # 本 workflow 后续全靠宿主机 docker run / docker exec 驱动编译容器。
-          # ARC runner 在 kubernetes 模式下 Pod 内没有 Docker daemon，必须在这里快速失败，
-          # 否则会在 docker pull 处报一个难以定位的错
-          if ! command -v docker >/dev/null 2>&1; then
-            echo "[docker] 失败: runner 上没有 docker 命令。" >&2
-            echo "[docker] 说明当前 runner 不是 dind 模式，本 workflow 的执行模型不适用。" >&2
-            echo "[docker] 解决方向二选一：" >&2
-            echo "[docker]   a) 让 runner 以 dind 模式运行（或挂载 docker socket）" >&2
-            echo "[docker]   b) 把本 workflow 改成 job 级 container: 写法，由 Actions 直接在容器内跑 step" >&2
-            exit 1
-          fi
-
-          if ! docker info >/dev/null 2>&1; then
-            echo "[docker] 失败: docker 命令存在，但连不上 daemon。" >&2
-            echo "[docker] 常见原因: dind sidecar 未就绪、DOCKER_HOST 未设置、socket 未挂载。" >&2
-            docker info 2>&1 | head -20 >&2 || true
-            exit 1
-          fi
-
-          echo "[docker] 可用: $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unknown)"
+          # 标准托管 runner 应看到 4 vCPU / 16GB RAM / 根分区可用 20~30GB；
+          # 若看到 16+ vCPU 与几百 GB 可用空间，说明 runner input 指到了 larger runner。
+          echo "[spec] runner-name=${RUNNER_NAME} os=${RUNNER_OS} arch=${RUNNER_ARCH}"
+          echo "[spec] nproc=$(nproc) mem=$(free -g | awk '/^Mem:/{print $2}')GB"
+          df -h / /mnt 2>/dev/null || df -h /
 
       - name: Checkout PyTorch
         uses: actions/checkout@v4
@@ -252,34 +232,95 @@ jobs:
       - name: Free disk space
         if: env.FREE_DISK_SPACE == '1'
         run: |
-          # 空间够用时没必要花一两分钟删预装包。
-          # 在自托管 k8s runner 上下面那批路径本来就不存在，清理基本是空转，
-          # 真正有用的是 docker image prune 和这两行磁盘日志
+          # 标准托管 runner 根分区初始只有 20~30GB 可用，必须清理；
+          # 仅当换到磁盘充裕的 runner（larger / 自托管）时才值得跳过。
           # 用 -P 保证单行输出，avail 单位是 1K 块
           avail_gb=$(df -Pk / | awk 'NR==2 {print int($4 / 1024 / 1024)}')
           echo "[disk] 根分区可用 ${avail_gb}GB"
-          if [[ "${avail_gb}" -ge 120 ]]; then
+          if [[ "${avail_gb}" -ge 150 ]]; then
             echo "[disk] 空间充足，跳过清理"
             exit 0
           fi
 
-          echo "[disk] 空间偏紧，开始清理预装包"
+          echo "[disk] 开始清理预装包"
           # 自托管 / 容器化 runner 上常常没有 sudo，缺失时退化为直接执行
           SUDO=""
           if command -v sudo >/dev/null 2>&1; then
             SUDO="sudo"
           fi
-          # 托管 runner 预装内容，PPU 编译一概不需要
+          # 托管 runner 预装内容，PPU 编译一概不需要（编译发生在容器内，
+          # 宿主机的 hostedtoolcache / JVM / 云 CLI 都用不上，标准 runner 上全删）
           $SUDO rm -rf /usr/local/lib/android \
                       /usr/share/dotnet \
                       /opt/ghc \
                       /usr/local/.ghcup \
                       /usr/local/share/powershell \
                       /usr/share/swift \
-                      /opt/hostedtoolcache/CodeQL || true
+                      /usr/share/miniconda \
+                      /usr/local/lib/node_modules \
+                      /usr/local/share/chromium \
+                      /usr/local/share/boost \
+                      /usr/lib/google-cloud-sdk \
+                      /usr/lib/jvm \
+                      /opt/hostedtoolcache || true
+          $SUDO apt-get clean || true
           $SUDO docker image prune --all --force >/dev/null 2>&1 || true
           echo "=== 清理后 ==="
           df -h /
+          avail_gb=$(df -Pk / | awk 'NR==2 {print int($4 / 1024 / 1024)}')
+          if [[ "${avail_gb}" -lt 40 ]]; then
+            echo "[disk] 警告: 清理后仍只有 ${avail_gb}GB，镜像 + 编译产物可能写满磁盘" >&2
+          fi
+
+      - name: Move docker storage to the ephemeral disk
+        continue-on-error: true
+        run: |
+          # 标准托管 runner 清理后根分区也只有 50GB 上下，而镜像层（/var/lib/docker）、
+          # 源码与编译中间产物（GITHUB_WORKSPACE）会同时占用它。/mnt 是 runner 的临时盘（另有
+          # 约 65GB），把 docker 存储迁过去可以把镜像开销从根分区挖掉。
+          # 属于优化项，任何一步失败都回退到原配置并继续跑。
+          if ! command -v sudo >/dev/null 2>&1 || [[ ! -d /mnt ]]; then
+            echo "[docker] 无 sudo 或无 /mnt，跳过迁移"
+            exit 0
+          fi
+
+          mnt_avail_gb=$(df -Pk /mnt | awk 'NR==2 {print int($4 / 1024 / 1024)}')
+          root_avail_gb=$(df -Pk / | awk 'NR==2 {print int($4 / 1024 / 1024)}')
+          echo "[docker] /mnt 可用 ${mnt_avail_gb}GB，根分区可用 ${root_avail_gb}GB"
+          # /mnt 不比根分区宽裕就没必要折腾
+          if [[ "${mnt_avail_gb}" -lt 40 || "${mnt_avail_gb}" -le "${root_avail_gb}" ]]; then
+            echo "[docker] /mnt 优势不明显，跳过迁移"
+            exit 0
+          fi
+
+          # 失败时恢复 daemon.json 并重新拉起 docker，不能把后续 step 卡在无 docker 状态
+          rollback() {
+            echo "[docker] 迁移失败，回退原配置" >&2
+            if [[ -f /etc/docker/daemon.json.ppu-bak ]]; then
+              sudo mv /etc/docker/daemon.json.ppu-bak /etc/docker/daemon.json
+            else
+              sudo rm -f /etc/docker/daemon.json
+            fi
+            sudo systemctl start docker.socket docker || true
+            docker info >/dev/null 2>&1 || echo "[docker] 警告: docker 未能恢复" >&2
+            exit 1
+          }
+
+          sudo systemctl stop docker.service docker.socket || rollback
+          sudo mkdir -p /mnt/docker
+
+          if [[ -f /etc/docker/daemon.json ]]; then
+            sudo cp /etc/docker/daemon.json /etc/docker/daemon.json.ppu-bak
+            # 镜像仓预装的 daemon.json 里可能已有 log / registry 配置，只能合并不能整体覆盖
+            jq '. + {"data-root": "/mnt/docker"}' /etc/docker/daemon.json > /tmp/daemon.json || rollback
+          else
+            echo '{"data-root": "/mnt/docker"}' > /tmp/daemon.json
+          fi
+          sudo cp /tmp/daemon.json /etc/docker/daemon.json || rollback
+
+          sudo systemctl start docker.socket docker || rollback
+          docker info --format '{{.DockerRootDir}}' || rollback
+          df -h / /mnt
 
       - name: Login to PPU registry
         if: env.REGISTRY_USERNAME != ''
