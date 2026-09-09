@@ -1,18 +1,18 @@
 name: ppu-linux-build
 
-# PPU torch whl 源码编译（GitHub 标准托管 runner 上执行，不在自托管 server 上跑）。
+# PPU torch whl 源码编译（GitHub 托管 larger runner 上执行，不在自托管 server 上跑）。
 #   - 产物走 GitHub artifact，不依赖自托管 runner / S3 / sccache
 #   - 直接调用 .ci/ppu/build_wheel.sh（README 直编方式），依赖 sdk_env.sh + install_sdk.sh
 #   - 镜像来自 PPU 私有 registry（公网可达），通过宿主机 docker run + docker exec 驱动，
 #     以便在拉镜像之前先做磁盘检查
 #
-# 标准托管 runner（ubuntu-24.04）：4 vCPU / 16GB RAM，根分区初始可用仅 20~30GB，
-# 需先清理预装软件腾出空间；单 job 硬上限 6 小时，故 timeout-minutes 取 350。
+# 托管 larger runner（x86-ubuntu2404-8-32）：8 vCPU / 32GB RAM，自带 300GB+ SSD，
+# 磁盘充裕，无需再清理预装软件；单 job 硬上限 6 小时，故 timeout-minutes 取 350。
 #
 # 为把全量编译压进 350 分钟：
 #   - build_wheel.sh 固定 BUILD_TEST=False，wheel 不含 C++ 测试二进制，
 #     这批目标排在 ninja 末尾且链接最吃内存，是上一次 92% 处被超时掐断的直接原因
-#   - MAX_JOBS 拉到 8，用满 4 vCPU（代价是 nvcc/ld 的内存峰值风险）
+#   - MAX_JOBS 拉到 16，用满 8 vCPU（2×核数，代价是 nvcc/ld 的内存峰值风险）
 
 on:
   # 提交 / 更新 PR 时自动触发（仅 PR 级触发）
@@ -33,7 +33,7 @@ defaults:
 jobs:
   build:
     name: build (ppu-linux-ubuntu24.04-py3.12)
-    runs-on: ubuntu-24.04
+    runs-on: x86-ubuntu2404-8-32
     timeout-minutes: 350
     env:
       # 编译参数常量：仅 PR 级触发，无 inputs，直接写死
@@ -41,9 +41,9 @@ jobs:
       DOCKER_IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
       # PPU 语义下 8.0 = SM80+SM89 混合编译
       TORCH_CUDA_ARCH_LIST: "8.0"
-      # 拉满并行度抢在 350 分钟超时前收尾；4vCPU/16GB 上 nvcc+ld 可能触发 OOM，
-      # 若日志出现 Killed / exit code 137，回退到 0（脚本取 nproc-2）
-      MAX_JOBS: "8"
+      # 拉满并行度抢在 350 分钟超时前收尾；8vCPU/32GB 上 nvcc+ld 仍可能触发 OOM，
+      # 若日志出现 Killed / exit code 137，回退到 8 或 0（脚本取 nproc-2）
+      MAX_JOBS: "16"
       # 容器内 PPU SDK 解压目录，供 sdk_env.sh / install_sdk.sh 使用
       SDK_INSTALL_DIR: /usr/local
       # 容器内 pip index-url，留空则用镜像自带配置
@@ -56,7 +56,7 @@ jobs:
     steps:
       - name: Show runner spec
         run: |
-          # 标准托管 runner 应看到 4 vCPU / 16GB RAM / 根分区可用 20~30GB
+          # larger runner 应看到 8 vCPU / 32GB RAM / 根分区可用 300GB+
           echo "[spec] runner-name=${RUNNER_NAME} os=${RUNNER_OS} arch=${RUNNER_ARCH}"
           echo "[spec] nproc=$(nproc) mem=$(free -g | awk '/^Mem:/{print $2}')GB"
           df -h / /mnt 2>/dev/null || df -h /
@@ -81,8 +81,8 @@ jobs:
 
       - name: Free disk space
         run: |
-          # 标准托管 runner 根分区初始只有 20~30GB 可用，装不下镜像 + 编译产物，必须清理；
-          # 仅当换到磁盘充裕的 runner（可用 ≥150GB）时才跳过。
+          # larger runner 自带 300GB+ SSD，通常直接命中下方 ≥150GB 分支跳过清理；
+          # 保留清理逻辑仅作为磁盘异常缩水时的兜底。
           avail_gb=$(df -Pk / | awk 'NR==2 {print int($4 / 1024 / 1024)}')
           echo "[disk] 根分区可用 ${avail_gb}GB"
           if [[ "${avail_gb}" -ge 150 ]]; then
