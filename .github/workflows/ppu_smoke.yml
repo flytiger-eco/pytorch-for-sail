@@ -9,8 +9,8 @@
 #   - 冒烟用例只需单卡：nnodes: 0 + nproc_per_node: 1。
 #
 # 与 test-h100.yml 的差异：
-#   - 不编译 whl：test-h100 走 _linux-build.yml 先编 wheel 再测；这里跳过 build，
-#     直接通过内部 pip 源预装 torch（镜像里已是 PPU 运行环境）。
+#   - 不编译 whl，也不 pip install torch：test-h100 走 _linux-build.yml 先编 wheel 再测；
+#     这里跳过 build，直接用 PPU pytorch 发布镜像里预装的 torch。
 #   - 只跑 CUDA 相关用例，且裁掉 H100/B200 专属用例。用例清单见
 #     .ci/ppu/smoke_test.sh。
 name: ppu-smoke
@@ -26,12 +26,12 @@ permissions:
   contents: read
 
 env:
-  # PPU 发布镜像：自带 python3.12 + CUDA13 + PPU SDK，在 PPU pod 内使用。
+  # PPU pytorch 发布镜像：自带 torch 2.10.0 + python3.12 + CUDA13 + PPU SDK，在 PPU pod 内使用。
   # 注意：这里必须是 PPU 镜像，不能填 actions-runner 镜像——后者以非 root 用户 runner
   # (uid 1001) 启动，action 在 pod 内创建 source_dir 时会 mkdir /workspace 失败（Permission denied）。
   # 前置要求：该镜像须已预拉到 NODE_SELECTOR 指定板型的节点上（action 文档「前置要求」第 3 条）。
   # 换镜像 tag 或换板型时都要重新确认预拉，否则 pod 会卡在拉取阶段直至超时。
-  IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
+  IMAGE: pkg.flytiger-eco.com/docker_release/pytorch:v2.1.1-2.10.0-ubuntu24.04-cuda13.0-py312
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   # action 在 pod 内解压源码的路径（也是 action 的默认值，这里显式写出便于 command 引用）
@@ -39,8 +39,6 @@ env:
   # 板型选 890P：集群里 890P 有 16 台（每台 8 PPU），810E 只有 1 台（16 PPU）。
   # 本 workflow 是每个 PR 都触发的高频门禁，钉在 810E 会把所有 PR 排队到同一台机器上。
   NODE_SELECTOR: "board-type=ZW-M890P"
-  PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypiindex/simple
-  TORCH_VERSION: "2.11.0"
 
 jobs:
   ppu-smoke-890p-single:
@@ -74,7 +72,5 @@ jobs:
           # 脚本自身会 cd 到源码根目录，所以这里只给绝对路径即可。
           command: |
             PR_NUMBER="${{ github.event.pull_request.number }}" \
-            PIP_INDEX="${{ env.PIP_INDEX }}" \
-            TORCH_VERSION="${{ env.TORCH_VERSION }}" \
             SDK_INSTALL_DIR="/usr/local" \
             bash ${{ env.SOURCE_DIR }}/.ci/ppu/smoke_test.sh

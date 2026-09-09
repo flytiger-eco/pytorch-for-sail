@@ -13,7 +13,7 @@
 #   - inductor.yml 本身只是一个"薄编排层"：它调用 _linux-build.yml（先编 wheel）+ _linux-test.yml，
 #     跑在 pytorch 官方云 GPU runner（linux.g5.4xlarge.nvidia.gpu 等）上，并且带
 #     `if: github.repository_owner == 'pytorch'` 守卫。这套结构（先 build 再 test、云端 runner、
-#     pytorch-only）与本仓库"跳过 build whl + 自建 PPU 集群 + 内部源 pip 预装 torch"的诉求
+#     pytorch-only）与本仓库"跳过 build whl + 自建 PPU 集群 + 直接用镜像预装 torch"的诉求
 #     本质互斥，无法照搬其 job/runner 定义。
 #   - 因此这里只保留 inductor.yml 的**测试语义**：对齐其 inductor-test job 跑 CUDA inductor
 #     精度单测（不做 inductor-cpu-test 对应的纯 CPU 一条线），执行机制完全沿用 ppu_smoke.yml。
@@ -42,10 +42,10 @@ permissions:
   contents: read
 
 env:
-  # PPU 发布镜像：自带 python3.12 + CUDA13 + PPU SDK，在 PPU pod 内使用
+  # PPU pytorch 发布镜像：自带 torch 2.10.0 + python3.12 + CUDA13 + PPU SDK，在 PPU pod 内使用
   # 前置要求：该镜像须已预拉到 NODE_SELECTOR 指定板型的节点上（action 文档「前置要求」第 3 条）。
   # 换镜像 tag 或换板型时都要重新确认预拉，否则 pod 会卡在拉取阶段直至超时。
-  IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
+  IMAGE: pkg.flytiger-eco.com/docker_release/pytorch:v2.1.1-2.10.0-ubuntu24.04-cuda13.0-py312
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   # action 在 pod 内解压源码的路径（也是 action 的默认值，这里显式写出便于 command 引用）
@@ -53,8 +53,6 @@ env:
   # 板型选 890P：集群里 890P 有 16 台（每台 8 PPU），810E 只有 1 台（16 PPU）。
   # 本 workflow 是每个 PR 都触发的长耗时门禁，钉在 810E 会与 ppu-smoke 互相排队在同一台机器上。
   NODE_SELECTOR: "board-type=ZW-M890P"
-  PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypiindex/simple
-  TORCH_VERSION: "2.11.0"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -91,7 +89,5 @@ jobs:
           # 脚本自身会 cd 到源码根目录，所以这里只给绝对路径即可。
           command: |
             PR_NUMBER="${{ github.event.pull_request.number }}" \
-            PIP_INDEX="${{ env.PIP_INDEX }}" \
-            TORCH_VERSION="${{ env.TORCH_VERSION }}" \
             SDK_INSTALL_DIR="/usr/local" \
             bash ${{ env.SOURCE_DIR }}/.ci/ppu/accuracy_test.sh
