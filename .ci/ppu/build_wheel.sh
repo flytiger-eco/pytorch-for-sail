@@ -92,7 +92,7 @@ env \
     USE_DISTRIBUTED=True \
     USE_SYSTEM_NCCL=1 \
     BUILD_CAFFE2=False \
-    BUILD_TEST=True \
+    BUILD_TEST=False \
     TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
     python3 setup.py bdist_wheel
 
