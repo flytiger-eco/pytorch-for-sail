@@ -37,7 +37,7 @@ jobs:
       # PPU 语义下 8.0 = SM80+SM89 混合编译
       TORCH_CUDA_ARCH_LIST: "8.0"
       # 0 表示由脚本取 nproc-2，标准 runner 上即为 2
-      MAX_JOBS: "0"
+      MAX_JOBS: "8"
       # 容器内 PPU SDK 解压目录，供 sdk_env.sh / install_sdk.sh 使用
       SDK_INSTALL_DIR: /usr/local
       # 容器内 pip index-url，留空则用镜像自带配置
@@ -120,7 +120,7 @@ jobs:
               exit 0
             fi
             echo "[pull] 第 ${attempt} 次失败，10s 后重试" >&2
-            sleep 10
+            sleep 60
           done
           echo "[pull] 无法拉取 ${DOCKER_IMAGE}。常见原因：" >&2
           echo "[pull]   1) 镜像 tag 不存在或已被清理" >&2
