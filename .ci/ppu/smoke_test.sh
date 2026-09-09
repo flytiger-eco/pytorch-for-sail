@@ -29,7 +29,11 @@ echo "=== 环境自检 ==="
 echo "pr=${PR_NUMBER:-none} hostname=$(hostname) node=${NODE_NAME:-unknown}"
 echo "rank=${RANK:-0} nproc_per_node=${NPROC_PER_NODE:-1}"
 python --version
-python -c "import torch; print('torch', torch.__version__); print('cuda_available', torch.cuda.is_available()); print('device_count', torch.cuda.device_count())"
+# 自检必须在源码树外执行：`python -c` 会把 cwd（此时是源码根）放进 sys.path[0]，
+# 未编译的源码目录 torch/ 会遮蔽镜像预装的 torch，而 torch/version.py 是构建产物、
+# 源码树里不存在，于是报 ModuleNotFoundError: No module named 'torch.version'。
+# 打印 torch.__file__ 以便一眼确认导入的是 site-packages 里的那份。
+(cd /tmp && python -c "import torch; print('torch', torch.__version__, torch.__file__); print('cuda_available', torch.cuda.is_available()); print('device_count', torch.cuda.device_count())")
 ppu-smi || echo "[warn] ppu-smi 不可用，请确认 pod 已分配 PPU 设备"
 
 echo "=== CUDA 冒烟用例（run_test.py --include 精确过滤，仅 CUDA 相关） ==="
