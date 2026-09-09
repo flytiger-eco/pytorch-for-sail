@@ -1,95 +1,74 @@
-# P0 smoke gate: PPU CUDA 冒烟测试（参考 test-h100.yml 的 smoke config 改造）。
+# P0 smoke gate: PPU CUDA 冒烟测试，跑在自建 PPU 集群的单卡 pod 上。
+#
+# 执行模型（与"直接在 runner 容器里跑测试"的早期版本不同）：
+#   - 本 job 只在 CPU runner 上做编排：checkout 源码后，由
+#     flytiger-eco/ppu-distributed-action 把源码打包暂存到 NAS，在带 PPU 卡的节点上
+#     拉起 pod，解压到 source_dir，再执行 command。
+#   - 所以 runner 容器只需小体积的 actions-runner 镜像；PPU 发布镜像只在 PPU pod 内
+#     使用，避免 CPU 节点拉大镜像超时（此前 "initialize container" 失败的原因）。
+#   - 冒烟用例只需单卡：nnodes: 0 + nproc_per_node: 1。
 #
 # 与 test-h100.yml 的差异：
-#   - 不再编译 whl：test-h100 走 _linux-build.yml 先编 wheel 再测；这里跳过 build，
-#     直接通过内部 pip 源预装 torch==2.11.0（镜像里已是 PPU 运行环境）。
-#   - 只跑 CUDA 相关用例：用 run_test.py --include 精确过滤，对齐 .ci/pytorch/test.sh 的
-#     test_python_smoke，但裁剪掉 H100/B200 专属用例（inductor/test_max_autotune、
-#     inductor/test_cutedsl_grouped_mm、inductor/test_flex_attention 的 TMA 用例），
-#     只保留与 PPU 更相关的核心 CUDA 用例。
-#   - runner 保持不变：仍跑在自托管 k8s-runner-group-cpu-flytiger；仅把容器镜像从
-#     ghcr.io/actions/actions-runner:latest（无 python/CUDA，跑不了测试）换成 PPU 发布镜像。
+#   - 不编译 whl：test-h100 走 _linux-build.yml 先编 wheel 再测；这里跳过 build，
+#     直接通过内部 pip 源预装 torch（镜像里已是 PPU 运行环境）。
+#   - 只跑 CUDA 相关用例，且裁掉 H100/B200 专属用例。用例清单见
+#     .ci/ppu/smoke_test.sh。
 name: ppu-smoke
 
 on:
   pull_request:
-  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name == 'workflow_dispatch' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
-# 容器内 sh 未必等价 bash，显式指定，避免 run 步骤被 sh -e 执行导致 bash 语法失败
-defaults:
-  run:
-    shell: bash
+env:
+  # PPU 发布镜像：自带 python3.12 + CUDA13 + PPU SDK，在 PPU pod 内使用
+  IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
+  NAMESPACE: ppu-sched
+  HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
+  # action 在 pod 内解压源码的路径（也是 action 的默认值，这里显式写出便于 command 引用）
+  SOURCE_DIR: /workspace/source
+  NODE_SELECTOR: "board-type=OAM-810E"
+  PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypiindex/simple
+  TORCH_VERSION: "2.11.0"
 
 jobs:
-  ppu-smoke:
-    name: ppu-smoke
+  ppu-smoke-810e-single:
+    name: ppu-smoke (810E 单卡)
     runs-on: k8s-runner-group-cpu-flytiger
-    # PPU 发布镜像：自带 python3.12 + CUDA13 + PPU SDK，才能执行 pip install 与 CUDA 用例。
-    # 注意：容器需能访问 PPU 设备，若默认拿不到设备，请在此追加 options（如 --device /dev/xxx
-    # 或 --gpus all），或由 k8s runner 的 pod 模板挂载对应 device plugin 资源。
     container:
-      image: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
-    timeout-minutes: 60
-    env:
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      # 内部 pip 源（安装 torch 用）
-      PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypiindex/simple
-      # PPU SDK 安装目录，供 .ci/ppu/sdk_env.sh 使用
-      SDK_INSTALL_DIR: /usr/local
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 90
 
     steps:
       - name: Checkout PyTorch
         uses: actions/checkout@v4
         with:
           # 签出 PR head commit（github.sha 在 PR 场景是 merge commit），保证测试代码与 PR 一致
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          # 只跑 python 测试，不需要 third_party 子模块；浅克隆加速
+          ref: ${{ github.event.pull_request.head.sha }}
+          # 只跑 python 测试，不需要 third_party 子模块；浅克隆加速，也减小传到 NAS 的包体积
           fetch-depth: 1
 
-      - name: Install torch from internal index
-        run: |
-          # 跳过 build whl：直接装内部源预编译好的 torch
-          # 等价于：pip install torch==2.11.0 -i https://pkg.flytiger-eco.com/artifactory/api/pypi/pypiindex/simple
-          python -m pip install torch==2.11.0 -i "${PIP_INDEX}"
-
-      - name: Run CUDA smoke tests
-        run: |
-          # sdk_env.sh 会 source PPU SDK 的 envsetup.sh（设置 LD_LIBRARY_PATH / PATH）并校验 nvcc。
-          # 这些环境变量只在当前 shell 生效，所以必须与测试放在同一个 run 步骤里 source。
-          source .ci/ppu/sdk_env.sh
-
-          echo "=== 环境自检 ==="
-          echo "event=${GITHUB_EVENT_NAME} pr=${PR_NUMBER:-none} sha=${GITHUB_SHA} runner=${RUNNER_NAME}"
-          python --version
-          python -c "import torch; print('torch', torch.__version__); print('cuda_available', torch.cuda.is_available()); print('device_count', torch.cuda.device_count())"
-          ppu-smi || echo "[warn] ppu-smi 不可用，请确认容器已挂载 PPU 设备"
-
-          echo "=== CUDA 冒烟用例（run_test.py --include 精确过滤，仅 CUDA 相关） ==="
-          # 对齐 .ci/pytorch/test.sh 的 test_python_smoke，裁剪为 PPU 相关子集：
-          #   去掉 inductor/test_max_autotune、inductor/test_cutedsl_grouped_mm、
-          #   inductor/test_flex_attention(-k test_tma_with_customer_kernel_options) 等
-          #   H100/B200(SM90/TMA/CUTLASS) 专属用例，它们在真武 PPU 上不适用。
-          # 不使用 --upload-artifacts-while-running：那是官方 S3 上传路径，自托管 runner 上没有。
-          python test/run_test.py \
-            --include \
-              test_matmul_cuda \
-              test_scaled_matmul_cuda \
-              inductor/test_fp8 \
-            --verbose
-
-      - name: Upload test reports
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: "810E 单卡 (1 PPU) CUDA 冒烟测试"
+        uses: flytiger-eco/ppu-distributed-action@main
         with:
-          name: ppu-smoke-test-reports-${{ github.event.pull_request.number || github.sha }}
-          path: test/test-reports/
-          if-no-files-found: ignore
-          retention-days: 7
-          overwrite: true
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: ${{ env.NODE_SELECTOR }}
+          host_volumes: ${{ env.HOST_VOLUMES }}
+          image: ${{ env.IMAGE }}
+          namespace: ${{ env.NAMESPACE }}
+          source_dir: ${{ env.SOURCE_DIR }}
+          timeout_minutes: 60
+          # 环境变量必须在 command 里注入：job 级 env 不会传进 PPU pod。
+          # 脚本自身会 cd 到源码根目录，所以这里只给绝对路径即可。
+          command: |
+            PR_NUMBER="${{ github.event.pull_request.number }}" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
+            TORCH_VERSION="${{ env.TORCH_VERSION }}" \
+            SDK_INSTALL_DIR="/usr/local" \
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/smoke_test.sh
