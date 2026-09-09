@@ -53,6 +53,8 @@ env:
   # 板型选 890P：集群里 890P 有 16 台（每台 8 PPU），810E 只有 1 台（16 PPU）。
   # 本 workflow 是每个 PR 都触发的长耗时门禁，钉在 810E 会与 ppu-smoke 互相排队在同一台机器上。
   NODE_SELECTOR: "board-type=ZW-M890P"
+  # 内部 pip 源：pod 内只能访问内网，补装 run_test.py 必需的 pytest 插件要走这个源。
+  PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypiindex/simple
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -90,4 +92,5 @@ jobs:
           command: |
             PR_NUMBER="${{ github.event.pull_request.number }}" \
             SDK_INSTALL_DIR="/usr/local" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
             bash ${{ env.SOURCE_DIR }}/.ci/ppu/accuracy_test.sh

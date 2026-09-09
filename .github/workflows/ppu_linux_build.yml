@@ -179,7 +179,7 @@ jobs:
           CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
         run: |
           # sdk_env.sh（源码已挂载进容器，可直接执行）：
-          #   - 检查 $SDK_INSTALL_DIR/PPU_SDK/.ci_installed 标记，缺失则调用 install_sdk.sh 下载安装
+          #   - 检查 $SDK_INSTALL_DIR/PPU_SDK/envsetup.sh，缺失则调用 install_sdk.sh 下载安装
           #   - source envsetup.sh 并校验 nvcc 可用
           # 把 SDK 环境问题卡在这一步，而不是几十分钟后的编译步骤
           docker exec -t "${CONTAINER_NAME}" bash .ci/ppu/sdk_env.sh
