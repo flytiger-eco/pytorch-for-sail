@@ -27,7 +27,7 @@ permissions:
 
 env:
   # PPU 发布镜像：自带 python3.12 + CUDA13 + PPU SDK，在 PPU pod 内使用
-  IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
+  IMAGE: ghcr.io/actions/actions-runner:latest
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   # action 在 pod 内解压源码的路径（也是 action 的默认值，这里显式写出便于 command 引用）

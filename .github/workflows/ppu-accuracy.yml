@@ -7,7 +7,7 @@
 #   - 所以 runner 容器只需小体积的 actions-runner 镜像；PPU 发布镜像只在 PPU pod 内
 #     使用，避免 CPU 节点拉大镜像超时。
 #   - 精度用例只需单卡：nnodes: 0 + nproc_per_node: 1。
-#   - pod 内实际逻辑见 .ci/ppu/accuracy_test.sh（cuda / cpu 两种模式，含 include 白名单）。
+#   - pod 内实际逻辑见 .ci/ppu/accuracy_test.sh（含 include 白名单）。
 #
 # 设计取舍（重要）：
 #   - inductor.yml 本身只是一个"薄编排层"：它调用 _linux-build.yml（先编 wheel）+ _linux-test.yml，
@@ -15,8 +15,8 @@
 #     `if: github.repository_owner == 'pytorch'` 守卫。这套结构（先 build 再 test、云端 runner、
 #     pytorch-only）与本仓库"跳过 build whl + 自建 PPU 集群 + 内部源 pip 预装 torch"的诉求
 #     本质互斥，无法照搬其 job/runner 定义。
-#   - 因此这里只保留 inductor.yml 的**测试语义与 job 划分**：CUDA inductor + 纯 CPU inductor 两条线
-#     （对齐其 inductor-test / inductor-cpu-test 两个 job），执行机制完全沿用 ppu_smoke.yml。
+#   - 因此这里只保留 inductor.yml 的**测试语义**：对齐其 inductor-test job 跑 CUDA inductor
+#     精度单测（不做 inductor-cpu-test 对应的纯 CPU 一条线），执行机制完全沿用 ppu_smoke.yml。
 #   - 测试范围：仅跑 inductor **正确性/精度单测**（python test/run_test.py --include inductor/...），
 #     用 include 白名单精确过滤，天然排除掉非目标用例：
 #       * 分布式/多卡：inductor/test_distributed_patterns、inductor/test_collective_autotuning
@@ -25,10 +25,7 @@
 #       * H100/B200(SM90/TMA/CUTLASS) 专属：inductor/test_max_autotune、inductor/test_cutedsl_grouped_mm、
 #         inductor/test_cutlass_backend、inductor/test_flex_attention 的 TMA 用例
 #         （真武 PPU 不适用，与 ppu_smoke.yml 的裁剪保持一致）
-#   - 设备覆盖：CUDA job 让 PPU 设备可见，跑 CUDA 相关 inductor 用例；
-#     CPU job 用 CUDA_VISIBLE_DEVICES="" 屏蔽设备，强制 inductor 走纯 CPU 代码路径。
-#     注意：CPU job 同样要在 PPU pod 内跑（会占用 1 张卡），因为 PPU 版 torch 需要
-#     镜像内的 PPU SDK 才能 import 成功。
+#   - 设备覆盖：只跑 CUDA 一条线（PPU 设备可见）。
 #   - 触发方式：与 ppu_smoke.yml 一致，仅 pull_request（作为 PR 门禁）。不沿用 inductor.yml 的
 #     push-to-main + repository_owner=='pytorch' 守卫（那是官方仓库专用）。
 #     注意：pull_request 事件读取的是**默认分支**上的 workflow 文件，本文件需先合入默认分支才会对新 PR 生效。
@@ -93,39 +90,4 @@ jobs:
             PIP_INDEX="${{ env.PIP_INDEX }}" \
             TORCH_VERSION="${{ env.TORCH_VERSION }}" \
             SDK_INSTALL_DIR="/usr/local" \
-            bash ${{ env.SOURCE_DIR }}/.ci/ppu/accuracy_test.sh cuda
-
-  # ---------------------------------------------------------------------------
-  # 纯 CPU 侧 inductor 精度单测（对齐 inductor.yml 的 inductor-cpu-test job）
-  # ---------------------------------------------------------------------------
-  ppu-accuracy-cpu:
-    name: ppu-accuracy-cpu (810E 单卡)
-    runs-on: k8s-runner-group-cpu-flytiger
-    container:
-      image: ghcr.io/actions/actions-runner:latest
-    timeout-minutes: 120
-
-    steps:
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-
-      - name: "810E 单卡 (1 PPU) 纯 CPU inductor 精度单测"
-        uses: flytiger-eco/ppu-distributed-action@main
-        with:
-          nnodes: 0
-          nproc_per_node: 1
-          node_selector: ${{ env.NODE_SELECTOR }}
-          host_volumes: ${{ env.HOST_VOLUMES }}
-          image: ${{ env.IMAGE }}
-          namespace: ${{ env.NAMESPACE }}
-          source_dir: ${{ env.SOURCE_DIR }}
-          timeout_minutes: 90
-          command: |
-            PR_NUMBER="${{ github.event.pull_request.number }}" \
-            PIP_INDEX="${{ env.PIP_INDEX }}" \
-            TORCH_VERSION="${{ env.TORCH_VERSION }}" \
-            SDK_INSTALL_DIR="/usr/local" \
-            bash ${{ env.SOURCE_DIR }}/.ci/ppu/accuracy_test.sh cpu
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/accuracy_test.sh
