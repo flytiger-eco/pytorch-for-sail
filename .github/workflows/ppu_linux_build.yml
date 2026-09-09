@@ -33,7 +33,7 @@ jobs:
     env:
       # 编译参数常量：仅 PR 级触发，无 inputs，直接写死
       BUILD_ENVIRONMENT: ppu-linux-ubuntu24.04-py3.12
-      DOCKER_IMAGE: pkg.flytiger-eco.com/docker_build/pytorch:ubuntu24.04-py312.06
+      DOCKER_IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
       # PPU 语义下 8.0 = SM80+SM89 混合编译
       TORCH_CUDA_ARCH_LIST: "8.0"
       # 0 表示由脚本取 nproc-2，标准 runner 上即为 2
