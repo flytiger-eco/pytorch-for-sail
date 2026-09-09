@@ -5,20 +5,24 @@
 #   SDK_INSTALL_DIR - SDK 解压目录（默认 /usr/local）
 #   SDK_URL          - SDK 包地址（可选，缺省用 install_sdk.sh 内的兜底默认地址）
 # 行为：
-#   1. 检查 $SDK_INSTALL_DIR/PPU_SDK/.ci_installed 标记，未安装则调用 install_sdk.sh
+#   1. 检查 $SDK_INSTALL_DIR/PPU_SDK/envsetup.sh，不存在则调用 install_sdk.sh 安装
 #   2. source envsetup.sh
 #   3. 校验 nvcc 可用
 # =============================================================================
 set -euo pipefail
 
 SDK_INSTALL_DIR="${SDK_INSTALL_DIR:-/usr/local}"
-INSTALLED_MARKER="$SDK_INSTALL_DIR/PPU_SDK/.ci_installed"
 ENVSETUP="$SDK_INSTALL_DIR/PPU_SDK/envsetup.sh"
 SDK_ENV_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_SDK="$SDK_ENV_SCRIPT_DIR/install_sdk.sh"
 
-if [[ ! -f "$INSTALLED_MARKER" ]]; then
-    echo "[sdk_env] SDK 未安装或未落标记: $INSTALLED_MARKER"
+# 判据直接用 envsetup.sh 是否存在，而不是 install_sdk.sh 落的 .ci_installed 标记：
+# 后者只有本仓库脚本会写，在任何全新镜像上必然不存在，会让自带 SDK 的 PPU
+# 发布镜像每次都白跑一次 GB 级下载（也是之前 install_sdk 下载失败的起因）。
+if [[ -f "$ENVSETUP" ]]; then
+    echo "[sdk_env] 镜像已自带 SDK，跳过安装: $SDK_INSTALL_DIR/PPU_SDK"
+else
+    echo "[sdk_env] 未找到 SDK: $ENVSETUP"
     if [[ ! -f "$INSTALL_SDK" ]]; then
         echo "[sdk_env] 未找到安装脚本: $INSTALL_SDK" >&2
         exit 1
@@ -28,15 +32,10 @@ if [[ ! -f "$INSTALLED_MARKER" ]]; then
     fi
     echo "[sdk_env] 自动执行安装: $INSTALL_SDK"
     SDK_INSTALL_DIR="$SDK_INSTALL_DIR" SDK_URL="${SDK_URL:-}" bash "$INSTALL_SDK"
-    if [[ ! -f "$INSTALLED_MARKER" ]]; then
-        echo "[sdk_env] 安装后仍未找到标记: $INSTALLED_MARKER" >&2
+    if [[ ! -f "$ENVSETUP" ]]; then
+        echo "[sdk_env] 安装后仍未找到: $ENVSETUP" >&2
         exit 1
     fi
-fi
-
-if [[ ! -f "$ENVSETUP" ]]; then
-    echo "[sdk_env] SDK envsetup.sh 不存在: $ENVSETUP" >&2
-    exit 1
 fi
 
 set +u
