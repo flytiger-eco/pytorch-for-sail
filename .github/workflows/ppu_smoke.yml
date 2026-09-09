@@ -26,19 +26,25 @@ permissions:
   contents: read
 
 env:
-  # PPU 发布镜像：自带 python3.12 + CUDA13 + PPU SDK，在 PPU pod 内使用
-  IMAGE: ghcr.io/actions/actions-runner:latest
+  # PPU 发布镜像：自带 python3.12 + CUDA13 + PPU SDK，在 PPU pod 内使用。
+  # 注意：这里必须是 PPU 镜像，不能填 actions-runner 镜像——后者以非 root 用户 runner
+  # (uid 1001) 启动，action 在 pod 内创建 source_dir 时会 mkdir /workspace 失败（Permission denied）。
+  # 前置要求：该镜像须已预拉到 NODE_SELECTOR 指定板型的节点上（action 文档「前置要求」第 3 条）。
+  # 换镜像 tag 或换板型时都要重新确认预拉，否则 pod 会卡在拉取阶段直至超时。
+  IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   # action 在 pod 内解压源码的路径（也是 action 的默认值，这里显式写出便于 command 引用）
   SOURCE_DIR: /workspace/source
-  NODE_SELECTOR: "board-type=OAM-810E"
+  # 板型选 890P：集群里 890P 有 16 台（每台 8 PPU），810E 只有 1 台（16 PPU）。
+  # 本 workflow 是每个 PR 都触发的高频门禁，钉在 810E 会把所有 PR 排队到同一台机器上。
+  NODE_SELECTOR: "board-type=ZW-M890P"
   PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypiindex/simple
   TORCH_VERSION: "2.11.0"
 
 jobs:
-  ppu-smoke-810e-single:
-    name: ppu-smoke (810E 单卡)
+  ppu-smoke-890p-single:
+    name: ppu-smoke (890P 单卡)
     runs-on: k8s-runner-group-cpu-flytiger
     container:
       image: ghcr.io/actions/actions-runner:latest
@@ -53,7 +59,7 @@ jobs:
           # 只跑 python 测试，不需要 third_party 子模块；浅克隆加速，也减小传到 NAS 的包体积
           fetch-depth: 1
 
-      - name: "810E 单卡 (1 PPU) CUDA 冒烟测试"
+      - name: "890P 单卡 (1 PPU) CUDA 冒烟测试"
         uses: flytiger-eco/ppu-distributed-action@main
         with:
           nnodes: 0
