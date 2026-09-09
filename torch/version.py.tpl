@@ -5,6 +5,8 @@ cuda = '{{CUDA_VERSION}}'
 git_version = ""
 hip = None
 rocm = None
+# CUDA-compatible PPU CMake builds populate the PPU SDK release version.
+ppu = None
 
 # This is a gross monkey-patch hack that depends on the order of imports
 # in torch/__init__.py
