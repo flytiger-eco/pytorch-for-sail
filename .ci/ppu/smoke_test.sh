@@ -37,18 +37,10 @@ python --version
 (cd /tmp && python -c "import torch; print('torch', torch.__version__, torch.__file__); print('cuda_available', torch.cuda.is_available()); print('device_count', torch.cuda.device_count())")
 ppu-smi || echo "[warn] ppu-smi 不可用，请确认 pod 已分配 PPU 设备"
 
-echo "=== 安装测试框架依赖 ==="
-# run_test.py 的 check_pip_packages() 硬校验这三个 pytest 插件，缺任意一个直接 exit 1，
-# 镜像里没预装，所以必须在这里补。
-# 注意：不照 run_test.py 报错提示执行 `pip install -r .ci/docker/requirements-ci.txt`。
-# 那个文件钉了 numpy/sympy/onnx 等几十个版本，会重装、降级镜像里预装 torch 所依赖的包，
-# 有把 PPU torch 环境搞坏的风险。这里只装 run_test.py 真正要求的测试框架。
-# 版本与 .ci/docker/requirements-ci.txt 保持一致；不钉 pytest 自身版本，避免降级镜像自带的 pytest。
-PIP_INSTALL=(python -m pip install --disable-pip-version-check)
-if [[ -n "${PIP_INDEX:-}" ]]; then
-    PIP_INSTALL+=(-i "${PIP_INDEX}")
-fi
-"${PIP_INSTALL[@]}" "pytest-rerunfailures>=10.3" "pytest-flakefinder==1.1.0" "pytest-xdist==3.3.1"
+# run_test.py 的 check_pip_packages() 硬校验 pytest-rerunfailures / pytest-flakefinder /
+# pytest-xdist，缺任意一个直接 exit 1，镜像里没预装，所以必须在这里补。
+# 安装逻辑（含 pip 源诊断与多源回退）抽到共享脚本，accuracy_test.sh 用同一份。
+bash .ci/ppu/install_test_deps.sh
 
 # boto3 故意不装：它只被 tools/stats/upload_metrics.py 用于往官方 S3 上报指标，缺失时
 # EMIT_METRICS=False 静默降级（日志里那条 "Unable to import boto3" 只是提示，不影响退出码），
