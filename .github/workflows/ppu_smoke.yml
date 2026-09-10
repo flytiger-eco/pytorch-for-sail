@@ -14,8 +14,8 @@
 #   - 不装 PPU SDK：发布镜像里已自带且环境变量已就绪。但测试框架依赖（pytest 及其
 #     插件等）镜像里没有，由 .ci/ppu/install_test_deps.sh 按 .ci/docker/requirements-ci.txt
 #     的版本补装，保证与官方 CI 跑 test case 的环境一致。
-#   - 只跑 CUDA 相关用例，且裁掉 H100/B200 专属用例。用例清单见
-#     .ci/ppu/smoke_test.sh。
+#   - 只跑 CUDA 相关用例，且裁掉 H100/B200 专属用例，以及 FP8 用例（真武 PPU 当前不支持
+#     FP8）。用例清单见 .ci/ppu/smoke_test.sh。
 name: ppu-smoke
 
 on:

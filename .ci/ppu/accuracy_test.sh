@@ -52,6 +52,8 @@ echo "=== CUDA inductor 精度单测（run_test.py --include 白名单过滤，�
 # 下面的 include 白名单是"可调项"：先给一组有代表性的 CUDA 精度用例，
 # 请按 PPU 实际支持情况增删（例如想加深 op 级覆盖可加 inductor/test_torchinductor_opinfo，
 # 但该文件很重、耗时长，默认不放进门禁）。
+# FP8：inductor/test_fp8 已移除——真武 PPU 当前不支持 FP8，该文件全量为 FP8 语义，
+# 与 ppu_smoke.yml 的裁剪保持一致；PPU 支持 FP8 后再加回来。
 # 不使用 --upload-artifacts-while-running：那是官方 S3 上传路径，自建集群上没有。
 python test/run_test.py \
     --include \
@@ -60,7 +62,6 @@ python test/run_test.py \
         inductor/test_cuda_repro \
         inductor/test_cudagraph_trees \
         inductor/test_cuda_select_algorithm \
-        inductor/test_fp8 \
     --verbose
 
 echo "[accuracy] 完成"

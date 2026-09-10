@@ -47,12 +47,13 @@ echo "=== CUDA 冒烟用例（run_test.py --include 精确过滤，仅 CUDA 相�
 #   去掉 inductor/test_max_autotune、inductor/test_cutedsl_grouped_mm、
 #   inductor/test_flex_attention(-k test_tma_with_customer_kernel_options) 等
 #   H100/B200(SM90/TMA/CUTLASS) 专属用例，它们在真武 PPU 上不适用。
+# 也去掉 FP8 用例：真武 PPU 当前不支持 FP8，test_scaled_matmul_cuda（整个文件只有
+#   TestFP8Matmul）和 inductor/test_fp8 全量都是 FP8 语义，留在门禁里只会整体失败。
+#   PPU 支持 FP8 后把这两项加回来即可。
 # 不使用 --upload-artifacts-while-running：那是官方 S3 上传路径，自建集群上没有。
 python test/run_test.py \
     --include \
         test_matmul_cuda \
-        test_scaled_matmul_cuda \
-        inductor/test_fp8 \
     --verbose
 
 echo "[smoke] 完成"

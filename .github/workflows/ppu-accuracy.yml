@@ -25,6 +25,8 @@
 #       * H100/B200(SM90/TMA/CUTLASS) 专属：inductor/test_max_autotune、inductor/test_cutedsl_grouped_mm、
 #         inductor/test_cutlass_backend、inductor/test_flex_attention 的 TMA 用例
 #         （真武 PPU 不适用，与 ppu_smoke.yml 的裁剪保持一致）
+#       * FP8：inductor/test_fp8（真武 PPU 当前不支持 FP8，同步从 ppu_smoke.yml 里去掉了
+#         test_scaled_matmul_cuda / inductor/test_fp8）
 #   - 设备覆盖：只跑 CUDA 一条线（PPU 设备可见）。
 #   - 触发方式：与 ppu_smoke.yml 一致，仅 pull_request（作为 PR 门禁）。不沿用 inductor.yml 的
 #     push-to-main + repository_owner=='pytorch' 守卫（那是官方仓库专用）。
