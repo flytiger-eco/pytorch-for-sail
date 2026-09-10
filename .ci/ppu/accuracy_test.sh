@@ -57,7 +57,7 @@ python test/run_test.py \
         inductor/test_torchinductor_dynamic_shapes \
         inductor/test_cuda_repro \
         inductor/test_cudagraph_trees \
-        inductor/test_gpu_select_algorithm \
+        inductor/test_cuda_select_algorithm \
         inductor/test_fp8 \
     --verbose
 
