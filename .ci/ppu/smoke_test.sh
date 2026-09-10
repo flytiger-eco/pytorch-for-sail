@@ -7,10 +7,11 @@
 # 单独抽成脚本而不是内联到 yaml 的 command：command 由 pod 的默认 shell 执行，
 # 未必是 bash，而本脚本依赖 bash 语法（BASH_SOURCE）。
 #
-# PPU pytorch 发布镜像自带 PPU SDK（环境变量已就绪）、torch 以及 run_test.py 需要的
-# pytest 插件，所以本脚本不装 SDK、不装 torch、也不补装测试依赖。
+# PPU pytorch 发布镜像自带 PPU SDK（环境变量已就绪）和 torch，所以本脚本不装 SDK、
+# 不装 torch；但镜像没有 run_test.py 需要的 pytest 插件，测试依赖仍需补装。
 #
 # 依赖环境变量：
+#   PIP_INDEX        - 内部 pip 源（可选；不设则用 install_test_deps.sh 的内置候选源）
 #   PR_NUMBER        - 仅用于日志溯源（可选）
 # =============================================================================
 set -euo pipefail
@@ -30,9 +31,12 @@ python --version
 (cd /tmp && python -c "import torch; print('torch', torch.__version__, torch.__file__); print('cuda_available', torch.cuda.is_available()); print('device_count', torch.cuda.device_count())")
 ppu-smi || echo "[warn] ppu-smi 不可用，请确认 pod 已分配 PPU 设备"
 
+# 测试框架依赖（pytest 及其插件、expecttest、hypothesis）镜像里没预装对版本，必须在这里补：
 # run_test.py 的 check_pip_packages() 硬校验 pytest-rerunfailures / pytest-flakefinder /
-# pytest-xdist，这三个插件由镜像预装；若换镜像后报缺失，应在镜像里补装而不是在此 pip install
-# （requirements-ci.txt 钉了几十个版本，会降级镜像预装 torch 依赖的包）。
+# pytest-xdist，缺任意一个直接 exit 1。
+# 版本一律对齐 .ci/docker/requirements-ci.txt（官方 CI 跑 test case 的同一份约束），
+# 安装逻辑（含 pip 源诊断与多源回退）抽到共享脚本，accuracy_test.sh 用同一份。
+bash .ci/ppu/install_test_deps.sh
 
 # boto3 故意不装：它只被 tools/stats/upload_metrics.py 用于往官方 S3 上报指标，缺失时
 # EMIT_METRICS=False 静默降级（日志里那条 "Unable to import boto3" 只是提示，不影响退出码），

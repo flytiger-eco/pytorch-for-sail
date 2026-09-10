@@ -11,7 +11,9 @@
 # 与 test-h100.yml 的差异：
 #   - 不编译 whl，也不 pip install torch：test-h100 走 _linux-build.yml 先编 wheel 再测；
 #     这里跳过 build，直接用 PPU pytorch 发布镜像里预装的 torch。
-#   - 也不装 PPU SDK、不补装 pytest 插件：发布镜像里都已自带。
+#   - 不装 PPU SDK：发布镜像里已自带且环境变量已就绪。但测试框架依赖（pytest 及其
+#     插件等）镜像里没有，由 .ci/ppu/install_test_deps.sh 按 .ci/docker/requirements-ci.txt
+#     的版本补装，保证与官方 CI 跑 test case 的环境一致。
 #   - 只跑 CUDA 相关用例，且裁掉 H100/B200 专属用例。用例清单见
 #     .ci/ppu/smoke_test.sh。
 name: ppu-smoke
@@ -40,6 +42,11 @@ env:
   # 板型选 890P：集群里 890P 有 16 台（每台 8 PPU），810E 只有 1 台（16 PPU）。
   # 本 workflow 是每个 PR 都触发的高频门禁，钉在 810E 会把所有 PR 排队到同一台机器上。
   NODE_SELECTOR: "board-type=ZW-M890P"
+  # 内部 pip 源：pod 内只能访问内网，补装 run_test.py 必需的 pytest 插件要走这个源。
+  # 仓库名是 pypi_index（带下划线的 VIRTUAL 仓，聚合 pypi_formal/aliyun/huawei/tsinghua 等代理）。
+  # 写成 pypiindex 会命中不存在的仓库，Artifactory 对所有包返回 404，pip 报
+  # "Could not find a version that satisfies the requirement ... (from versions: none)"。
+  PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
 
 jobs:
   ppu-smoke-890p-single:
@@ -73,4 +80,5 @@ jobs:
           # 脚本自身会 cd 到源码根目录，所以这里只给绝对路径即可。
           command: |
             PR_NUMBER="${{ github.event.pull_request.number }}" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
             bash ${{ env.SOURCE_DIR }}/.ci/ppu/smoke_test.sh

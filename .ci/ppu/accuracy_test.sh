@@ -37,8 +37,10 @@ python --version
 (cd /tmp && python -c "import torch; print('torch', torch.__version__, torch.__file__); print('cuda_available', torch.cuda.is_available()); print('device_count', torch.cuda.device_count())")
 ppu-smi || echo "[warn] ppu-smi 不可用，请确认 pod 已分配 PPU 设备"
 
+# 测试框架依赖（pytest 及其插件、expecttest、hypothesis）镜像里没预装对版本，必须在这里补：
 # run_test.py 的 check_pip_packages() 硬校验 pytest-rerunfailures / pytest-flakefinder /
-# pytest-xdist，缺任意一个直接 exit 1，镜像里没预装，所以必须在这里补。
+# pytest-xdist，缺任意一个直接 exit 1。
+# 版本一律对齐 .ci/docker/requirements-ci.txt（官方 CI 跑 test case 的同一份约束），
 # 安装逻辑（含 pip 源诊断与多源回退）抽到共享脚本，smoke_test.sh 用同一份。
 bash .ci/ppu/install_test_deps.sh
 
