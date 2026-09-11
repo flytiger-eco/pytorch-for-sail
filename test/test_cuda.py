@@ -1574,6 +1574,15 @@ except RuntimeError as e:
         counted = t.bincount(minlength=65536)
         self.assertEqual(torch.sum(counted), 10)
 
+        # Cover the PPU 810/810E shared-memory boundary. The TSM CAS patch
+        # adds static TSM to this kernel, so these bin counts must launch and
+        # preserve every input element on both sides of the 32739-bin case.
+        for nbins in range(32737, 32742):
+            t = torch.randint(0, nbins, (5000,), device="cuda")
+            counts = torch.bincount(t, minlength=nbins)
+            self.assertEqual(counts.numel(), nbins)
+            self.assertEqual(counts.sum().item(), t.numel())
+
     def test_tiny_half_norm_(self):
         a = torch.arange(25).cuda().float()
         a /= 100000000
