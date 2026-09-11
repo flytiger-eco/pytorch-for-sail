@@ -66,15 +66,44 @@ echo "[build_wheel] cmake=$(cmake --version | head -1)"
 pip install -r requirements.txt
 
 # ---- 并行度 ----
+# 除了听 MAX_JOBS，还要在脚本里兜一层内存上限：
+#   8vCPU/32GB 的 runner 上把并行度拉到 2×核数时，nvcc 背后的 cicc 单个 TU 峰值
+#   可达 3~5GB，十几个并发直接把 32GB 打穿，内核 OOM killer 上场；对应现象是
+#   日志里出现 Killed、docker exec 返回 137。
+# PPU_MEM_PER_JOB_GB 默认 4：32GB → 最多 8 并发。
 if [[ -z "$MAX_JOBS" || "$MAX_JOBS" == "0" ]]; then
     MAX_JOBS=$(nproc)
     MAX_JOBS=$((MAX_JOBS > 2 ? MAX_JOBS - 2 : 1))
 fi
+
+# 读 /proc/meminfo 而不用 free：后者依赖 procps，镜像里不一定装了
+MEM_GB=$(awk '/^MemTotal:/ {printf "%d", $2 / 1024 / 1024}' /proc/meminfo 2>/dev/null || echo 0)
+MEM_PER_JOB_GB="${PPU_MEM_PER_JOB_GB:-4}"
+if [[ "${MEM_GB:-0}" -gt 0 ]]; then
+    MEM_CAP=$((MEM_GB / MEM_PER_JOB_GB))
+    if [[ "$MEM_CAP" -lt 1 ]]; then
+        MEM_CAP=1
+    fi
+    if [[ "$MAX_JOBS" -gt "$MEM_CAP" ]]; then
+        echo "[build_wheel] MAX_JOBS=${MAX_JOBS} 超过内存上限（${MEM_GB}GB / ${MEM_PER_JOB_GB}GB per job），下调到 ${MEM_CAP}"
+        MAX_JOBS="$MEM_CAP"
+    fi
+fi
 export MAX_JOBS
+
+# 链接阶段单独限流：ld 链 libtorch_cuda.so（两个架构的 fatbin）以及 BUILD_TEST 那
+# 一堆测试二进制时，单个 ld 就能吃掉数 GB，ninja 默认会把它们与编译一起并发，
+# 而且链接集中在构建末尾——之前 92% 处被掉断就发生在这一段。
+# 用 ninja job pool 把链接并发压到 PPU_LINK_JOBS（默认 2），编译仍按 MAX_JOBS 跑。
+# CMAKE_ 前缀的环境变量会被 setup.py 自动透传成 -D 交给 cmake（tools/setup_helpers/cmake.py）。
+PPU_LINK_JOBS="${PPU_LINK_JOBS:-2}"
+export CMAKE_JOB_POOLS="compile=${MAX_JOBS};link=${PPU_LINK_JOBS}"
+export CMAKE_JOB_POOL_COMPILE=compile
+export CMAKE_JOB_POOL_LINK=link
 
 # 版本号取 version.txt 的 x.y.z 段（兼容 2.11.0 / 2.11.0a0+gitxxx）
 TORCH_VERSION=$(sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/' version.txt)
-echo "[build_wheel] TORCH_VERSION=$TORCH_VERSION MAX_JOBS=$MAX_JOBS"
+echo "[build_wheel] TORCH_VERSION=${TORCH_VERSION} MAX_JOBS=${MAX_JOBS} 链接并发=${PPU_LINK_JOBS} 内存=${MEM_GB}GB"
 
 BUILD_START=$(date +%s)
 

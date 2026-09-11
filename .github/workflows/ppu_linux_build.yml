@@ -58,9 +58,14 @@ jobs:
       DOCKER_IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
       # PPU 语义下 8.0 = SM80+SM89 混合编译
       TORCH_CUDA_ARCH_LIST: "8.0"
-      # 拉满并行度抢在 350 分钟超时前收尾；8vCPU/32GB 上 nvcc+ld 仍可能触发 OOM，
-      # 若日志出现 Killed / exit code 137，回退到 8 或 0（脚本取 nproc-2）
-      MAX_JOBS: "16"
+      # 8vCPU/32GB 上拉到 16（2×核数）实测会被 OOM killer 干掉（docker exec 返回 137）：
+      # nvcc 背后的 cicc 单 TU 峰值 3~5GB。现在取 8，build_wheel.sh 还会按
+      # 「内存 / PPU_MEM_PER_JOB_GB」再兜一层，两边取小
+      MAX_JOBS: "8"
+      # 每个编译并发预留的内存（GB），用于在容器内推算并行度上限
+      PPU_MEM_PER_JOB_GB: "4"
+      # 链接并发（ninja job pool）：ld 单进程就能吃数 GB，且链接集中在构建末尾
+      PPU_LINK_JOBS: "2"
       # 容器内 PPU SDK 解压目录，供 sdk_env.sh / install_sdk.sh 使用
       SDK_INSTALL_DIR: /usr/local
       # 容器内 pip index-url，留空则用镜像自带配置
@@ -181,6 +186,31 @@ jobs:
             du -sh "${RUNNER_TEMP}/ppu-ccache" || true
           fi
 
+      # 主防线是 MAX_JOBS + 链接 job pool；swap 只是给链接阶段的尖峰留缓冲。
+      # 托管 runner 默认不带 swap，一旦顶破 32GB 物理内存就是硬 OOM（exit 137）。
+      - name: Add swap
+        continue-on-error: true
+        run: |
+          if [[ -n "$(swapon --show --noheadings 2>/dev/null)" ]]; then
+            echo "[swap] 已有 swap，跳过"
+            swapon --show
+            exit 0
+          fi
+
+          # 优先放在临时盘 /mnt（空间大），没有则回退到根分区
+          swap_file=/mnt/ppu-swapfile
+          if [[ ! -d /mnt ]]; then
+            swap_file=/ppu-swapfile
+          fi
+          sudo fallocate -l 16G "${swap_file}" \
+            || sudo dd if=/dev/zero of="${swap_file}" bs=1M count=16384 status=none
+          sudo chmod 600 "${swap_file}"
+          sudo mkswap "${swap_file}" >/dev/null
+          sudo swapon "${swap_file}"
+          # 只在真的顶到物理内存上限时才换出，避免平时拖慢编译
+          sudo sysctl -w vm.swappiness=10 >/dev/null
+          free -h
+
       - name: Pull docker image
         run: |
           # 私有 registry 偶发抖动，重试 3 次
@@ -220,6 +250,8 @@ jobs:
             -e PIP_INDEX_URL \
             -e BUILD_ADDITIONAL_PACKAGES \
             -e FORCE_REBUILD \
+            -e PPU_MEM_PER_JOB_GB \
+            -e PPU_LINK_JOBS \
             -e CCACHE_DIR=/root/.cache/ccache \
             -e CCACHE_MAXSIZE \
             --security-opt seccomp=unconfined \
@@ -270,8 +302,34 @@ jobs:
         env:
           CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
         run: |
-          # build_wheel.sh 用到 bash 数组，必须用 bash 执行
+          # 后台采样内存水位（宿主机与容器共用物理内存），被 OOM 干掉后可以回看现场
+          mem_log="${RUNNER_TEMP}/mem-samples.log"
+          ( while true; do
+              printf '%s %s\n' "$(date -u +%H:%M:%S)" \
+                "$(free -m | awk '/^Mem:/{printf "used=%sMB avail=%sMB ", $3, $7} /^Swap:/{printf "swap=%sMB", $3}')" \
+                >> "${mem_log}"
+              sleep 30
+            done ) &
+          sampler_pid=$!
+          # shellcheck disable=SC2064  # 需要在设置时就绑定当前 pid
+          trap "kill ${sampler_pid} 2>/dev/null || true" EXIT
+
+          # build_wheel.sh 用到 bash 数组，必须用 bash 执行；
+          # 这里要自己接退出码，才能在 137 时给出可操作的提示
+          set +e
           docker exec -t "${CONTAINER_NAME}" bash .ci/ppu/build_wheel.sh
+          rc=$?
+          set -e
+
+          if [[ "${rc}" -ne 0 ]]; then
+            if [[ "${rc}" -eq 137 ]]; then
+              echo "::error::编译进程被 SIGKILL（exit 137），几乎必然是宿主机 OOM"
+              echo "[oom] 当前 MAX_JOBS=${MAX_JOBS} PPU_LINK_JOBS=${PPU_LINK_JOBS}；继续发生时先下调这两个值" >&2
+              echo "[oom] 内存采样末尾:" >&2
+              tail -10 "${mem_log}" 2>/dev/null || echo "[oom] 无采样数据" >&2
+            fi
+            exit "${rc}"
+          fi
 
           # 编译耗时由脚本写入容器内 /tmp；命中 stamp 复用时该文件不存在
           # 这里不能加 -t：伪 TTY 会往输出里插 \r，污染 GITHUB_OUTPUT
@@ -279,6 +337,23 @@ jobs:
             duration=$(docker exec "${CONTAINER_NAME}" cat /tmp/ppu_build_duration_sec | tr -d '\r\n')
             echo "build-time-sec=${duration}" >> "$GITHUB_OUTPUT"
           fi
+
+      # 编译失败时把“是不是 OOM / 被杀的是谁”落在日志里，不用下一轮猜
+      - name: Dump OOM diagnostics
+        if: failure()
+        continue-on-error: true
+        run: |
+          echo "=== dmesg 中的 OOM 记录 ==="
+          sudo dmesg -T 2>/dev/null \
+            | grep -iE "out of memory|killed process|oom-kill" \
+            | tail -30 \
+            || echo "（无 dmesg 权限或未记录到 OOM）"
+          echo "=== 内存 / swap ==="
+          free -h
+          echo "=== 磁盘 ==="
+          df -h /
+          echo "=== 内存采样（每 30s）==="
+          tail -40 "${RUNNER_TEMP}/mem-samples.log" 2>/dev/null || echo "（无采样数据）"
 
       # 即使编译失败也要看命中率：命中率异常偏低往往就是失败/超时的原因
       - name: Report ccache stats
