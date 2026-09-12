@@ -60,7 +60,11 @@ on:
     branches:
       - v2.11.0
     paths:
-      - '.github/workflows/ppu-refresh-cache.yml'
+      # 匹配的是仓库里的真实路径（下划线），不是上面 name: 里的连字符
+      - '.github/workflows/ppu_refresh_cache.yml'
+      # 编译实现与脚本也要盯住，否则改它们不会触发重种
+      - '.github/workflows/_ppu_build.yml'
+      - '.ci/ppu/**'
 
 permissions:
   contents: read
@@ -80,9 +84,12 @@ jobs:
     with:
       # build-environment / docker-image / torch-cuda-arch-list 一律不传，
       # 用 _ppu_build.yml 的默认值，保证与 PR 流水线算出同一个 cache key 前缀
-      ccache-maxsize: ${{ inputs.ccache-maxsize }}
-      ignore-ccache: ${{ inputs.ignore-ccache }}
-      upload-wheel: ${{ inputs.upload-wheel }}
+      # push 事件下 inputs 上下文为 null，会渲染成空串；下游 ignore-ccache /
+      # upload-wheel 声明为 boolean，空串过不了类型校验，run 会在启动前就失败。
+      # 另外 upload-wheel 在 _ppu_build.yml 侧默认是 true，兜底值必须显式给 false。
+      ccache-maxsize: ${{ inputs.ccache-maxsize || '4G' }}
+      ignore-ccache: ${{ inputs.ignore-ccache || false }}
+      upload-wheel: ${{ inputs.upload-wheel || false }}
       # 本流水线存在的意义就是回写缓存
       save-ccache: true
       # 回写前清掉本分支的历史条目，保证「每个分支只留一份」
