@@ -56,6 +56,11 @@ on:
         description: 顺带上传 whl artifact（本流水线的主产出是缓存，默认不上传）
         type: boolean
         default: false
+  push:
+    branches:
+      - v2.11.0
+    paths:
+      - '.github/workflows/ppu-refresh-cache.yml'
 
 permissions:
   contents: read
