@@ -32,7 +32,17 @@ name: ppu-linux-build
 on:
   # 提交 / 更新 PR 时自动触发
   pull_request:
-  # 手动触发：在目标分支上跑一次，把 ccache 种到分支作用域供所有 PR 复用
+  # 种缓存的唯一可用通道：跑在 refs/heads/v2.11.0 上，缓存才会落在该分支作用域，
+  # 之后所有以 v2.11.0 为 base 的 PR 都能按前缀命中。两种触发方式：
+  #   - 合入 v2.11.0（合并提交本身就是一次 push）
+  #   - 手动：git commit --allow-empty -m "ci: seed ccache" && git push origin v2.11.0
+  push:
+    branches:
+      - v2.11.0
+  # 手动触发。注意 GitHub 硬限制：workflow_dispatch（以及 schedule /
+  # repository_dispatch）只认**默认分支**上的文件。本仓库默认分支是 v2.10.0，
+  # 该分支上没有本文件，所以 Actions 页面现在不会出现 Run workflow 按钮。
+  # 这一条保留：一旦本文件落到默认分支，按钮自动生效（可在下拉里选任意分支）。
   workflow_dispatch:
 
 permissions:
@@ -109,7 +119,8 @@ jobs:
       - name: Resolve ccache key
         id: cache-meta
         env:
-          # PR 按目标分支取缓存；手动触发时就是当前分支
+          # PR 按 base 分支取缓存（如 v2.11.0）；push / 手动触发时就是当前分支。
+          # 两边算出的前缀必须一致，PR 才能命中分支上种下的那份
           CACHE_BRANCH: ${{ github.event.pull_request.base.ref || github.ref_name }}
         run: |
           # 缓存键不允许逗号，分支名里的其它字符统一折成 -
