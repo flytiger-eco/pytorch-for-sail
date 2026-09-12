@@ -1,0 +1,112 @@
+# P2 perf gate: PPU CUDA 性能测试，跑在自建 PPU 集群的单卡 pod 上。
+#
+# 执行模型（与 ppu_smoke.yml / ppu-accuracy.yml 一致）：
+#   - job 只在 CPU runner 上做编排：checkout 源码后，由
+#     flytiger-eco/ppu-distributed-action 把源码打包暂存到 NAS，在带 PPU 卡的节点上
+#     拉起 pod，解压到 source_dir，再执行 command。
+#   - 所以 runner 容器只需小体积的 actions-runner 镜像；PPU 发布镜像只在 PPU pod 内
+#     使用，避免 CPU 节点拉大镜像超时。
+#   - 性能用例只需单卡：nnodes: 0 + nproc_per_node: 1。
+#   - pod 内实际逻辑见 .ci/ppu/perf_test.sh（含白名单与 FP8 过滤）。
+#
+# 设计取舍（重要）：
+#   - inductor-perf-test-nightly-h100.yml 只是一个"薄编排层"：它调用 _linux-build.yml
+#     （先编 CUDA_ARCH 9.0 的 wheel，用 linux.12xlarge.memory）+ _linux-test.yml（跑在
+#     linux.aws.h100 上，21 个 shard），并带 `if: github.repository_owner == 'pytorch'` 守卫。
+#     这套结构（先 build 再 test、云端 H100 runner、pytorch-only、S3/dashboard 上报）与本仓库
+#     "跳过 build whl + 自建 PPU 集群 + 直接用镜像预装 torch"的诉求本质互斥，无法照搬其
+#     job/runner 定义。
+#   - 因此这里只保留它的**性能语义**，执行机制完全沿用 ppu_smoke.yml：
+#       * 它的 test-matrix 是 inductor_{huggingface,timm,torchbench}_perf_cuda_h100 三个套件，
+#         最终落到 .ci/pytorch/test.sh 的 test_perf_for_dashboard，跑
+#         benchmarks/dynamo/{huggingface,timm_models,torchbench}.py。这三份都依赖
+#         transformers / timm / torchbench 仓库与 HF hub 上的模型配置：PPU pod 只有内网出口、
+#         镜像里没预装这些包，torchbench 还要 clone 外部仓库，整套在自建集群里拿不到。
+#       * 所以换成零外部模型依赖的等价覆盖：inductor 性能单测（带宽/融合决策/kernel benchmark
+#         断言）+ benchmarks/gpt_fast 的算子级 micro benchmark（权重本地随机初始化）。
+#       * 它的 DASHBOARD_TAG（training/inference/default/dynamic/cudagraphs/cppwrapper/
+#         aotinductor/maxautotune 各档位）服务于 HUD dashboard 的多档对比，自建集群没有
+#         dashboard 和 S3 上报通道，这里不引入这些开关。
+#   - 测试范围：仅 CUDA 相关。上述文件的用例主体跑在 GPU_TYPE 上（无 GPU 时 __main__ 里的
+#     HAS_GPU_AND_TRITON 守卫直接退出），gpt_fast 的 device 也由 torch.cuda.is_available()
+#     决定；这几个文件里夹带的 CPU 副本（BenchmarkFusionCpuTest / test_benchmark_cpu_smoke /
+#     device 参数化出的 *_cpu 变体）由 perf_test.sh 的 -k 表达式摘掉，不做
+#     inductor-perf-test-nightly-x86 那条 CPU 线。
+#   - FP8：真武 PPU 当前不支持 FP8，perf_test.sh 同一条 -k 表达式把 fp8/float8/e4m3/e5m2
+#     相关用例整体摘掉（与 smoke_test.sh / accuracy_test.sh 的裁剪一致）。
+#   - H100/B200 专属：不引入 max_autotune / CUTLASS / TMA 相关的 perf 档位（h100 那条线的
+#     maxautotune-true 就是为 SM90 准备的），与 ppu_smoke.yml / ppu-accuracy.yml 的裁剪一致。
+#   - 触发方式：与 ppu_smoke.yml / ppu-accuracy.yml 一致，仅 pull_request（作为 PR 门禁）。
+#     不沿用 inductor-perf-test-nightly-h100.yml 的 schedule（nightly/weekly）+
+#     repository_owner=='pytorch' 守卫，那是官方仓库 dashboard 专用。
+#     注意：pull_request 事件读取的是**默认分支**上的 workflow 文件，本文件需先合入默认分支才会对新 PR 生效。
+name: ppu-perf
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # PPU pytorch 发布镜像：自带 torch 2.10.0 + python3.12 + CUDA13 + PPU SDK，在 PPU pod 内使用
+  # 前置要求：该镜像须已预拉到 NODE_SELECTOR 指定板型的节点上（action 文档「前置要求」第 3 条）。
+  # 换镜像 tag 或换板型时都要重新确认预拉，否则 pod 会卡在拉取阶段直至超时。
+  IMAGE: pkg.flytiger-eco.com/docker_release/pytorch:v2.1.1-2.10.0-ubuntu24.04-cuda13.0-py312
+  NAMESPACE: ppu-sched
+  HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
+  # action 在 pod 内解压源码的路径（也是 action 的默认值，这里显式写出便于 command 引用）
+  SOURCE_DIR: /workspace/source
+  # 板型选 890P：集群里 890P 有 16 台（每台 8 PPU），810E 只有 1 台（16 PPU）。
+  # 本 workflow 是每个 PR 都触发的长耗时门禁，钉在 810E 会与 ppu-smoke / ppu-accuracy
+  # 互相排队在同一台机器上。
+  NODE_SELECTOR: "board-type=ZW-M890P"
+  # 内部 pip 源：pod 内只能访问内网，补装 run_test.py 必需的 pytest 插件要走这个源。
+  # 仓库名是 pypi_index（带下划线的 VIRTUAL 仓，聚合 pypi_formal/aliyun/huawei/tsinghua 等代理）。
+  # 写成 pypiindex 会命中不存在的仓库，Artifactory 对所有包返回 404，pip 报
+  # "Could not find a version that satisfies the requirement ... (from versions: none)"。
+  PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # CUDA/PPU 侧 inductor 性能测试（对齐 inductor-perf-test-nightly-h100.yml 的 test job）
+  # ---------------------------------------------------------------------------
+  ppu-perf-cuda:
+    name: ppu-perf-cuda (890P 单卡)
+    # runner 沿用 ppu_smoke.yml：CPU 编排节点，真正的 PPU 卡由下面的 action 在集群里申请
+    runs-on: k8s-runner-group-cpu-flytiger
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          # 签出 PR head commit（github.sha 在 PR 场景是 merge commit），保证测试代码与 PR 一致
+          ref: ${{ github.event.pull_request.head.sha }}
+          # 只跑 python 测试，不需要 third_party 子模块；浅克隆加速，也减小传到 NAS 的包体积
+          fetch-depth: 1
+
+      - name: "890P 单卡 (1 PPU) CUDA inductor 性能测试"
+        uses: flytiger-eco/ppu-distributed-action@main
+        with:
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: ${{ env.NODE_SELECTOR }}
+          host_volumes: ${{ env.HOST_VOLUMES }}
+          image: ${{ env.IMAGE }}
+          namespace: ${{ env.NAMESPACE }}
+          source_dir: ${{ env.SOURCE_DIR }}
+          timeout_minutes: 120
+          # 环境变量必须在 command 里注入：job 级 env 不会传进 PPU pod。
+          # 脚本自身会 cd 到源码根目录，所以这里只给绝对路径即可。
+          command: |
+            PR_NUMBER="${{ github.event.pull_request.number }}" \
+            SDK_INSTALL_DIR="/usr/local" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/perf_test.sh
