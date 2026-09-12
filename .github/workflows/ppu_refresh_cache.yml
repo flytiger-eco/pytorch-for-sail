@@ -1,0 +1,86 @@
+# =============================================================================
+# PPU 编译缓存刷新流水线（手动触发，唯一的「写缓存」入口）。
+#
+# 用途：
+#   在目标分支上跑一次完整编译，把 ccache 基线种进 GitHub Actions Cache，
+#   之后该分支上的 PR 编译流水线（ppu_linux_build.yml 等）只读这份基线来提速。
+#   本流水线不产出对外的 whl（upload-wheel=false），它的产出就是缓存本身。
+#
+# 用法（Actions → ppu-refresh-cache → Run workflow）：
+#   1. Use workflow from : 选要种缓存的分支，v2.11.0 或 v2.10.0
+#   2. 其余 input 保持默认即可
+#
+# 为什么这里没有「镜像 / 目标架构」的 input：
+#   这两项进 cache key 指纹，只在本流水线改会种出一份 PR 流水线根本读不到的缓存
+#   （指纹不同→前缀不同）。因此它们的唯一定义在 _ppu_build.yml 的 input 默认值上，
+#   改镜像请改那一处，两条流水线才会一起动。
+#
+# 「选哪个分支」不是个可选项，而是决定性的：
+#   缓存条目按创建它的 ref 隔离，一次 run 只能读到「当前分支 + base 分支 + 默认分支」
+#   作用域里的条目。所以要让 PR-into-v2.11.0 命中，就必须在 v2.11.0 上跑本流水线；
+#   在别的 topic 分支上跑出来的缓存，v2.11.0 的 PR 一条也读不到。
+#
+# 分支隔离：
+#   cache key 前缀 = ppu-ccache-<build-env>-<分支名>-<镜像+架构指纹>-
+#   v2.11.0 与 v2.10.0 因此落在两个独立前缀上，互不覆盖、互不命中。
+#
+# 10GiB 配额换算（GitHub 单仓库缓存总配额）：
+#   2 个分支 × ccache-maxsize(4G) = 8G 稳态，留 2G 余量。
+#   prune-old-ccache=true 会在回写前删掉同前缀旧条目，保证「每个分支只留一份」，
+#   否则历史条目累积后 GitHub 按 LRU 淘汰，很容易把另一个分支的基线挤掉。
+#   → 如果以后分支数变多，必须同步下调 ccache-maxsize，否则两边互相挤缓存。
+#
+# 何时需要重跑：
+#   - 目标分支合入了较大改动，命中率明显下降时（看 build 的 job summary）
+#   - 换编译镜像 / 改 TORCH_CUDA_ARCH_LIST（指纹变了，旧条目自动失效，需要重种）
+#   - 缓存被污染或想重建干净基线：勾上 ignore-ccache
+#
+# 前置要求：workflow_dispatch 的「Run workflow」按钮只有在**默认分支**上存在本文件时
+#   才会出现（当前默认分支是 v2.10.0）。因此本文件（连同 _ppu_build.yml 与 .ci/ppu/）
+#   需要同时合入 v2.10.0，否则 UI 上看不到手动触发入口。
+# =============================================================================
+name: ppu-refresh-cache
+
+on:
+  workflow_dispatch:
+    inputs:
+      ccache-maxsize:
+        description: ccache 容量上限（分支数 × 该值须留在 10GiB 配额内）
+        type: string
+        default: "4G"
+      ignore-ccache:
+        description: 忽略现有缓存做冷编译，重建一份干净基线
+        type: boolean
+        default: false
+      upload-wheel:
+        description: 顺带上传 whl artifact（本流水线的主产出是缓存，默认不上传）
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  # prune-old-ccache 用 gh cache list / delete 清理同前缀旧条目
+  actions: write
+
+concurrency:
+  # 同一分支的刷缓存任务串行：两个 run 并发回写会互相覆盖，还会瞬时挤爆配额。
+  # 这里不能 cancel-in-progress —— 编译要跑几个小时，中途取消等于白烧一次 runner
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: refresh ccache (${{ github.ref_name }})
+    uses: ./.github/workflows/_ppu_build.yml
+    with:
+      # build-environment / docker-image / torch-cuda-arch-list 一律不传，
+      # 用 _ppu_build.yml 的默认值，保证与 PR 流水线算出同一个 cache key 前缀
+      ccache-maxsize: ${{ inputs.ccache-maxsize }}
+      ignore-ccache: ${{ inputs.ignore-ccache }}
+      upload-wheel: ${{ inputs.upload-wheel }}
+      # 本流水线存在的意义就是回写缓存
+      save-ccache: true
+      # 回写前清掉本分支的历史条目，保证「每个分支只留一份」
+      prune-old-ccache: true
+      # 冷编译比 PR 增量编译慢得多，超时给足
+      timeout-minutes: 400

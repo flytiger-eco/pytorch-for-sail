@@ -1,0 +1,587 @@
+# =============================================================================
+# PPU torch whl 源码编译：可复用 workflow（唯一的编译实现）。
+#
+# 为什么抽成 workflow_call：
+#   ccache 能否命中，取决于「缓存 key 前缀」与「编译参数（镜像 / 架构 / 编译器）」两侧
+#   完全一致。如果种缓存的流水线和读缓存的流水线各自维护一份 steps，任何一侧漏改都会
+#   静默退化成冷编译，而且日志上只表现为「命中率 0」，极难定位。因此把整段编译逻辑放在
+#   这里，调用方只传参、不复制 steps。
+#
+# 当前调用方：
+#   - ppu_refresh_cache.yml : 手动触发，save-ccache=true  → 在目标分支上「种 / 刷新」缓存
+#   - ppu_linux_build.yml   : PR 触发，  save-ccache=false → 只读缓存，加速 PR 编译
+#
+# 缓存分支作用域（GitHub 的硬性规则，决定了上面为什么要拆成两条流水线）：
+#   - 缓存条目按创建它的 ref 隔离。一次 run 只能读到「当前分支 + base 分支 + 默认分支」
+#     这三个作用域里的条目，读不到兄弟分支 / 子分支的。
+#   - pull_request 触发的 run 写出的缓存归属 refs/pull/<N>/merge，只有同一个 PR 的
+#     re-run 能读到，base 分支和别的 PR 都读不到 —— 所以 PR run 回写缓存纯属浪费配额，
+#     这里默认 save-ccache=false。
+#   - workflow_dispatch 属于「可信触发」，可以写默认分支作用域。要给某个分支种缓存，
+#     就在该分支上手动跑 ppu_refresh_cache.yml。
+# =============================================================================
+name: ppu-build (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      # ---- 下面三项是 cache key 的组成部分，必须只有这一份定义 ----
+      # 前缀 = ppu-ccache-<build-environment>-<分支>-<sha256(docker-image + arch)>-
+      # 所以绝不能让调用方各自写一份默认值：任何一侧漏改都会让两边算出不同前缀，
+      # PR 静默地退化成冷编译，而日志上只表现为「命中率 0」。
+      # 改镜像 / 改架构就改这里的默认值，两条流水线会一起动（旧缓存自动失效，
+      # 需在各分支重跑 ppu_refresh_cache.yml 重种）。
+      build-environment:
+        description: 环境标识，进 cache key / artifact 名
+        type: string
+        default: ppu-linux-ubuntu24.04-py3.12
+      docker-image:
+        description: 编译用 PPU 镜像
+        type: string
+        default: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
+      torch-cuda-arch-list:
+        description: 目标架构；PPU 语义下 8.0 = SM80+SM89 混合编译
+        type: string
+        default: "8.0"
+      # ---- 以下不影响 cache key，调用方可自由覆盖 ----
+      runner:
+        description: runner 标签（需 8vCPU/32GB 级别）
+        type: string
+        default: x86-ubuntu2404-8-32
+      max-jobs:
+        description: 编译并发上限，还会按「内存 / mem-per-job-gb」再兜一层
+        type: string
+        default: "8"
+      link-jobs:
+        description: 链接并发（ninja job pool）
+        type: string
+        default: "2"
+      mem-per-job-gb:
+        description: 每个编译并发预留内存（GB）
+        type: string
+        default: "4"
+      ccache-maxsize:
+        description: ccache 容量上限；配额换算见 ppu_refresh_cache.yml 文件头
+        type: string
+        default: "4G"
+      save-ccache:
+        description: 编译成功后回写 ccache（只有种缓存的流水线该开）
+        type: boolean
+        default: false
+      prune-old-ccache:
+        description: 回写前删掉同前缀旧条目，避免两个分支的基线互相 LRU 挤掉
+        type: boolean
+        default: false
+      ignore-ccache:
+        description: 跳过 restore，强制冷编译（用于重建一份干净基线）
+        type: boolean
+        default: false
+      upload-wheel:
+        description: 上传 whl artifact
+        type: boolean
+        default: true
+      force-rebuild:
+        description: 忽略 dist/ 下的 stamp，强制重编
+        type: boolean
+        default: false
+      timeout-minutes:
+        description: job 超时；冷编译约 4~5h
+        type: number
+        default: 350
+    outputs:
+      wheel-name:
+        description: 产出的 whl 文件名
+        value: ${{ jobs.build.outputs.wheel-name }}
+      artifact-name:
+        description: whl artifact 名（upload-wheel=false 时仍会算出，但未实际上传）
+        value: ${{ jobs.build.outputs.artifact-name }}
+      ccache-key:
+        description: 本轮写出的 cache key
+        value: ${{ jobs.build.outputs.ccache-key }}
+      ccache-hit-rate:
+        description: ccache -s 里的 Hits 行
+        value: ${{ jobs.build.outputs.ccache-hit-rate }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build (${{ inputs.build-environment }})
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      wheel-name: ${{ steps.collect.outputs.wheel-name }}
+      artifact-name: ${{ steps.collect.outputs.artifact-name }}
+      ccache-key: ${{ steps.cache-meta.outputs.key }}
+      ccache-hit-rate: ${{ steps.ccache-stats.outputs.hit-rate }}
+    env:
+      BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
+      DOCKER_IMAGE: ${{ inputs.docker-image }}
+      TORCH_CUDA_ARCH_LIST: ${{ inputs.torch-cuda-arch-list }}
+      # 8vCPU/32GB 上拉到 16（2×核数）实测会被 OOM killer 干掉（docker exec 返回 137）：
+      # nvcc 背后的 cicc 单 TU 峰值 3~5GB。build_wheel.sh 还会按
+      # 「内存 / PPU_MEM_PER_JOB_GB」再兜一层，两边取小
+      MAX_JOBS: ${{ inputs.max-jobs }}
+      PPU_MEM_PER_JOB_GB: ${{ inputs.mem-per-job-gb }}
+      # 链接并发：ld 单进程就能吃数 GB，且链接集中在构建末尾
+      PPU_LINK_JOBS: ${{ inputs.link-jobs }}
+      # ccache 容量上限（宿主机侧目录大小，已是 zstd 压缩后的）
+      CCACHE_MAXSIZE: ${{ inputs.ccache-maxsize }}
+      FORCE_REBUILD: ${{ inputs.force-rebuild && '1' || '0' }}
+      # 容器内 PPU SDK 解压目录，供 sdk_env.sh / install_sdk.sh 使用
+      SDK_INSTALL_DIR: /usr/local
+      # 容器内 pip index-url，留空则用镜像自带配置
+      PIP_INDEX_URL: ""
+      BUILD_ADDITIONAL_PACKAGES: ""
+      # 容器内源码挂载点，同时作为 build_wheel.sh 的 REPO_DIR
+      REPO_DIR_IN_CONTAINER: /pytorch
+      # 宿主机侧 ccache 目录是 $RUNNER_TEMP/ppu-ccache（挂进容器的 /root/.cache/ccache）。
+      # 不能在 job 级 env 里写成变量：jobs.<id>.env 不允许引用 runner 上下文
+
+    steps:
+      - name: Show runner spec
+        run: |
+          # larger runner 应看到 8 vCPU / 32GB RAM / 根分区可用 300GB+
+          echo "[spec] runner-name=${RUNNER_NAME} os=${RUNNER_OS} arch=${RUNNER_ARCH}"
+          echo "[spec] nproc=$(nproc) mem=$(free -g | awk '/^Mem:/{print $2}')GB"
+          echo "[spec] event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
+          df -h / /mnt 2>/dev/null || df -h /
+
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          # 拉取 PR 内容：显式签出 head commit，保证 stamp / ccache / artifact 键与源码一一对应
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # 源码编译必须带 third_party 子模块
+          submodules: recursive
+          # 编译本身不需要历史，但 setup.py 会读 git 描述信息，保留浅克隆即可
+          fetch-depth: 1
+
+      - name: Record source baseline commit
+        id: source-commit
+        run: |
+          # 直接取实际签出的 HEAD，保证 stamp / artifact 键与编译的源码一一对应
+          COMMIT=$(git rev-parse --short=7 HEAD)
+          echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "[source] baseline commit=${COMMIT}"
+
+      # 前缀必须在「种缓存」与「读缓存」两条流水线上算出完全一致的值，所以这段逻辑
+      # 只能有这一份实现（这也是把编译抽成可复用 workflow 的主要原因）
+      - name: Resolve ccache key
+        id: cache-meta
+        env:
+          # PR 按 base 分支取缓存（如 v2.11.0）；手动触发时就是 UI 上选中的分支。
+          # 注意分支作用域限制：在 topic 分支上手动跑本流水线读不到 v2.11.0 的缓存
+          # （兄弟分支不可见），必然冷编译，这是预期行为
+          CACHE_BRANCH: ${{ github.event.pull_request.base.ref || github.ref_name }}
+        run: |
+          # 缓存键不允许逗号，分支名里的其它字符统一折成 -。
+          # 每个分支一个独立前缀：v2.11.0 与 v2.10.0 的基线互不覆盖
+          branch_slug=$(printf '%s' "${CACHE_BRANCH}" | tr -c '[:alnum:]._-' '-')
+          # 指纹只盖「镜像 + 目标架构」：只有这两项变了才会让旧条目整体失效（编译器与
+          # 编译参数变了）。不能把 .ci/ppu/*.sh 的哈希算进来 —— 改个日志就丢掉整份缓存
+          fingerprint=$(
+            printf '%s\n%s\n' "${DOCKER_IMAGE}" "${TORCH_CUDA_ARCH_LIST}" | sha256sum | cut -c1-12
+          )
+          prefix="ppu-ccache-${BUILD_ENVIRONMENT}-${branch_slug}-${fingerprint}-"
+          echo "restore-prefix=${prefix}" >> "$GITHUB_OUTPUT"
+          # GitHub 缓存条目不可覆盖，同键 save 会直接跳过，所以键带 run id + attempt
+          echo "key=${prefix}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "branch-slug=${branch_slug}" >> "$GITHUB_OUTPUT"
+          echo "[cache] branch=${CACHE_BRANCH} prefix=${prefix}"
+
+      - name: Free disk space
+        run: |
+          # larger runner 自带 300GB+ SSD，通常直接命中下方 ≥150GB 分支跳过清理；
+          # 保留清理逻辑仅作为磁盘异常缩水时的兜底。
+          avail_gb=$(df -Pk / | awk 'NR==2 {print int($4 / 1024 / 1024)}')
+          echo "[disk] 根分区可用 ${avail_gb}GB"
+          if [[ "${avail_gb}" -ge 150 ]]; then
+            echo "[disk] 空间充足，跳过清理"
+            exit 0
+          fi
+
+          echo "[disk] 开始清理预装包"
+          SUDO=""
+          if command -v sudo >/dev/null 2>&1; then
+            SUDO="sudo"
+          fi
+          # 托管 runner 预装内容，PPU 编译一概不需要（编译发生在容器内）
+          $SUDO rm -rf /usr/local/lib/android \
+                      /usr/share/dotnet \
+                      /opt/ghc \
+                      /usr/local/.ghcup \
+                      /usr/local/share/powershell \
+                      /usr/share/swift \
+                      /usr/share/miniconda \
+                      /usr/local/lib/node_modules \
+                      /usr/local/share/chromium \
+                      /usr/local/share/boost \
+                      /usr/lib/google-cloud-sdk \
+                      /usr/lib/jvm \
+                      /opt/hostedtoolcache || true
+          $SUDO apt-get clean || true
+          $SUDO docker image prune --all --force >/dev/null 2>&1 || true
+          echo "=== 清理后 ==="
+          df -h /
+          avail_gb=$(df -Pk / | awk 'NR==2 {print int($4 / 1024 / 1024)}')
+          if [[ "${avail_gb}" -lt 40 ]]; then
+            echo "[disk] 警告: 清理后仍只有 ${avail_gb}GB，镜像 + 编译产物可能写满磁盘" >&2
+          fi
+
+      # 精确键（含 run id）只会在同 run 重跑时命中；正常路径是按前缀回退到
+      # 「该分支最近一次由 ppu_refresh_cache.yml 写出的 ccache」——PR 走的就是这条路
+      - name: Restore ccache
+        id: ccache
+        if: ${{ !inputs.ignore-ccache }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ppu-ccache
+          key: ${{ steps.cache-meta.outputs.key }}
+          restore-keys: ${{ steps.cache-meta.outputs.restore-prefix }}
+
+      - name: Report ccache state
+        env:
+          MATCHED_KEY: ${{ steps.ccache.outputs.cache-matched-key }}
+          IGNORED: ${{ inputs.ignore-ccache }}
+        run: |
+          if [[ "${IGNORED}" == "true" ]]; then
+            echo "[cache] ignore-ccache=true → 跳过 restore，本轮冷编译"
+          elif [[ -z "${MATCHED_KEY}" ]]; then
+            echo "[cache] 未命中任何 ccache → 本轮冷编译（全部 miss）"
+            echo "[cache] 若目标分支上还没种过缓存，在该分支手动跑一次 ppu_refresh_cache.yml"
+          else
+            echo "[cache] 命中 ${MATCHED_KEY}"
+            du -sh "${RUNNER_TEMP}/ppu-ccache" || true
+          fi
+
+      # 主防线是 MAX_JOBS + 链接 job pool；swap 只是给链接阶段的尖峰留缓冲。
+      # 托管 runner 默认不带 swap，一旦顶破 32GB 物理内存就是硬 OOM（exit 137）。
+      - name: Add swap
+        continue-on-error: true
+        run: |
+          if [[ -n "$(swapon --show --noheadings 2>/dev/null)" ]]; then
+            echo "[swap] 已有 swap，跳过"
+            swapon --show
+            exit 0
+          fi
+
+          # 优先放在临时盘 /mnt（空间大），没有则回退到根分区
+          swap_file=/mnt/ppu-swapfile
+          if [[ ! -d /mnt ]]; then
+            swap_file=/ppu-swapfile
+          fi
+          sudo fallocate -l 16G "${swap_file}" \
+            || sudo dd if=/dev/zero of="${swap_file}" bs=1M count=16384 status=none
+          sudo chmod 600 "${swap_file}"
+          sudo mkswap "${swap_file}" >/dev/null
+          sudo swapon "${swap_file}"
+          # 只在真的顶到物理内存上限时才换出，避免平时拖慢编译
+          sudo sysctl -w vm.swappiness=10 >/dev/null
+          free -h
+
+      - name: Pull docker image
+        run: |
+          # 私有 registry 偶发抖动，重试 3 次
+          for attempt in 1 2 3; do
+            if docker pull "${DOCKER_IMAGE}"; then
+              exit 0
+            fi
+            echo "[pull] 第 ${attempt} 次失败，60s 后重试" >&2
+            sleep 60
+          done
+          echo "[pull] 无法拉取 ${DOCKER_IMAGE}。常见原因：" >&2
+          echo "[pull]   1) 镜像 tag 不存在或已被清理" >&2
+          echo "[pull]   2) registry 对 GitHub Azure 出网 IP 有白名单限制" >&2
+          exit 1
+
+      - name: Start build container
+        id: container
+        env:
+          # 编译参数已全部落在 job env 上，此处只需额外带入 step 级产物
+          SOURCE_COMMIT: ${{ steps.source-commit.outputs.commit }}
+        run: |
+          # 缓存目录必须先存在：restore 未命中时 actions/cache 不会建目录，
+          # 而 docker -v 遇到不存在的宿主机路径会以 root 属主自动创建，后面上传时更麻烦
+          mkdir -p "${RUNNER_TEMP}/ppu-ccache"
+
+          # 镜像的 ENTRYPOINT 未知，显式覆盖成 bash 以保证容器常驻；
+          # 12h 兜底，防止 job 被取消后容器残留
+          container_name=$(docker run \
+            --detach \
+            --tty \
+            --entrypoint /bin/bash \
+            -e REPO_DIR="${REPO_DIR_IN_CONTAINER}" \
+            -e BUILD_ENVIRONMENT \
+            -e TORCH_CUDA_ARCH_LIST \
+            -e MAX_JOBS \
+            -e SDK_INSTALL_DIR \
+            -e PIP_INDEX_URL \
+            -e BUILD_ADDITIONAL_PACKAGES \
+            -e FORCE_REBUILD \
+            -e PPU_MEM_PER_JOB_GB \
+            -e PPU_LINK_JOBS \
+            -e CCACHE_DIR=/root/.cache/ccache \
+            -e CCACHE_MAXSIZE \
+            --security-opt seccomp=unconfined \
+            --cap-add=SYS_PTRACE \
+            -v "${GITHUB_WORKSPACE}:${REPO_DIR_IN_CONTAINER}" \
+            -v "${RUNNER_TEMP}/ppu-ccache:/root/.cache/ccache" \
+            -w "${REPO_DIR_IN_CONTAINER}" \
+            "${DOCKER_IMAGE}" \
+            -c 'sleep 12h'
+          )
+          echo "container-name=${container_name}" >> "$GITHUB_OUTPUT"
+
+          # 挂载进来的源码属主与容器内用户不一致，git 会拒绝操作；
+          # submodule 各自也是独立仓库，顺带放开全部路径
+          docker exec -t "${container_name}" bash -c \
+            "git config --global --add safe.directory ${REPO_DIR_IN_CONTAINER} \
+             && git config --global --add safe.directory '*'"
+
+          # build_wheel.sh 优先读该文件作为 stamp 键
+          docker exec -t "${container_name}" bash -c \
+            "echo '${SOURCE_COMMIT}' > /tmp/ppu_source_commit"
+
+      - name: Check PPU SDK in image
+        env:
+          CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
+        run: |
+          # sdk_env.sh（源码已挂载进容器，可直接执行）：
+          #   - 检查 $SDK_INSTALL_DIR/PPU_SDK/envsetup.sh，缺失则调用 install_sdk.sh 下载安装
+          #   - source envsetup.sh 并校验 nvcc 可用
+          # 把 SDK 环境问题卡在这一步，而不是几十分钟后的编译步骤
+          docker exec -t "${CONTAINER_NAME}" bash .ci/ppu/sdk_env.sh
+
+      - name: Setup ccache in container
+        env:
+          CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
+        run: |
+          # 在这里就把 ccache 装好并写配置（配置文件落在缓存目录内，随缓存一起走）；
+          # build_wheel.sh 里再 source 一次只是确认 + 导出环境变量，不会重复安装
+          docker exec -t "${CONTAINER_NAME}" bash .ci/ppu/ccache_env.sh
+
+          # 计数器归零，让编译后的 ccache -s 只反映本轮的命中情况（缓存条目本身不受影响）；
+          # 统一用短选项，-z / -s / -c 在 ccache 3.x 与 4.x 上写法一致
+          docker exec -t "${CONTAINER_NAME}" ccache -z \
+            || echo "[ccache] 归零统计失败（ccache 不可用？），不影响编译" >&2
+
+      - name: Build PPU torch wheel
+        id: build
+        env:
+          CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
+        run: |
+          # 后台采样内存水位（宿主机与容器共用物理内存），被 OOM 干掉后可以回看现场
+          mem_log="${RUNNER_TEMP}/mem-samples.log"
+          ( while true; do
+              printf '%s %s\n' "$(date -u +%H:%M:%S)" \
+                "$(free -m | awk '/^Mem:/{printf "used=%sMB avail=%sMB ", $3, $7} /^Swap:/{printf "swap=%sMB", $3}')" \
+                >> "${mem_log}"
+              sleep 30
+            done ) &
+          sampler_pid=$!
+          # shellcheck disable=SC2064  # 需要在设置时就绑定当前 pid
+          trap "kill ${sampler_pid} 2>/dev/null || true" EXIT
+
+          # build_wheel.sh 用到 bash 数组，必须用 bash 执行；
+          # 这里要自己接退出码，才能在 137 时给出可操作的提示
+          set +e
+          docker exec -t "${CONTAINER_NAME}" bash .ci/ppu/build_wheel.sh
+          rc=$?
+          set -e
+
+          if [[ "${rc}" -ne 0 ]]; then
+            if [[ "${rc}" -eq 137 ]]; then
+              echo "::error::编译进程被 SIGKILL（exit 137），几乎必然是宿主机 OOM"
+              echo "[oom] 当前 MAX_JOBS=${MAX_JOBS} PPU_LINK_JOBS=${PPU_LINK_JOBS}；继续发生时先下调这两个值" >&2
+              echo "[oom] 内存采样末尾:" >&2
+              tail -10 "${mem_log}" 2>/dev/null || echo "[oom] 无采样数据" >&2
+            fi
+            exit "${rc}"
+          fi
+
+          # 编译耗时由脚本写入容器内 /tmp；命中 stamp 复用时该文件不存在
+          # 这里不能加 -t：伪 TTY 会往输出里插 \r，污染 GITHUB_OUTPUT
+          if docker exec "${CONTAINER_NAME}" test -f /tmp/ppu_build_duration_sec; then
+            duration=$(docker exec "${CONTAINER_NAME}" cat /tmp/ppu_build_duration_sec | tr -d '\r\n')
+            echo "build-time-sec=${duration}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 编译失败时把“是不是 OOM / 被杀的是谁”落在日志里，不用下一轮猜
+      - name: Dump OOM diagnostics
+        if: failure()
+        continue-on-error: true
+        run: |
+          echo "=== dmesg 中的 OOM 记录 ==="
+          sudo dmesg -T 2>/dev/null \
+            | grep -iE "out of memory|killed process|oom-kill" \
+            | tail -30 \
+            || echo "（无 dmesg 权限或未记录到 OOM）"
+          echo "=== 内存 / swap ==="
+          free -h
+          echo "=== 磁盘 ==="
+          df -h /
+          echo "=== 内存采样（每 30s）==="
+          tail -40 "${RUNNER_TEMP}/mem-samples.log" 2>/dev/null || echo "（无采样数据）"
+
+      # 即使编译失败也要看命中率：命中率异常偏低往往就是失败/超时的原因
+      - name: Report ccache stats
+        id: ccache-stats
+        if: always() && steps.container.outputs.container-name != ''
+        env:
+          CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
+        run: |
+          # 先裁到 max_size 以内，避免上传一份超配额的缓存（ccache 自己的清理是阀值触发的）
+          docker exec "${CONTAINER_NAME}" ccache -c >/dev/null 2>&1 || true
+
+          # 不加 -t：伪 TTY 会往输出里插 \r，污染 GITHUB_OUTPUT / summary
+          stats=$(docker exec "${CONTAINER_NAME}" ccache -s 2>/dev/null || true)
+          if [[ -z "${stats}" ]]; then
+            echo "[ccache] 无统计输出（ccache 未启用）"
+            exit 0
+          fi
+          echo "${stats}"
+
+          # ccache 4.x 输出形如 "Hits: 12345 / 23456 (52.63 %)"，抽出整行当命中率展示
+          hit_line=$(printf '%s\n' "${stats}" | grep -m1 -i '^ *Hits:' | tr -s ' ' | sed 's/^ //' || true)
+          echo "hit-rate=${hit_line}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "<details><summary>ccache stats</summary>"
+            echo ""
+            echo '```'
+            printf '%s\n' "${stats}"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect wheel
+        id: collect
+        env:
+          SOURCE_COMMIT: ${{ steps.source-commit.outputs.commit }}
+          BUILD_TIME_SEC: ${{ steps.build.outputs.build-time-sec }}
+          MATCHED_KEY: ${{ steps.ccache.outputs.cache-matched-key }}
+          CCACHE_HIT_RATE: ${{ steps.ccache-stats.outputs.hit-rate }}
+          CACHE_BRANCH: ${{ github.event.pull_request.base.ref || github.ref_name }}
+          SAVE_CCACHE: ${{ inputs.save-ccache }}
+        run: |
+          # 容器以 root 写出 dist/，runner 用户需可读才能 glob / 上传 artifact；
+          # 必须在 glob 之前 chown，否则 dist/ 不可读时会算出空结果
+          SUDO=""
+          if command -v sudo >/dev/null 2>&1; then
+            SUDO="sudo"
+          fi
+          $SUDO chown -R "$(id -u):$(id -g)" dist 2>/dev/null || true
+
+          shopt -s nullglob
+          whls=(dist/torch-*.whl)
+          if [[ ${#whls[@]} -eq 0 ]]; then
+            echo "[collect] 错误: dist/ 下没有 torch-*.whl" >&2
+            ls -la dist 2>/dev/null || echo "[collect] dist 目录不存在" >&2
+            exit 1
+          fi
+
+          wheel_name=$(basename "${whls[0]}")
+          # artifact 名不得包含 " : < > | * ? \ /，把可能的非法字符折成 -
+          env_slug=$(printf '%s' "${BUILD_ENVIRONMENT}" | tr -c '[:alnum:]._-' '-')
+          echo "wheel-name=${wheel_name}" >> "$GITHUB_OUTPUT"
+          echo "artifact-name=ppu-wheel-${env_slug}-${SOURCE_COMMIT}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### PPU build 产物"
+            echo ""
+            echo "- 镜像: \`${DOCKER_IMAGE}\`"
+            echo "- 架构: \`${TORCH_CUDA_ARCH_LIST}\`"
+            echo "- 基线 commit: \`${SOURCE_COMMIT}\`"
+            echo "- 缓存分支: \`${CACHE_BRANCH}\`（回写: \`${SAVE_CCACHE}\`）"
+            echo "- ccache 缓存: \`${MATCHED_KEY:-未命中（冷编译）}\`"
+            echo "- ccache 命中: \`${CCACHE_HIT_RATE:-无统计}\`"
+            echo "- whl: \`${wheel_name}\` ($(du -h "${whls[0]}" | cut -f1))"
+            echo "- 编译耗时: \`${BUILD_TIME_SEC:-stamp 复用，未重新编译}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload wheel artifact
+        if: ${{ inputs.upload-wheel }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.collect.outputs.artifact-name }}
+          path: dist/torch-*.whl
+          if-no-files-found: error
+          retention-days: 14
+          # 同一 commit 重跑 workflow 时 artifact 名会重复，v4 默认会直接报错
+          overwrite: true
+
+      - name: Prepare ccache for upload
+        if: ${{ success() && inputs.save-ccache }}
+        run: |
+          # 容器以 root 写缓存目录，runner 用户需可读才能打包上传
+          SUDO=""
+          if command -v sudo >/dev/null 2>&1; then
+            SUDO="sudo"
+          fi
+          $SUDO chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/ppu-ccache" 2>/dev/null || true
+          echo "[cache] 待上传 ccache 大小 $(du -sh "${RUNNER_TEMP}/ppu-ccache" | cut -f1)"
+
+      # 必须在 save 之前删旧条目，不能在之后：
+      #   仓库总配额只有 10GiB。若先写新条目，同分支会短暂占用「新 + 旧」两份，总量顶破
+      #   配额后 GitHub 按 LRU 淘汰 —— 而刚被 restore 过的旧条目反而是「最近使用」的，
+      #   被淘汰的很可能是另一个分支的基线。先删后写虽然有「上传失败则本分支暂时无缓存」
+      #   的窗口，但刷缓存本身是手动可重跑的，代价可接受。
+      - name: Prune old ccache entries
+        if: ${{ success() && inputs.save-ccache && inputs.prune-old-ccache }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: ${{ steps.cache-meta.outputs.restore-prefix }}
+        run: |
+          # 前缀已包含 分支 + 环境 + 指纹，这里列出的都是本分支的历史基线
+          ids=$(gh cache list --repo "${GITHUB_REPOSITORY}" --key "${PREFIX}" \
+                  --limit 100 --json id --jq '.[].id' 2>/dev/null || true)
+          if [[ -z "${ids}" ]]; then
+            echo "[cache] 无同前缀旧条目（首次种缓存属正常；列出需 actions:read 权限）"
+            exit 0
+          fi
+          for id in ${ids}; do
+            echo "[cache] 删除旧条目 id=${id}"
+            gh cache delete "${id}" --repo "${GITHUB_REPOSITORY}" || true
+          done
+
+      - name: Save ccache
+        if: ${{ success() && inputs.save-ccache }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ppu-ccache
+          key: ${{ steps.cache-meta.outputs.key }}
+
+      - name: Skip ccache save
+        if: ${{ success() && !inputs.save-ccache }}
+        env:
+          CACHE_BRANCH: ${{ github.event.pull_request.base.ref || github.ref_name }}
+        run: |
+          echo "[cache] 本流水线只读缓存，不回写。"
+          echo "[cache] 原因：pull_request run 写出的缓存归属 refs/pull/<N>/merge 作用域，"
+          echo "[cache]       只有同一个 PR 的 re-run 能读到，对 base 分支和别的 PR 毫无价值，"
+          echo "[cache]       却要占掉 10GiB 仓库配额。"
+          echo "[cache] 需要刷新 ${CACHE_BRANCH} 的基线时：在该分支手动跑 ppu_refresh_cache.yml"
+
+      - name: Report repo cache usage
+        if: ${{ always() && inputs.save-ccache }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 两个分支各一份基线，总量应稳定在配额（10GiB）以内
+          echo "=== 当前仓库 ppu-ccache-* 条目 ==="
+          gh cache list --repo "${GITHUB_REPOSITORY}" --key "ppu-ccache-" \
+            --limit 50 2>/dev/null || echo "（需 actions:read 权限才能列出）"
+
+      - name: Teardown container
+        if: always() && steps.container.outputs.container-name != ''
+        continue-on-error: true
+        env:
+          CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
+        run: |
+          docker rm -f "${CONTAINER_NAME}" || true
+          df -h /
