@@ -7,7 +7,7 @@
 #     ccache 基线，命中后编译时间从冷编译的数小时降到增量水平
 #   - 产出：dist/torch-*.whl 上传为 artifact（ppu-wheel-<env>-<commit>，保留 14 天）
 #     下游：ppu_smoke.yml / ppu_accuracy.yml 会等本流水线完成，下载这份 artifact 到 PPU pod
-#     里 pip install 后才跑用例（详见 .github/actions/ppu-fetch-wheel）。因此下面的
+#     里 pip install 后才跑用例（见那两个文件里的「等待 ppu-linux-build 编译完成」步骤）。因此下面的
 #     branches / paths 必须与那两条保持一致：只要出现「测试触发了、编译没触发」，
 #     那两条就会等到宽限期超时失败。
 #

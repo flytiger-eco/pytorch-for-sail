@@ -121,18 +121,122 @@ jobs:
           # 只跑 python 测试，不需要 third_party 子模块；浅克隆加速，也减小传到 NAS 的包体积
           fetch-depth: 1
 
-      # 等到本 PR 的 whl 编好并下载到源码树内（具体逻辑与 ppu_smoke.yml 共用同一份）
-      - name: 获取 ppu-linux-build 产出的 whl
-        uses: ./.github/actions/ppu-fetch-wheel
+      # -----------------------------------------------------------------------
+      # 等本 PR 的 whl 编好 → 下载到源码树内 → 校验。以下三步在 ppu_smoke.yml 与
+      # ppu_accuracy.yml 里逐字相同，改一处必须同步改另一处（diff 两个文件即可确认没漂移）。
+      #
+      # 为什么不抽成 composite action：本 job 跑在 ARC(Actions Runner Controller) 自建
+      # runner 上且带 container，ARC 的 k8s hook 把 workspace 拷进 job 容器，runner 进程
+      # 自己看不到 checkout 的结果 —— `uses: ./.github/actions/xxx` 必然报
+      # "Can't find 'action.yml' ... Did you forget to run actions/checkout"，即便
+      # checkout 成功。改写成 owner/repo/.github/actions/xxx@ref 也不行：uses 不支持
+      # 表达式，ref 只能写死，而改 action 的 PR 就没法自测自己那一版。
+      # -----------------------------------------------------------------------
+      - name: 等待 ppu-linux-build 编译完成
+        id: wait-build
+        # 只调 REST API，不占 PPU 卡；pod 要到真正跑用例那一步才拉起
+        uses: actions/github-script@v7
         with:
-          build-workflow: ${{ env.BUILD_WORKFLOW }}
-          # pull_request 事件下 github.sha 是 merge commit，而两条 workflow 的 run 都以
-          # PR head commit 作为 head_sha，所以用它做关联键（也与上面 checkout 的 ref 一致）
-          head-sha: ${{ github.event.pull_request.head.sha }}
-          wheel-dir: ${{ env.WHEEL_DIR_REL }}
-          timeout-minutes: ${{ env.WAIT_TIMEOUT_MINUTES }}
-          poll-seconds: ${{ env.WAIT_POLL_SECONDS }}
-          grace-minutes: ${{ env.WAIT_GRACE_MINUTES }}
+          script: |
+            const workflow = process.env.BUILD_WORKFLOW;
+            // pull_request 事件下 github.sha 是 merge commit，而两条 workflow 的 run 都以
+            // PR head commit 作为 head_sha，所以用它做关联键（也与上面 checkout 的 ref 一致）
+            const headSha = context.payload.pull_request.head.sha;
+            const pollMs = Number(process.env.WAIT_POLL_SECONDS) * 1000;
+            const timeoutMs = Number(process.env.WAIT_TIMEOUT_MINUTES) * 60 * 1000;
+            const graceMs = Number(process.env.WAIT_GRACE_MINUTES) * 60 * 1000;
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const startedAt = Date.now();
+
+            core.info(`[wait] 目标: ${workflow} @ head_sha=${headSha}`);
+            while (true) {
+              const waited = Date.now() - startedAt;
+              const waitedMin = Math.round(waited / 60000);
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: workflow,
+                head_sha: headSha,
+                per_page: 20,
+              });
+              const runs = data.workflow_runs;
+
+              // 同一个 sha 上可能既有 pull_request 触发的 run、又有手动触发 / 重跑的，
+              // 只要有一次成功就能拿到可用的 whl
+              const ok = runs.find((r) => r.status === 'completed' && r.conclusion === 'success');
+              if (ok) {
+                core.info(`[wait] 编译已成功（等待 ${waitedMin} 分钟）: ${ok.html_url}`);
+                core.setOutput('run-id', String(ok.id));
+                core.setOutput('run-url', ok.html_url);
+                return;
+              }
+
+              const pending = runs.find((r) => r.status !== 'completed');
+              if (pending) {
+                core.info(`[wait] 编译中 (${pending.status})，已等 ${waitedMin} 分钟: ${pending.html_url}`);
+              } else if (runs.length > 0) {
+                // 全部 completed 且无一成功：再等下去也不会有 whl，直接失败
+                core.setFailed(
+                  `[wait] ${workflow} 未成功（conclusion=${runs[0].conclusion}）: ${runs[0].html_url}\n` +
+                  '没有可用的 whl。先修好编译，再重跑本 workflow。'
+                );
+                return;
+              } else if (waited > graceMs) {
+                core.setFailed(
+                  `[wait] 等了 ${waitedMin} 分钟仍找不到 ${workflow} 在 ${headSha} 上的 run。\n` +
+                  '最常见原因：本 workflow 与 ppu_linux_build.yml 的 branches / paths 过滤不一致，' +
+                  '导致这个 PR 只触发了测试、没触发编译。'
+                );
+                return;
+              } else {
+                core.info(`[wait] 还没查到 build run，宽限期内继续等（已等 ${waitedMin} 分钟）`);
+              }
+
+              if (waited > timeoutMs) {
+                core.setFailed(
+                  `[wait] 超时：等 ${workflow} 超过 ${process.env.WAIT_TIMEOUT_MINUTES} 分钟。` +
+                  '冷编译（ccache 未命中）本身就要 4~5h，可先在 base 分支跑一次 ppu_refresh_cache.yml 种缓存。'
+                );
+                return;
+              }
+              await sleep(pollMs);
+            }
+
+      - name: 下载 whl artifact
+        uses: actions/download-artifact@v4
+        with:
+          # artifact 名形如 ppu-wheel-<env>-<commit>（见 _ppu_build.yml 的 Collect wheel 步骤），
+          # 这里按前缀取，不在两边各写一份命名规则
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          # 跨 run 下载必须显式给 run-id + token（默认只在当前 run 内找）
+          run-id: ${{ steps.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 校验 whl 已就位
+        env:
+          # 用相对路径：${{ github.workspace }} 求值出的是 runner 自己的路径
+          # (/home/runner/_work/...)，而本步骤跑在 container 里看到的是挂载点 (/__w/...)
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+          BUILD_RUN_URL: ${{ steps.wait-build.outputs.run-url }}
+        run: |
+          # 卡在这里，而不是等 pod 起来才发现没包 —— 那时已经占着 PPU 卡了
+          shopt -s nullglob
+          whls=("${WHEEL_DIR}"/torch-*.whl)
+          if [[ ${#whls[@]} -ne 1 ]]; then
+            echo "::error::期望 ${WHEEL_DIR} 下恰好 1 个 torch-*.whl，实际 ${#whls[@]} 个"
+            ls -la "${WHEEL_DIR}" 2>/dev/null || echo "（目录不存在）"
+            exit 1
+          fi
+          wheel_name=$(basename "${whls[0]}")
+          echo "[wheel] ${wheel_name} ($(du -h "${whls[0]}" | cut -f1))"
+          {
+            echo "### 被测 whl"
+            echo ""
+            echo "- 包: \`${wheel_name}\`"
+            echo "- 来源: ${BUILD_RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: "890P 单卡 (1 PPU) CUDA inductor 精度单测"
         uses: flytiger-eco/ppu-distributed-action@main
