@@ -60,6 +60,15 @@ echo "=== CUDA inductor 精度单测（run_test.py --include 白名单过滤，�
 # 下面的 include 白名单是"可调项"：先给一组有代表性的 CUDA 精度用例，
 # 请按 PPU 实际支持情况增删（例如想加深 op 级覆盖可加 inductor/test_torchinductor_opinfo，
 # 但该文件很重、耗时长，默认不放进门禁）。
+# 用例名必须是 run_test.py 发现得到的测试名（即 tools/testing/discover_tests.py 的 TESTS，
+# 大体对应 test/ 下去掉 .py 后缀的相对路径）：-i/--include 的 choices 就是这份清单，
+# 写错一个名字 argparse 会直接 exit 2（invalid choice），一个用例也不会跑。
+# 因此 rebase 上游后若有测试文件被重命名/删除，这里要跟着改。可在仓库根目录用
+#   python -c "import sys;sys.path.insert(0,'.');from tools.testing.discover_tests import TESTS;print('inductor/test_gpu_select_algorithm' in TESTS)"
+# 校验（不需要装 torch）。
+# test_gpu_select_algorithm：上游 #163615 把 test_cuda_select_algorithm.py 泛化成兼容 XPU 后
+# 改名而来，内容仍是 GPU 版 select_algorithm（instantiate_device_type_tests 的
+# only_for=("cuda","xpu")），在 PPU 上跑的仍是 cuda 那一半。
 # FP8：inductor/test_fp8 已移除——真武 PPU 当前不支持 FP8，该文件全量为 FP8 语义，
 # 与 ppu_smoke.yml 的裁剪保持一致；PPU 支持 FP8 后再加回来。
 # 不使用 --upload-artifacts-while-running：那是官方 S3 上传路径，自建集群上没有。
@@ -69,7 +78,7 @@ python test/run_test.py \
         inductor/test_torchinductor_dynamic_shapes \
         inductor/test_cuda_repro \
         inductor/test_cudagraph_trees \
-        inductor/test_cuda_select_algorithm \
+        inductor/test_gpu_select_algorithm \
     --verbose
 
 echo "[accuracy] 完成"

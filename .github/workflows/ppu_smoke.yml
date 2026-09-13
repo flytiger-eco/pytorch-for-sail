@@ -244,7 +244,17 @@ jobs:
               await sleep(pollMs);
             }
 
+      # 下载分三次写：download-artifact 没有 retries 输入（github-script 的 retries 只作用于
+      # 上面那一步），而这一步要跨 run 拉一个几百 MB 的 zip，自建 runner 出网走代理，偶发
+      #   Unable to download artifact(s): ... tunneling socket could not be established,
+      #   cause=getaddrinfo ENOTFOUND <proxy>
+      # 也就是代理域名一时解析不出来。走到这一步时已经等掉了几小时编译，为一次 DNS 抖动把
+      # 门禁判红、要人手动重跑是不可接受的（与上面 apiFailures 容忍连续失败同一个理由），
+      # 所以前两次 continue-on-error、用 outcome 串成「失败才重试」，最后一次不兜着——
+      # 真的连不通就该失败。
       - name: 下载 whl artifact
+        id: download-wheel
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           # artifact 名形如 ppu-wheel-<env>-<commit>（见 _ppu_build.yml 的 Collect wheel 步骤），
@@ -253,6 +263,48 @@ jobs:
           merge-multiple: true
           path: ${{ env.WHEEL_DIR_REL }}
           # 跨 run 下载必须显式给 run-id + token（默认只在当前 run 内找）
+          run-id: ${{ steps.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (1)
+        if: steps.download-wheel.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          # v4 是边下边解压的，中途断掉可能留下一个截断的 whl；不清掉的话重试后
+          # 「校验 whl」可能数到一个坏包，等到 pod 里 pip install 才炸（那时已占着 PPU 卡）。
+          rm -rf "${WHEEL_DIR}"
+          # 等代理 / DNS 缓过来再试，立刻重试大概率撞上同一个故障窗口
+          sleep 30
+
+      - name: 下载 whl artifact (重试 1)
+        id: download-wheel-retry-1
+        if: steps.download-wheel.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ steps.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 60
+
+      # 最后一次：不加 continue-on-error，失败就让 job 红，报错原文即上面那条 ENOTFOUND
+      - name: 下载 whl artifact (重试 2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
           run-id: ${{ steps.wait-build.outputs.run-id }}
           github-token: ${{ github.token }}
 
