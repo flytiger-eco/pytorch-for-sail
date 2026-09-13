@@ -1,0 +1,142 @@
+# P0 smoke gate: PPU CUDA 冒烟测试，跑在自建 PPU 集群的单卡 pod 上。
+#
+# 执行模型（与"直接在 runner 容器里跑测试"的早期版本不同）：
+#   - 本 job 只在 CPU runner 上做编排：checkout 源码后，由
+#     flytiger-eco/ppu-distributed-action 把源码打包暂存到 NAS，在带 PPU 卡的节点上
+#     拉起 pod，解压到 source_dir，再执行 command。
+#   - 所以 runner 容器只需小体积的 actions-runner 镜像；PPU 发布镜像只在 PPU pod 内
+#     使用，避免 CPU 节点拉大镜像超时（此前 "initialize container" 失败的原因）。
+#   - 冒烟用例只需单卡：nnodes: 0 + nproc_per_node: 1。
+#
+# 被测的 torch 从哪来：
+#   - 等 ppu_linux_build.yml 把本 PR 的 whl 编完 → 下载它的 artifact → 随源码送进 pod →
+#     在 pod 内 pip install 成功后才跑用例。门禁因此测的是本 PR 真正编出来的 torch。
+#   - 「等」是轮询 ppu-linux-build 在同一个 head sha 上的 run，而不是用 workflow_run：
+#     workflow_run 只读默认分支上的 workflow 文件，且它的 run 不会作为 PR 的 check 出现，
+#     当不了 PR 门禁。
+#   - 代价：触发条件必须与 ppu_linux_build.yml 完全一致（见下面的 branches / paths），
+#     否则会出现「本 workflow 触发了、但那个 PR 根本没编包」→ 永远等不到 whl。
+#
+# 与 test-h100.yml 的差异：
+#   - 不在本 workflow 里编：test-h100 走 _linux-build.yml 同条流水线先编 wheel 再测；
+#     这里复用 ppu_linux_build.yml 已经编好的产物，避免每条测试门禁各编一次
+#     （PPU 冷编译要 4~5h）。
+#   - 不装 PPU SDK：PPU 镜像里已自带，.ci/ppu/sdk_env.sh 只做校验 + source envsetup.sh。
+#     但测试框架依赖（pytest 及其插件等）镜像里没有，由 .ci/ppu/install_test_deps.sh 按
+#     .ci/docker/requirements-ci.txt 的版本补装，保证与官方 CI 跑 test case 的环境一致。
+#   - 只跑 CUDA 相关用例，且裁掉 H100/B200 专属用例，以及 FP8 用例（真武 PPU 当前不支持
+#     FP8）。用例清单见 .ci/ppu/smoke_test.sh。
+name: ppu-smoke
+
+on:
+  # 触发条件必须与 ppu_linux_build.yml 保持一致：本 workflow 依赖它的 whl，
+  # 「smoke 触发了但 build 没触发」等价于卡死到超时。改一侧就要同步改另一侧。
+  pull_request:
+    branches:
+      - v2.11.0
+    paths:
+      - 'aten/**'
+      - 'torch/**'
+      - 'c10/**'
+      - 'torchgen/**'
+      - 'setup.py'
+      - '.ci/ppu/**'
+      - '.github/workflows/ppu_linux_build.yml'
+      - '.github/workflows/_ppu_build.yml'
+      - '.github/workflows/ppu_smoke.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # 轮询 ppu-linux-build 的 run 状态、以及跨 run 下载它的 whl artifact 都需要
+  actions: read
+
+env:
+  # PPU 基础镜像：python3.12 + CUDA13 + PPU SDK + triton，不含 torch —— torch 由
+  # ppu-linux-build 的 whl 提供。刻意与 _ppu_build.yml 的 docker-image 默认值用同一个 tag：
+  # 编译与运行同镜像，才不会出现 whl 与镜像里 SDK / 工具链对不上的问题。
+  # 注意：这里必须是 PPU 镜像，不能填 actions-runner 镜像——后者以非 root 用户 runner
+  # (uid 1001) 启动，action 在 pod 内创建 source_dir 时会 mkdir /workspace 失败（Permission denied）。
+  # 前置要求：该镜像须已预拉到 NODE_SELECTOR 指定板型的节点上（action 文档「前置要求」第 3 条）。
+  # 换镜像 tag 或换板型时都要重新确认预拉，否则 pod 会卡在拉取阶段直至超时。
+  IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
+  NAMESPACE: ppu-sched
+  HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
+  # action 在 pod 内解压源码的路径（也是 action 的默认值，这里显式写出便于 command 引用）
+  SOURCE_DIR: /workspace/source
+  # 板型选 890P：集群里 890P 有 16 台（每台 8 PPU），810E 只有 1 台（16 PPU）。
+  # 本 workflow 是每个 PR 都触发的高频门禁，钉在 810E 会把所有 PR 排队到同一台机器上。
+  NODE_SELECTOR: "board-type=ZW-M890P"
+  # 内部 pip 源：pod 内只能访问内网，补装 run_test.py 必需的 pytest 插件要走这个源。
+  # 仓库名是 pypi_index（带下划线的 VIRTUAL 仓，聚合 pypi_formal/aliyun/huawei/tsinghua 等代理）。
+  # 写成 pypiindex 会命中不存在的仓库，Artifactory 对所有包返回 404，pip 报
+  # "Could not find a version that satisfies the requirement ... (from versions: none)"。
+  PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
+  # 依赖的编译门禁：按 workflow 文件名找它在同一个 head sha 上的 run
+  BUILD_WORKFLOW: ppu_linux_build.yml
+  # whl 落地目录（相对源码根）。必须在源码树内，且不能被 .gitignore 命中：
+  # 它要靠 ppu-distributed-action 打包源码一起送进 pod，而 dist/ 在 .gitignore 里，
+  # 按 gitignore 过滤的打包方式会把它整个丢掉。
+  WHEEL_DIR_REL: .ci/ppu/wheelhouse
+  # 等 build 的上限：命中 ccache 的增量编译约几十分钟，冷编译要 4~5h。
+  # 等待发生在自建 CPU runner 上（不占 PPU 卡），pod 要到真正跑用例那一步才拉起。
+  WAIT_TIMEOUT_MINUTES: "300"
+  WAIT_POLL_SECONDS: "60"
+  # 「一个 build run 都还没出现」的宽限期：正常情况下两条 workflow 由同一事件同时创建，
+  # 秒级就能查到。超过这个时间还查不到，基本就是两边触发条件不一致，早失败早暴露。
+  WAIT_GRACE_MINUTES: "15"
+
+jobs:
+  ppu-smoke-890p-single:
+    name: ppu-smoke (890P 单卡)
+    runs-on: k8s-runner-group-cpu-flytiger
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    # = 等 build 的上限(300) + 用例超时(60) + 下载/打包余量；命中缓存时实际远低于此
+    timeout-minutes: 380
+
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          # 签出 PR head commit（github.sha 在 PR 场景是 merge commit），保证测试代码与 PR 一致
+          ref: ${{ github.event.pull_request.head.sha }}
+          # 只跑 python 测试，不需要 third_party 子模块；浅克隆加速，也减小传到 NAS 的包体积
+          fetch-depth: 1
+
+      # 等到本 PR 的 whl 编好并下载到源码树内（具体逻辑与 ppu_accuracy.yml 共用同一份）
+      - name: 获取 ppu-linux-build 产出的 whl
+        uses: ./.github/actions/ppu-fetch-wheel
+        with:
+          build-workflow: ${{ env.BUILD_WORKFLOW }}
+          # pull_request 事件下 github.sha 是 merge commit，而两条 workflow 的 run 都以
+          # PR head commit 作为 head_sha，所以用它做关联键（也与上面 checkout 的 ref 一致）
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          wheel-dir: ${{ env.WHEEL_DIR_REL }}
+          timeout-minutes: ${{ env.WAIT_TIMEOUT_MINUTES }}
+          poll-seconds: ${{ env.WAIT_POLL_SECONDS }}
+          grace-minutes: ${{ env.WAIT_GRACE_MINUTES }}
+
+      - name: "890P 单卡 (1 PPU) CUDA 冒烟测试"
+        uses: flytiger-eco/ppu-distributed-action@main
+        with:
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: ${{ env.NODE_SELECTOR }}
+          host_volumes: ${{ env.HOST_VOLUMES }}
+          image: ${{ env.IMAGE }}
+          namespace: ${{ env.NAMESPACE }}
+          source_dir: ${{ env.SOURCE_DIR }}
+          timeout_minutes: 60
+          # 环境变量必须在 command 里注入：job 级 env 不会传进 PPU pod。
+          # 脚本自身会 cd 到源码根目录，所以这里只给绝对路径即可。
+          # WHEEL_DIR 指向上面下载的 whl（已随源码被 action 打包到 pod 的 source_dir 下）。
+          command: |
+            PR_NUMBER="${{ github.event.pull_request.number }}" \
+            WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
+            SDK_INSTALL_DIR="/usr/local" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/smoke_test.sh
