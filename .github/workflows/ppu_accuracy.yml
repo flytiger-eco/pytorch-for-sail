@@ -278,15 +278,23 @@ jobs:
           BUILD_RUN_URL: ${{ steps.wait-build.outputs.run-url }}
         run: |
           # 卡在这里，而不是等 pod 起来才发现没包 —— 那时已经占着 PPU 卡了
-          shopt -s nullglob
-          whls=("${WHEEL_DIR}"/torch-*.whl)
-          if [[ ${#whls[@]} -ne 1 ]]; then
-            echo "::error::期望 ${WHEEL_DIR} 下恰好 1 个 torch-*.whl，实际 ${#whls[@]} 个"
+          # 本步骤在 actions-runner 容器里跑，容器无 bash，默认 shell 会回退到 sh：
+          # 不能用 shopt / 数组 / [[ ]] 等 bash 专有语法，一律改成 POSIX sh 写法。
+          count=0
+          wheel=""
+          for f in "${WHEEL_DIR}"/torch-*.whl; do
+            # glob 无匹配时 sh 会原样保留模式字符串，用 -e 过滤掉这个不存在的字面量（等价 nullglob）
+            [ -e "$f" ] || continue
+            count=$((count + 1))
+            wheel="$f"
+          done
+          if [ "$count" -ne 1 ]; then
+            echo "::error::期望 ${WHEEL_DIR} 下恰好 1 个 torch-*.whl，实际 ${count} 个"
             ls -la "${WHEEL_DIR}" 2>/dev/null || echo "（目录不存在）"
             exit 1
           fi
-          wheel_name=$(basename "${whls[0]}")
-          echo "[wheel] ${wheel_name} ($(du -h "${whls[0]}" | cut -f1))"
+          wheel_name=$(basename "$wheel")
+          echo "[wheel] ${wheel_name} ($(du -h "$wheel" | cut -f1))"
           {
             echo "### 被测 whl"
             echo ""
