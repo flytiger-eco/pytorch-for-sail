@@ -126,43 +126,15 @@ fi
 
 # -----------------------------------------------------------------------------
 # 3) 候选源列表
-# 背景：曾把仓库名写成 pypiindex（正确是 pypi_index），Artifactory 对不存在的仓库
-# 一律返回 404，而 `-i` 又替换掉了默认源，pip 只会报 "(from versions: none)"，
-# 看起来像版本不匹配、实际是整个索引取不到。改对仓库名后 pod 内仍是同样报错，
-# 说明 pod 内看到的 Artifactory 视图与公网侧不一致，因此这里逐个试而不是钉死一个。
-# pypi_index 是 VIRTUAL 仓，聚合了 pypi_formal / pypi_aliyun / pypi_huawei /
-# pypi_tsinghua 这几个 REMOTE 代理，单独指某个 REMOTE 仓可以绕开虚拟仓的解析问题。
+# 候选源列表与去重逻辑抽到 .ci/ppu/pip_sources.sh，install_wheel.sh 共用同一份，
+# 避免两处漂移（历史教训：两边候选表不一致，install_wheel.sh 在首选源偶发失败时
+# 没有回退，先它失败、轮不到这里）。仓库为什么要逐个试、VIRTUAL/REMOTE 的背景
+# 都记在 pip_sources.sh 的头注释里。
 # -----------------------------------------------------------------------------
-ARTIFACTORY=https://pkg.flytiger-eco.com/artifactory/api/pypi
-DEFAULT_FALLBACKS=(
-    "${ARTIFACTORY}/pypi_index/simple"
-    "${ARTIFACTORY}/pypi_formal/simple"
-    "${ARTIFACTORY}/pypi_aliyun/simple"
-    "${ARTIFACTORY}/pypi_tsinghua/simple"
-    https://pypi.tuna.tsinghua.edu.cn/simple
-    https://mirrors.aliyun.com/pypi/simple
-)
-
-CANDIDATES=()
-if [[ -n "${PIP_INDEX:-}" ]]; then
-    CANDIDATES+=("${PIP_INDEX}")
-fi
-if [[ -n "${PIP_INDEX_FALLBACKS:-}" ]]; then
-    read -r -a _extra <<<"${PIP_INDEX_FALLBACKS}"
-    CANDIDATES+=("${_extra[@]}")
-else
-    CANDIDATES+=("${DEFAULT_FALLBACKS[@]}")
-fi
-# PIP_INDEX 常常就等于候选表里的第一项，去重避免白试一遍
-_seen=""
-_uniq=()
-for idx in "${CANDIDATES[@]}"; do
-    if [[ "${_seen}" != *"|${idx}|"* ]]; then
-        _uniq+=("${idx}")
-        _seen="${_seen}|${idx}|"
-    fi
-done
-CANDIDATES=("${_uniq[@]}")
+# shellcheck source=.ci/ppu/pip_sources.sh
+source "$REPO_ROOT/.ci/ppu/pip_sources.sh"
+ppu_build_pip_candidates
+CANDIDATES=("${PIP_CANDIDATES[@]}")
 
 # -----------------------------------------------------------------------------
 # 4) 连通性诊断：pip 只会吐一句 "from versions: none"，分不清「仓库不存在(404)」、

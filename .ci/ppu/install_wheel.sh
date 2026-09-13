@@ -68,20 +68,18 @@ fi
 # 所以这里绝不能用 --force-reinstall：那会连带重装/降级镜像里适配好的 triton 等包）。
 # --no-cache-dir：whl 有 GB 级，别在 pod 的磁盘上再存一份。
 # -----------------------------------------------------------------------------
-CANDIDATES=()
-if [[ -n "${PIP_INDEX:-}" ]]; then
-    CANDIDATES+=("${PIP_INDEX}")
-fi
-if [[ -n "${PIP_INDEX_FALLBACKS:-}" ]]; then
-    read -r -a _extra <<<"${PIP_INDEX_FALLBACKS}"
-    CANDIDATES+=("${_extra[@]}")
-fi
-# 兜底：不带 -i，用镜像自带的 pip 配置
-CANDIDATES+=(__pip_default__)
+# 候选源列表与 install_test_deps.sh 共用一份，见 .ci/ppu/pip_sources.sh。
+# 关键：本脚本跑在 install_test_deps.sh 之前，必须自带同样的多源回退 —— 否则首选源
+# （pypi_index 这个 VIRTUAL 仓）在 pod 内偶发解析成 "from versions: none" 时，本脚本
+# 会直接失败，根本轮不到后面那个带回退的脚本，表现为 smoke 过、accuracy 挂。
+# shellcheck source=.ci/ppu/pip_sources.sh
+source "$REPO_ROOT/.ci/ppu/pip_sources.sh"
+ppu_build_pip_candidates
 
 installed=0
-for index in "${CANDIDATES[@]}"; do
-    pip_args=(--disable-pip-version-check --no-cache-dir --retries 1 --timeout 60)
+# 末尾追加 __pip_default__：所有内网/公网候选都失败时，退回镜像自带的 pip 配置兜底。
+for index in "${PIP_CANDIDATES[@]}" __pip_default__; do
+    pip_args=(--disable-pip-version-check --no-cache-dir --retries 1 --timeout 20)
     if [[ "${index}" == "__pip_default__" ]]; then
         label="pip 默认源"
     else
