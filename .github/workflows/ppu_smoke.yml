@@ -81,13 +81,27 @@ env:
   # 它要靠 ppu-distributed-action 打包源码一起送进 pod，而 dist/ 在 .gitignore 里，
   # 按 gitignore 过滤的打包方式会把它整个丢掉。
   WHEEL_DIR_REL: .ci/ppu/wheelhouse
-  # 等 build 的上限：命中 ccache 的增量编译约几十分钟，冷编译要 4~5h。
+  # 等 build 的上限。这是**兜底**而不是正常退出路径：正常情况下等待由 build run 自己的结论
+  # 终止 —— 编译成功就往下走；编译失败、或它自己撞上 job 超时（GitHub 记成
+  # conclusion=failure），都会立刻命中下面的「未成功」分支快速失败。
+  # 所以这个值必须严格大于 build 自己的 job 上限，否则会出现「build 还在正常编、smoke 先判
+  # 超时」的假失败：whl 最终编出来了，却没有任何门禁测它，只能手动重跑。
+  # 取值 = 350 + 40：
+  #   - 350 是 build 的硬上限（ppu_linux_build.yml 不传 timeout-minutes，取 _ppu_build.yml
+  #     的默认值 350，覆盖冷编译 4~5h 的情况）。改那个默认值必须同步改这里。
+  #   - 40 是排队余量：build 的 350 分钟从它真正开始执行才计时，而本步骤的秒表从 run 创建
+  #     就开始跑，等 x86-ubuntu2404-8-32 空闲的 queued 时间只算在本侧。
   # 等待发生在自建 CPU runner 上（不占 PPU 卡），pod 要到真正跑用例那一步才拉起。
-  WAIT_TIMEOUT_MINUTES: "300"
+  WAIT_TIMEOUT_MINUTES: "390"
   WAIT_POLL_SECONDS: "60"
   # 「一个 build run 都还没出现」的宽限期：正常情况下两条 workflow 由同一事件同时创建，
   # 秒级就能查到。超过这个时间还查不到，基本就是两边触发条件不一致，早失败早暴露。
   WAIT_GRACE_MINUTES: "15"
+  # 轮询期间容忍的「连续」查询失败次数。自建 runner 出网走代理，调 api.github.com 偶发
+  # `RequestError: fetch failed`（octokit 把网络层错误一律记成 status 500）。轮询要持续
+  # 几小时、几百次请求，一次抖动就让整个 job 白等是不可接受的，所以只在连续失败到这个
+  # 次数（× WAIT_POLL_SECONDS ≈ 10 分钟持续不通）才判定为真故障。查询成功即清零。
+  WAIT_MAX_API_FAILURES: "10"
 
 jobs:
   ppu-smoke-890p-single:
@@ -95,8 +109,11 @@ jobs:
     runs-on: k8s-runner-group-cpu-flytiger
     container:
       image: ghcr.io/actions/actions-runner:latest
-    # = 等 build 的上限(300) + 用例超时(60) + 下载/打包余量；命中缓存时实际远低于此
-    timeout-minutes: 380
+    # = 等 build 的上限(390) + 用例超时(60) + checkout/下载 whl/pod 启动与打包余量(30)。
+    # 必须大于 WAIT_TIMEOUT_MINUTES：否则秒表还没到点、job 先被砍，日志里只剩一条没有
+    # 任何原因说明的 job 超时。命中缓存时实际远低于此。
+    # 注：6 小时 job 上限只约束 GitHub 托管 runner，本 job 在自建 ARC runner 上不受该限制。
+    timeout-minutes: 480
 
     steps:
       - name: Checkout PyTorch
@@ -133,27 +150,65 @@ jobs:
           # PR head commit 作为 head_sha，所以用它做关联键（也与上面 checkout 的 ref 一致）
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         with:
+          # 单次请求内部也重试（octokit retry 插件），先扛掉最短的网络抖动；
+          # 连续多轮都失败才由下面的 apiFailures 计数判定为真故障。
+          retries: 3
           script: |
             const workflow = process.env.BUILD_WORKFLOW;
             const headSha = process.env.HEAD_SHA;
             const pollMs = Number(process.env.WAIT_POLL_SECONDS) * 1000;
             const timeoutMs = Number(process.env.WAIT_TIMEOUT_MINUTES) * 60 * 1000;
             const graceMs = Number(process.env.WAIT_GRACE_MINUTES) * 60 * 1000;
+            const maxApiFailures = Number(process.env.WAIT_MAX_API_FAILURES);
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             const startedAt = Date.now();
+            let apiFailures = 0;
 
             core.info(`[wait] 目标: ${workflow} @ head_sha=${headSha}`);
             while (true) {
               const waited = Date.now() - startedAt;
               const waitedMin = Math.round(waited / 60000);
-              const { data } = await github.rest.actions.listWorkflowRuns({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: workflow,
-                head_sha: headSha,
-                per_page: 20,
-              });
-              const runs = data.workflow_runs;
+
+              // 超时判定放在循环开头：下面查询失败时会 continue，放在尾部会被跳过
+              if (waited > timeoutMs) {
+                core.setFailed(
+                  `[wait] 超时：等 ${workflow} 超过 ${process.env.WAIT_TIMEOUT_MINUTES} 分钟仍无结论。` +
+                  '这个上限已高于 build 自己的 job 超时，所以「编译慢」不会走到这里：' +
+                  '大概率那个 run 长期卡在 queued（没有空闲编译 runner）。'
+                );
+                return;
+              }
+
+              let runs;
+              try {
+                const { data } = await github.rest.actions.listWorkflowRuns({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: workflow,
+                  head_sha: headSha,
+                  per_page: 20,
+                });
+                runs = data.workflow_runs;
+                apiFailures = 0;
+              } catch (error) {
+                // 不能让单次网络抖动掀掉整个 job：那意味着已经等掉的几小时编译白费，
+                // 且 PR 门禁会以一个与被测代码无关的原因变红。
+                apiFailures += 1;
+                if (apiFailures >= maxApiFailures) {
+                  core.setFailed(
+                    `[wait] 连续 ${apiFailures} 次查询 ${workflow} 的 run 失败，放弃等待：` +
+                    `${error.status || ''} ${error.message}\n` +
+                    'runner 到 api.github.com 的网络（出网代理）大概率有问题，不是编译本身失败。'
+                  );
+                  return;
+                }
+                core.warning(
+                  `[wait] 查询 run 失败（连续第 ${apiFailures}/${maxApiFailures} 次），` +
+                  `${process.env.WAIT_POLL_SECONDS}s 后重试: ${error.status || ''} ${error.message}`
+                );
+                await sleep(pollMs);
+                continue;
+              }
 
               // 同一个 sha 上可能既有 pull_request 触发的 run、又有手动触发 / 重跑的，
               // 只要有一次成功就能拿到可用的 whl
@@ -186,13 +241,6 @@ jobs:
                 core.info(`[wait] 还没查到 build run，宽限期内继续等（已等 ${waitedMin} 分钟）`);
               }
 
-              if (waited > timeoutMs) {
-                core.setFailed(
-                  `[wait] 超时：等 ${workflow} 超过 ${process.env.WAIT_TIMEOUT_MINUTES} 分钟。` +
-                  '冷编译（ccache 未命中）本身就要 4~5h，可先在 base 分支跑一次 ppu_refresh_cache.yml 种缓存。'
-                );
-                return;
-              }
               await sleep(pollMs);
             }
 
