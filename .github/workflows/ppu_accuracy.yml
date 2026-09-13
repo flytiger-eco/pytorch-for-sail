@@ -222,7 +222,7 @@ jobs:
           run-id: ${{ steps.wait-build.outputs.run-id }}
           github-token: ${{ github.token }}
 
-      - name: 校验 whl 已就位
+      - name: 校验 whl
         env:
           # 用相对路径：${{ github.workspace }} 求值出的是 runner 自己的路径
           # (/home/runner/_work/...)，而本步骤跑在 container 里看到的是挂载点 (/__w/...)
@@ -266,3 +266,5 @@ jobs:
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
             bash ${{ env.SOURCE_DIR }}/.ci/ppu/accuracy_test.sh
+            
+
