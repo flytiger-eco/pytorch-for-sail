@@ -149,7 +149,21 @@ jobs:
           echo "[spec] event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
           df -h / /mnt 2>/dev/null || df -h /
 
+      # -----------------------------------------------------------------------
+      # checkout 写成三次尝试：这里带 submodules: recursive，要拉几十个 third_party 子模块、
+      # 出网走代理，是整条流水线里最容易被网络抖动打断的一步（典型报错：RPC failed;
+      # curl transfer closed / early EOF、getaddrinfo ENOTFOUND <proxy>）。这一步挂了不仅
+      # 白占一个编译 runner 槽位，下游四条门禁还在 wait 它的 run，一块儿往后拖。
+      # 写法与测试门禁里的 checkout 重试一致（GHA 的 step 没有 retry 键，想重试一个 uses
+      # 步骤只能再写一个 step，upstream 的 .github/actions/checkout-pytorch/action.yml 也一样）：
+      # 前两次 continue-on-error，用 outcome 串成「失败才重试」，最后一次不兜着。checkout 自己会处理残留（.git 无效或 remote 对不上
+      # 就清空目录重新 clone，子模块也会重新 sync/update），所以不用手动清场。
+      # 三段的 with: 必须逐字一致，否则重试会编出与第一次不同的源码（进而让下面
+      # Record source baseline commit 算出另一个 stamp / ccache / artifact 键）。
+      # -----------------------------------------------------------------------
       - name: Checkout PyTorch
+        id: checkout
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           # 拉取 PR 内容：显式签出 head commit，保证 stamp / ccache / artifact 键与源码一一对应
@@ -157,6 +171,34 @@ jobs:
           # 源码编译必须带 third_party 子模块
           submodules: recursive
           # 编译本身不需要历史，但 setup.py 会读 git 描述信息，保留浅克隆即可
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 1)
+        if: steps.checkout.outcome == 'failure'
+        # 等代理 / DNS 缓过来再试，立即重试大概率撞上同一个故障窗口
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 1)
+        id: checkout-retry-1
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        run: sleep 15
+
+      # 最后一次：不加 continue-on-error，真的连不通就该失败
+      - name: Checkout PyTorch (重试 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
           fetch-depth: 1
 
       - name: Record source baseline commit

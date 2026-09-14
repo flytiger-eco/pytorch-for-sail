@@ -116,12 +116,55 @@ jobs:
     timeout-minutes: 480
 
     steps:
+      # -----------------------------------------------------------------------
+      # checkout 写成三次尝试，与下面「下载 whl artifact」同一个套路、同一个理由：
+      # 本 job 跑在自建 ARC runner 上、出网走代理，git clone 与 artifact 下载撞的是同一类
+      # 网络故障（tunneling socket could not be established / getaddrinfo ENOTFOUND <proxy>，
+      # 以及 fetch 中途 "RPC failed; curl transfer closed"）。一次抖动就把门禁判红、要人手动
+      # 重跑是不可接受的：本 job 后面还要等几小时编译，重跑等于再等一轮。
+      # GHA 的 step 没有 retry 键（只有 continue-on-error / timeout-minutes），想重试一个
+      # uses 步骤就只能再写一个 step，upstream 的 .github/actions/checkout-pytorch/action.yml
+      # 也是这么干的（那个 action 在 ARC + container 下用不了，见下面 composite action 那段注释）。
+      # 不需要手动清场（与 whl 不同）：checkout 发现目录里的 .git 无效或 remote 对不上时会
+      # 自己清空目录重新 clone，半个 .git 也能被下一次 fetch 续上。
+      # 三段的 with: 必须逐字一致，否则重试会签出与第一次不同的东西。
+      # 以下五步在 ppu_smoke.yml / ppu_accuracy.yml / ppu_perf.yml / ppu_distribute.yml 里逐字
+      # 相同，改一处必须同步改另三处（ppu_full_ut.yml 的 8 个分片只差 ref 取 github.sha）。
+      # -----------------------------------------------------------------------
       - name: Checkout PyTorch
+        id: checkout
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           # 签出 PR head commit（github.sha 在 PR 场景是 merge commit），保证测试代码与 PR 一致
           ref: ${{ github.event.pull_request.head.sha }}
           # 只跑 python 测试，不需要 third_party 子模块；浅克隆加速，也减小传到 NAS 的包体积
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 1)
+        if: steps.checkout.outcome == 'failure'
+        # 等代理 / DNS 缓过来再试，立即重试大概率撞上同一个故障窗口
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 1)
+        id: checkout-retry-1
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        run: sleep 15
+
+      # 最后一次：不加 continue-on-error，真的连不通就该失败
+      - name: Checkout PyTorch (重试 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
 
       # -----------------------------------------------------------------------

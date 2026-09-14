@@ -335,13 +335,57 @@ jobs:
     timeout-minutes: 540
 
     steps:
+      # -----------------------------------------------------------------------
+      # checkout 写成三次尝试，与下面「下载 whl artifact」同一个套路、同一个理由：自建
+      # runner 出网走代理，git clone 与 artifact 下载撞的是同一类网络故障（tunneling
+      # socket could not be established / getaddrinfo ENOTFOUND <proxy>，以及 fetch 中途
+      # "RPC failed; curl transfer closed"）。本文件尤其不能容忍这种抖动：8 个分片已经
+      # 等掉了几小时编译，一个分片在 clone 上挂了就要重跑一轮八小时级的全量 UT。
+      # GHA 的 step 没有 retry 键（只有 continue-on-error / timeout-minutes），想重试一个
+      # uses 步骤就只能再写一个 step，upstream 的 .github/actions/checkout-pytorch/action.yml
+      # 也是这么干的（那个 action 在 ARC + container 下用不了，见 wait-build 那段注释）。
+      # 不需要手动清场（与 whl 不同）：checkout 发现目录里的 .git 无效或 remote 对不上时会
+      # 自己清空目录重新 clone，半个 .git 也能被下一次 fetch 续上。
+      # 三段的 with: 必须逐字一致，否则重试会签出与第一次不同的东西。
+      # 这五步在本文件 8 个分片里逐字相同（除本分片多了这段注释），也与 ppu_smoke.yml /
+      # ppu_accuracy.yml / ppu_perf.yml / ppu_distribute.yml 里的对应五步等价，只差 ref：
+      # 那四条是 PR 触发、取 pull_request.head.sha，本文件是手动触发、取 github.sha。
+      # -----------------------------------------------------------------------
       - name: Checkout PyTorch
+        id: checkout
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           # 显式钉在 github.sha（= 手动触发时所选 ref 的 tip）：必须与 wait-build 里用来关联
           # build run 的那个 sha 一致，否则测的源码与装上的 whl 不是同一个 commit
           ref: ${{ github.sha }}
           # 只跑 python 测试，不需要 third_party 子模块；浅克隆加速，也减小传到 NAS 的包体积
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 1)
+        if: steps.checkout.outcome == 'failure'
+        # 等代理 / DNS 缓过来再试，立即重试大概率撞上同一个故障窗口
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 1)
+        id: checkout-retry-1
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        run: sleep 15
+
+      # 最后一次：不加 continue-on-error，真的连不通就该失败
+      - name: Checkout PyTorch (重试 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
       # -----------------------------------------------------------------------
@@ -497,7 +541,34 @@ jobs:
     timeout-minutes: 540
 
     steps:
+      # 下面五步与 ut-default-1 里的对应五步逐字相同（理由见那里的注释）
       - name: Checkout PyTorch
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 1)
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 1)
+        id: checkout-retry-1
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -612,7 +683,34 @@ jobs:
     timeout-minutes: 540
 
     steps:
+      # 下面五步与 ut-default-1 里的对应五步逐字相同（理由见那里的注释）
       - name: Checkout PyTorch
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 1)
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 1)
+        id: checkout-retry-1
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -727,7 +825,34 @@ jobs:
     timeout-minutes: 540
 
     steps:
+      # 下面五步与 ut-default-1 里的对应五步逐字相同（理由见那里的注释）
       - name: Checkout PyTorch
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 1)
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 1)
+        id: checkout-retry-1
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -842,7 +967,34 @@ jobs:
     timeout-minutes: 540
 
     steps:
+      # 下面五步与 ut-default-1 里的对应五步逐字相同（理由见那里的注释）
       - name: Checkout PyTorch
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 1)
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 1)
+        id: checkout-retry-1
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -957,7 +1109,34 @@ jobs:
     timeout-minutes: 540
 
     steps:
+      # 下面五步与 ut-default-1 里的对应五步逐字相同（理由见那里的注释）
       - name: Checkout PyTorch
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 1)
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 1)
+        id: checkout-retry-1
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -1072,7 +1251,34 @@ jobs:
     timeout-minutes: 540
 
     steps:
+      # 下面五步与 ut-default-1 里的对应五步逐字相同（理由见那里的注释）
       - name: Checkout PyTorch
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 1)
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 1)
+        id: checkout-retry-1
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -1187,7 +1393,34 @@ jobs:
     timeout-minutes: 540
 
     steps:
+      # 下面五步与 ut-default-1 里的对应五步逐字相同（理由见那里的注释）
       - name: Checkout PyTorch
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 1)
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 1)
+        id: checkout-retry-1
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: 重试前等待 (checkout 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (重试 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
