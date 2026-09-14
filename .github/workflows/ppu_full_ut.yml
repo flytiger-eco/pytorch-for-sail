@@ -12,14 +12,18 @@
 #     长注释 —— action 的 NAS 暂存路径与 pod 名都只按 github.job 区分。
 #   - pod 内实际逻辑见 .ci/ppu/full_ut_test.sh（含仅 CUDA 的两层过滤与 FP8 排除）。
 #
-# 被测的 torch 从哪来（与另外三条测试门禁一致）：
-#   - 等 ppu_linux_build.yml 把本 PR 的 whl 编完 → 下载它的 artifact → 随源码送进 pod →
-#     在 pod 内 pip install 成功后才跑用例。
-#   - 「等」是轮询 ppu-linux-build 在同一个 head sha 上的 run，而不是用 workflow_run：
-#     workflow_run 只读默认分支上的 workflow 文件，且它的 run 不会作为 PR 的 check 出现，
-#     当不了 PR 门禁。
-#   - 代价：触发条件必须与 ppu_linux_build.yml 完全一致（见下面的 branches / paths），
-#     否则会出现「本 workflow 触发了、但那个 PR 根本没编包」→ 永远等不到 whl。
+# 被测的 torch 从哪来：
+#   - 等 ppu_linux_build.yml 在**同一个 commit** 上编出的 whl → 下载它的 artifact →
+#     随源码送进 pod → 在 pod 内 pip install 成功后才跑用例。
+#   - 「等」是轮询 ppu-linux-build 在同一个 head sha 上的 run（这里取 github.sha，
+#     即手动触发时所选 ref 的 tip），而不是用 workflow_run——后者只读默认分支上的
+#     workflow 文件，改本文件的分支上没法自测。
+#   - 因此跑本 workflow 前，所选 ref 上必须已经有一次成功的 ppu-linux-build：
+#       * 该 ref 是某个 PR 的源分支时，PR 自动触发的 build 就以分支 tip 作为 head_sha，
+#         直接命中，无需额外操作；
+#       * 否则先在同一 ref 上手动跑一次 ppu_linux_build.yml（它也有 workflow_dispatch）。
+#         两者先后顺序可以颠倒：先点本 workflow 也行，它会等到 build 出结论为止。
+#     所选 ref 上一次 build 都没有时，会在 WAIT_GRACE_MINUTES 后以明确报错失败。
 #
 # -----------------------------------------------------------------------------
 # 测试范围：以 periodic.yml + slow.yml 的 case 为模板
@@ -50,31 +54,26 @@
 #   FP8 同样两层：整文件剔掉 test_scaled_matmul_cuda 与 inductor/test_fp8，再挂
 #   -k 排除表达式兜住散落在别处的 FP8 用例（真武 PPU 当前不支持 FP8）。
 #
-# 触发方式：与另外三条测试门禁一致，仅 pull_request（作为 PR 门禁），且 branches / paths
-#   必须与 ppu_linux_build.yml 对齐。不沿用参考模板的 schedule + workflow_dispatch +
-#   repository_owner=='pytorch' 守卫（那是官方 nightly 专用）。
-#   注意：pull_request 事件读取的是**默认分支**上的 workflow 文件，本文件需先合入默认分支
-#   才会对新 PR 生效。
+# 触发方式：仅手动（workflow_dispatch）。
+#   全量 UT 是 8 个单卡 pod × 数小时的量级，不适合挂在每个 PR 上自动跑；需要它的时候
+#   在 Actions 页面选一个 ref 手动跑即可。因此本文件不再需要与 ppu_linux_build.yml 对齐
+#   branches / paths（那套约束是为了保证「测试自动触发时编译也一定触发」）。
+#   另外三条门禁（smoke / accuracy / perf）仍是 pull_request 自动门禁，不受本改动影响。
+#   注意：workflow_dispatch 要求本文件已存在于**默认分支**，Actions 页面才会出现
+#   「Run workflow」按钮与 ref 下拉框。
 name: ppu-full-ut
 
 on:
-  # 触发条件必须与 ppu_linux_build.yml 保持一致，改一侧就要同步改另一侧
-  pull_request:
-    branches:
-      - v2.11.0
-    paths:
-      - 'aten/**'
-      - 'torch/**'
-      - 'c10/**'
-      - 'torchgen/**'
-      - 'setup.py'
-      - '.ci/ppu/**'
-      - '.github/workflows/ppu_linux_build.yml'
-      - '.github/workflows/_ppu_build.yml'
-      - '.github/workflows/ppu_full_ut.yml'
+  # 手动触发：在 Actions 页面选 ref（分支或标签）。github.sha 即该 ref 的 tip，
+  # 下面 wait-build 关联 build run、各分片 checkout 源码全部以它为准。
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  # 手动触发没有 PR 号，改成按 ref 分组：同一 ref 上再点一次「Run workflow」视为
+  # 「重跑这个 ref」，取消上一轮（沿用原来 PR 场景「新 push 顶掉旧 run」的语义）；
+  # 不同 ref 之间互不干扰。不用 cancel-in-progress: false：那会让第二次手动触发排队
+  # 干等前一轮的八个小时。
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -119,12 +118,14 @@ env:
   #     就开始跑，等 x86-ubuntu2404-8-32 空闲的 queued 时间只算在本侧。
   WAIT_TIMEOUT_MINUTES: "390"
   # 轮询间隔取 120s（另外三条门禁是 60s）：GITHUB_TOKEN 的 REST 配额是每仓库每小时 1000 次，
-  # 而一个 PR 会同时跑 smoke / accuracy / perf / full-ut 四条门禁、每条都可能轮询数小时。
+  # 而本 workflow 手动跑起来时，同一仓库里往往还有若干 PR 在跑 smoke / accuracy / perf
+  # 三条门禁、每条都可能轮询数小时。
   # 本 workflow 把轮询收敛到独立的 wait-build 这一个 job（8 个测试分片靠 needs 复用它的
   # 输出，不各自轮询），再配合 120s 间隔，把本侧的请求量压到 ~30 次/小时。
   WAIT_POLL_SECONDS: "120"
-  # 「一个 build run 都还没出现」的宽限期：正常情况下两条 workflow 由同一事件同时创建，
-  # 秒级就能查到。超过这个时间还查不到，基本就是两边触发条件不一致，早失败早暴露。
+  # 「一个 build run 都还没出现」的宽限期。手动触发的常态是 build 已经跑完，首轮查询
+  # 就能命中；这个宽限期留给「先点 full-ut、再去点 build」的情况（给人几分钟去点那一下）。
+  # 超过它还查不到，基本就是所选 ref 上压根没编过包，早失败早暴露。
   WAIT_GRACE_MINUTES: "15"
   # 轮询期间容忍的「连续」查询失败次数。自建 runner 出网走代理，调 api.github.com 偶发
   # `RequestError: fetch failed`（octokit 把网络层错误一律记成 status 500）。轮询要持续
@@ -161,9 +162,13 @@ jobs:
     steps:
       # 本 job 不需要 checkout：github-script 只调 REST API，不读源码。
       #
-      # 下面这段脚本与 ppu_smoke.yml / ppu_accuracy.yml / ppu_perf.yml 的「等待
-      # ppu-linux-build 编译完成」步骤逐字相同，改一处必须同步改另三处
-      # （diff 这四个文件即可确认没漂移）。
+      # 下面这段 script 与 ppu_smoke.yml / ppu_accuracy.yml / ppu_perf.yml 的「等待
+      # ppu-linux-build 编译完成」步骤同源，改逻辑必须同步改另三处
+      # （diff 这四个文件即可确认没漂移）。只允许两处不同，都是「手动触发 vs PR
+      # 门禁」带来的：
+      #   - HEAD_SHA：那三条取 PR head sha，本 workflow 取 github.sha；
+      #   - 「找不到 build run」那条报错文案：那三条的成因是两侧 paths 过滤不一致，
+      #     本 workflow 的成因是所选 ref 上没编过包。
       #
       # 为什么不抽成 composite action：本 job 跑在 ARC(Actions Runner Controller) 自建
       # runner 上且带 container，ARC 的 k8s hook 把 workspace 拷进 job 容器，runner 进程
@@ -176,15 +181,13 @@ jobs:
         # 只调 REST API，不占 PPU 卡；pod 要到真正跑用例那一步才拉起
         uses: actions/github-script@v7
         env:
-          # head sha 必须用表达式经 env 传进来，不能在脚本里读
-          # context.payload.pull_request：表达式由 runner 求值，而 context.payload 是
-          # github-script 在容器内读 GITHUB_EVENT_PATH 指向的 event.json —— ARC 把
-          # workspace 拷进容器后那个文件在容器里读不到，payload 会静默变成 {}，
-          # 于是报 "TypeError: Cannot read properties of undefined (reading 'head')"。
+          # workflow_dispatch 下 github.sha 就是所选 ref 的 tip（没有 PR 那种 merge commit），
+          # 而 ppu-linux-build 的 run 无论由 pull_request 还是 workflow_dispatch 创建，head_sha
+          # 都是被编的那个 commit，所以用它做关联键（也与下面测试分片 checkout 的 ref 一致）。
+          # 仍然经 env 传而不在 script 里读 context.payload：ARC + container 下 github-script
+          # 读不到 GITHUB_EVENT_PATH 指向的 event.json，payload 会静默变成 {}。
           # （context.repo 不受影响：它读的是 GITHUB_REPOSITORY 环境变量。）
-          # pull_request 事件下 github.sha 是 merge commit，而两条 workflow 的 run 都以
-          # PR head commit 作为 head_sha，所以用它做关联键（也与测试分片里 checkout 的 ref 一致）
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.sha }}
         with:
           # 单次请求内部也重试（octokit retry 插件），先扛掉最短的网络抖动；
           # 连续多轮都失败才由下面的 apiFailures 计数判定为真故障。
@@ -269,8 +272,8 @@ jobs:
               } else if (waited > graceMs) {
                 core.setFailed(
                   `[wait] 等了 ${waitedMin} 分钟仍找不到 ${workflow} 在 ${headSha} 上的 run。\n` +
-                  '最常见原因：本 workflow 与 ppu_linux_build.yml 的 branches / paths 过滤不一致，' +
-                  '导致这个 PR 只触发了测试、没触发编译。'
+                  '本 workflow 是手动触发的，只用所选 ref 上编出来的 whl：请先在同一个 ref 上跑一次 ' +
+                  'ppu_linux_build.yml（Actions → ppu-linux-build → Run workflow），再重跑本 workflow。'
                 );
                 return;
               } else {
@@ -316,7 +319,7 @@ jobs:
   # action 在 ARC + container 下不可用（理由见 wait-build 里那段注释），只能物理重复。
   # 8 段之间**只允许**这几处不同，其余必须逐字一致：
   #   - job key：必须前 20 字符就唯一（submit.sh 会把 job 名截到 20 字符去拼 pod 名）
-  #   - name: 里的 config 与分片标签（这串是 PR 上的检查名，改了要同步改分支保护规则）
+  #   - name: 里的 config 与分片标签（run 页面上区分 8 个分片就靠它）
   #   - timeout_minutes，以及 command 里的 UT_CONFIG / SHARD_NUMBER / NUM_TEST_SHARDS
   # ---------------------------------------------------------------------------
   ut-default-1:
@@ -335,9 +338,9 @@ jobs:
       - name: Checkout PyTorch
         uses: actions/checkout@v4
         with:
-          # 签出 PR head commit（github.sha 在 PR 场景是 merge commit），保证测试代码与 PR 一致；
-          # 也必须与 wait-build 里用来关联 build run 的那个 sha 一致
-          ref: ${{ github.event.pull_request.head.sha }}
+          # 显式钉在 github.sha（= 手动触发时所选 ref 的 tip）：必须与 wait-build 里用来关联
+          # build run 的那个 sha 一致，否则测的源码与装上的 whl 不是同一个 commit
+          ref: ${{ github.sha }}
           # 只跑 python 测试，不需要 third_party 子模块；浅克隆加速，也减小传到 NAS 的包体积
           fetch-depth: 1
 
@@ -471,8 +474,9 @@ jobs:
           # 环境变量必须在 command 里注入：job 级 env 不会传进 PPU pod。
           # 脚本自身会 cd 到源码根目录，所以这里只给绝对路径即可。
           # WHEEL_DIR 指向上面下载的 whl（已随源码被 action 打包到 pod 的 source_dir 下）。
+          # 不传 PR_NUMBER：手动触发没有 PR 号，full_ut_test.sh 里那行自检日志会打 pr=none。
+          # 要溯源被测 commit 看「校验 whl」写进 summary 的包名与 build run 链接。
           command: |
-            PR_NUMBER="${{ github.event.pull_request.number }}" \
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
@@ -496,7 +500,7 @@ jobs:
       - name: Checkout PyTorch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
       - name: 下载 whl artifact
@@ -591,7 +595,6 @@ jobs:
           source_dir: ${{ env.SOURCE_DIR }}
           timeout_minutes: 480
           command: |
-            PR_NUMBER="${{ github.event.pull_request.number }}" \
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
@@ -612,7 +615,7 @@ jobs:
       - name: Checkout PyTorch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
       - name: 下载 whl artifact
@@ -707,7 +710,6 @@ jobs:
           source_dir: ${{ env.SOURCE_DIR }}
           timeout_minutes: 480
           command: |
-            PR_NUMBER="${{ github.event.pull_request.number }}" \
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
@@ -728,7 +730,7 @@ jobs:
       - name: Checkout PyTorch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
       - name: 下载 whl artifact
@@ -823,7 +825,6 @@ jobs:
           source_dir: ${{ env.SOURCE_DIR }}
           timeout_minutes: 480
           command: |
-            PR_NUMBER="${{ github.event.pull_request.number }}" \
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
@@ -844,7 +845,7 @@ jobs:
       - name: Checkout PyTorch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
       - name: 下载 whl artifact
@@ -939,7 +940,6 @@ jobs:
           source_dir: ${{ env.SOURCE_DIR }}
           timeout_minutes: 480
           command: |
-            PR_NUMBER="${{ github.event.pull_request.number }}" \
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
@@ -960,7 +960,7 @@ jobs:
       - name: Checkout PyTorch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
       - name: 下载 whl artifact
@@ -1055,7 +1055,6 @@ jobs:
           source_dir: ${{ env.SOURCE_DIR }}
           timeout_minutes: 300
           command: |
-            PR_NUMBER="${{ github.event.pull_request.number }}" \
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
@@ -1076,7 +1075,7 @@ jobs:
       - name: Checkout PyTorch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
       - name: 下载 whl artifact
@@ -1171,7 +1170,6 @@ jobs:
           source_dir: ${{ env.SOURCE_DIR }}
           timeout_minutes: 300
           command: |
-            PR_NUMBER="${{ github.event.pull_request.number }}" \
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
@@ -1192,7 +1190,7 @@ jobs:
       - name: Checkout PyTorch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
       - name: 下载 whl artifact
@@ -1287,7 +1285,6 @@ jobs:
           source_dir: ${{ env.SOURCE_DIR }}
           timeout_minutes: 300
           command: |
-            PR_NUMBER="${{ github.event.pull_request.number }}" \
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \

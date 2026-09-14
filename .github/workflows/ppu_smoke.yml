@@ -126,8 +126,8 @@ jobs:
 
       # -----------------------------------------------------------------------
       # 等本 PR 的 whl 编好 → 下载到源码树内 → 校验。以下三步在 ppu_smoke.yml /
-      # ppu_accuracy.yml / ppu_perf.yml 里逐字相同，改一处必须同步改另两处
-      # （diff 这三个文件即可确认没漂移）。
+      # ppu_accuracy.yml / ppu_perf.yml / ppu_distribute.yml 里逐字相同，改一处必须同步
+      # 改另三处（diff 这四个文件即可确认没漂移）。
       # ppu_full_ut.yml 把「等待」拆成了独立 job（给 8 个分片共用），但它的
       # github-script 脚本与下面那一段也是逐字相同的，改这里同样要同步改它。
       #

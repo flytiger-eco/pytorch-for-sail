@@ -32,7 +32,17 @@ REQ_FILE="$REPO_ROOT/.ci/docker/requirements-ci.txt"
 # torch.testing._internal 与大量用例真正 import 的测试工具，钉住可避免行为与官方 CI
 # 不一致（hypothesis 的 pin 在官方就是为了压 flakiness）。
 # 这些包都只在测试期使用，不是 torch 的运行时依赖，因此降级 pytest 不会影响镜像里的 torch。
-WANTED=(pytest pytest-xdist pytest-flakefinder pytest-rerunfailures pytest-subtests expecttest hypothesis)
+#
+# pyyaml 也必须在这里补，尽管 requirements-ci.txt 把它归在「To build PyTorch itself」下：
+# test/test_custom_ops.py、test/test_meta.py、test/test_namedtuple_return_api.py 都在模块
+# 顶层 import yaml（读 native_functions.yaml / derivatives.yaml 校验签名与 meta 注册），缺了
+# 是 collect 阶段 ModuleNotFoundError —— 整个文件 fail，而不是像 scipy / numba 那类可选依赖
+# 走 @skipIfNoXxx 静默 skip。pod 里的 torch 是 whl 装上的、不跑 torchgen，所以 PPU 基础镜像
+# 并不保证带 pyyaml，不能指望「能编 torch 的环境一定有」。
+#
+# 注意这里放的是包名，版本由下面从 requirements-ci.txt 解析（写成 pyyaml==6.0.3 会让 norm()
+# 拿整个字符串去查表、匹配不到而直接报「找不到版本约束」退出）。
+WANTED=(pytest pytest-xdist pytest-flakefinder pytest-rerunfailures pytest-subtests expecttest hypothesis pyyaml)
 
 # -----------------------------------------------------------------------------
 # 1) 从 requirements-ci.txt 解析版本约束
