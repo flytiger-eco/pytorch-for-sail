@@ -1,36 +1,62 @@
-# P0 smoke gate: PPU CUDA 冒烟测试，跑在自建 PPU 集群的单卡 pod 上。
+# P1 full UT gate: PPU CUDA 全量单元测试，跑在自建 PPU 集群的单卡 pod 上（多分片并行）。
 #
-# 执行模型（与"直接在 runner 容器里跑测试"的早期版本不同）：
-#   - 本 job 只在 CPU runner 上做编排：checkout 源码后，由
+# 执行模型（与 ppu_smoke.yml / ppu_accuracy.yml / ppu_perf.yml 一致）：
+#   - job 只在 CPU runner 上做编排：checkout 源码后，由
 #     flytiger-eco/ppu-distributed-action 把源码打包暂存到 NAS，在带 PPU 卡的节点上
 #     拉起 pod，解压到 source_dir，再执行 command。
 #   - 所以 runner 容器只需小体积的 actions-runner 镜像；PPU 发布镜像只在 PPU pod 内
-#     使用，避免 CPU 节点拉大镜像超时（此前 "initialize container" 失败的原因）。
-#   - 冒烟用例只需单卡：nnodes: 0 + nproc_per_node: 1。
+#     使用，避免 CPU 节点拉大镜像超时。
+#   - runs-on 沿用 ppu_smoke.yml 的 runner 标签，未做任何改动。
+#   - 每个分片一个单卡 pod：nnodes: 0 + nproc_per_node: 1。
+#   - pod 内实际逻辑见 .ci/ppu/full_ut_test.sh（含仅 CUDA 的两层过滤与 FP8 排除）。
 #
-# 被测的 torch 从哪来：
+# 被测的 torch 从哪来（与另外三条测试门禁一致）：
 #   - 等 ppu_linux_build.yml 把本 PR 的 whl 编完 → 下载它的 artifact → 随源码送进 pod →
-#     在 pod 内 pip install 成功后才跑用例。门禁因此测的是本 PR 真正编出来的 torch。
+#     在 pod 内 pip install 成功后才跑用例。
 #   - 「等」是轮询 ppu-linux-build 在同一个 head sha 上的 run，而不是用 workflow_run：
 #     workflow_run 只读默认分支上的 workflow 文件，且它的 run 不会作为 PR 的 check 出现，
 #     当不了 PR 门禁。
 #   - 代价：触发条件必须与 ppu_linux_build.yml 完全一致（见下面的 branches / paths），
 #     否则会出现「本 workflow 触发了、但那个 PR 根本没编包」→ 永远等不到 whl。
 #
-# 与 test-h100.yml 的差异：
-#   - 不在本 workflow 里编：test-h100 走 _linux-build.yml 同条流水线先编 wheel 再测；
-#     这里复用 ppu_linux_build.yml 已经编好的产物，避免每条测试门禁各编一次
-#     （PPU 冷编译要 4~5h）。
-#   - 不装 PPU SDK：PPU 镜像里已自带，.ci/ppu/sdk_env.sh 只做校验 + source envsetup.sh。
-#     但测试框架依赖（pytest 及其插件等）镜像里没有，由 .ci/ppu/install_test_deps.sh 按
-#     .ci/docker/requirements-ci.txt 的版本补装，保证与官方 CI 跑 test case 的环境一致。
-#   - 只跑 CUDA 相关用例，且裁掉 H100/B200 专属用例，以及 FP8 用例（真武 PPU 当前不支持
-#     FP8）。用例清单见 .ci/ppu/smoke_test.sh。
-name: ppu-smoke
+# -----------------------------------------------------------------------------
+# 测试范围：以 periodic.yml + slow.yml 的 case 为模板
+# -----------------------------------------------------------------------------
+# 那两条官方流水线本身只是薄编排层（_linux-build.yml 先编 wheel，_linux-test.yml 再测，
+# 跑在 pytorch 官方云 GPU runner 上，并带 `github.repository_owner == 'pytorch'` 守卫），
+# 这套结构与本仓库「复用 ppu_linux_build.yml 已编好的 whl + 自建 PPU 集群单卡 pod」的
+# 诉求本质互斥，无法照搬其 job / runner 定义。这里复制的是它们的 **test-matrix 语义**：
+#   - periodic.yml 的 linux-jammy-cuda13.0-py3.10-gcc11 里 config: "default"，5 分片
+#   - slow.yml     的 linux-jammy-cuda12.8-py3.10-gcc11-sm86 里 config: "slow"，3 分片
+# 分片数刻意与它们保持一致（5 + 3 = 8 个单卡 pod），便于与官方 CI 的结果逐分片对照。
+# 两个 config 落到脚本上就是 .ci/pytorch/test.sh 的同一个 test_python_shard，slow 只多
+# export PYTORCH_TEST_WITH_SLOW=1 / PYTORCH_TEST_SKIP_FAST=1——推导写在
+# .ci/ppu/full_ut_test.sh 头注释里。
+#
+# periodic.yml 里其余 config 不做，理由：
+#   - distributed(3 分片) / multigpu(2 分片)：要多卡，本 pod 单卡；
+#   - nogpu_AVX512(3 分片) / nogpu_NO_AVX2(2 分片)：纯 CPU 线，与「仅 CUDA」直接冲突；
+#   - jit_legacy(1 分片)：legacy jit executor，恰好是 test_python_shard 用
+#     --exclude-jit-executor 排掉的那批；
+#   - debug-build(7 分片) / slow-gradcheck(8 分片)：需要 debug / slow-gradcheck 两种特殊
+#     编译产物，而本 workflow 复用的是 ppu_linux_build.yml 的常规 release whl，没有这两份包。
+#
+# 只跑 CUDA 相关用例 + 过滤 FP8：全部在 .ci/ppu/full_ut_test.sh 里落地，两层过滤——
+#   - 用例级 PYTORCH_TESTING_DEVICE_ONLY_FOR=cuda（官方 CUDA CI 的同一个开关，设备无关的
+#     大文件只实例化 cuda 变体，不在 PPU 卡上白跑 CPU 变体）
+#   - 文件级 --exclude 清单（整文件与 CUDA 无关的，如 torch_np/ / test_mkldnn / xpu/）
+#   FP8 同样两层：整文件剔掉 test_scaled_matmul_cuda 与 inductor/test_fp8，再挂
+#   -k 排除表达式兜住散落在别处的 FP8 用例（真武 PPU 当前不支持 FP8）。
+#
+# 触发方式：与另外三条测试门禁一致，仅 pull_request（作为 PR 门禁），且 branches / paths
+#   必须与 ppu_linux_build.yml 对齐。不沿用参考模板的 schedule + workflow_dispatch +
+#   repository_owner=='pytorch' 守卫（那是官方 nightly 专用）。
+#   注意：pull_request 事件读取的是**默认分支**上的 workflow 文件，本文件需先合入默认分支
+#   才会对新 PR 生效。
+name: ppu-full-ut
 
 on:
-  # 触发条件必须与 ppu_linux_build.yml 保持一致：本 workflow 依赖它的 whl，
-  # 「smoke 触发了但 build 没触发」等价于卡死到超时。改一侧就要同步改另一侧。
+  # 触发条件必须与 ppu_linux_build.yml 保持一致，改一侧就要同步改另一侧
   pull_request:
     branches:
       - v2.11.0
@@ -43,7 +69,7 @@ on:
       - '.ci/ppu/**'
       - '.github/workflows/ppu_linux_build.yml'
       - '.github/workflows/_ppu_build.yml'
-      - '.github/workflows/ppu_smoke.yml'
+      - '.github/workflows/ppu_full_ut.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -58,17 +84,15 @@ env:
   # PPU 基础镜像：python3.12 + CUDA13 + PPU SDK + triton，不含 torch —— torch 由
   # ppu-linux-build 的 whl 提供。刻意与 _ppu_build.yml 的 docker-image 默认值用同一个 tag：
   # 编译与运行同镜像，才不会出现 whl 与镜像里 SDK / 工具链对不上的问题。
-  # 注意：这里必须是 PPU 镜像，不能填 actions-runner 镜像——后者以非 root 用户 runner
-  # (uid 1001) 启动，action 在 pod 内创建 source_dir 时会 mkdir /workspace 失败（Permission denied）。
-  # 前置要求：该镜像须已预拉到 NODE_SELECTOR 指定板型的节点上（action 文档「前置要求」第 3 条）。
-  # 换镜像 tag 或换板型时都要重新确认预拉，否则 pod 会卡在拉取阶段直至超时。
+  # 前置要求：该镜像须已预拉到 NODE_SELECTOR 指定板型的节点上，否则 pod 会卡在拉取阶段直至超时。
   IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   # action 在 pod 内解压源码的路径（也是 action 的默认值，这里显式写出便于 command 引用）
   SOURCE_DIR: /workspace/source
   # 板型选 890P：集群里 890P 有 16 台（每台 8 PPU），810E 只有 1 台（16 PPU）。
-  # 本 workflow 是每个 PR 都触发的高频门禁，钉在 810E 会把所有 PR 排队到同一台机器上。
+  # 本 workflow 一次要起 8 个单卡 pod，钉在 810E 会把一条 PR 的全量 UT 全压到同一台机器上，
+  # 和 ppu-smoke / ppu-accuracy / ppu-perf 互相排队。
   NODE_SELECTOR: "board-type=ZW-M890P"
   # 内部 pip 源：pod 内只能访问内网，补装 run_test.py 必需的 pytest 插件要走这个源。
   # 仓库名是 pypi_index（带下划线的 VIRTUAL 仓，聚合 pypi_formal/aliyun/huawei/tsinghua 等代理）。
@@ -83,53 +107,61 @@ env:
   WHEEL_DIR_REL: .ci/ppu/wheelhouse
   # 等 build 的上限。这是**兜底**而不是正常退出路径：正常情况下等待由 build run 自己的结论
   # 终止 —— 编译成功就往下走；编译失败、或它自己撞上 job 超时（GitHub 记成
-  # conclusion=failure），都会立刻命中下面的「未成功」分支快速失败。
-  # 所以这个值必须严格大于 build 自己的 job 上限，否则会出现「build 还在正常编、smoke 先判
-  # 超时」的假失败：whl 最终编出来了，却没有任何门禁测它，只能手动重跑。
+  # conclusion=failure），都会立刻命中「未成功」分支快速失败。
+  # 所以这个值必须严格大于 build 自己的 job 上限，否则会出现「build 还在正常编、全量 UT 先
+  # 判超时」的假失败：whl 最终编出来了，却没有任何门禁测它，只能手动重跑。
   # 取值 = 350 + 40：
   #   - 350 是 build 的硬上限（ppu_linux_build.yml 不传 timeout-minutes，取 _ppu_build.yml
   #     的默认值 350，覆盖冷编译 4~5h 的情况）。改那个默认值必须同步改这里。
-  #   - 40 是排队余量：build 的 350 分钟从它真正开始执行才计时，而本步骤的秒表从 run 创建
+  #   - 40 是排队余量：build 的 350 分钟从它真正开始执行才计时，而等待步骤的秒表从 run 创建
   #     就开始跑，等 x86-ubuntu2404-8-32 空闲的 queued 时间只算在本侧。
-  # 等待发生在自建 CPU runner 上（不占 PPU 卡），pod 要到真正跑用例那一步才拉起。
   WAIT_TIMEOUT_MINUTES: "390"
-  WAIT_POLL_SECONDS: "60"
+  # 轮询间隔取 120s（另外三条门禁是 60s）：GITHUB_TOKEN 的 REST 配额是每仓库每小时 1000 次，
+  # 而一个 PR 会同时跑 smoke / accuracy / perf / full-ut 四条门禁、每条都可能轮询数小时。
+  # 本 workflow 把轮询收敛到独立的 wait-build 这一个 job（8 个测试分片靠 needs 复用它的
+  # 输出，不各自轮询），再配合 120s 间隔，把本侧的请求量压到 ~30 次/小时。
+  WAIT_POLL_SECONDS: "120"
   # 「一个 build run 都还没出现」的宽限期：正常情况下两条 workflow 由同一事件同时创建，
   # 秒级就能查到。超过这个时间还查不到，基本就是两边触发条件不一致，早失败早暴露。
   WAIT_GRACE_MINUTES: "15"
   # 轮询期间容忍的「连续」查询失败次数。自建 runner 出网走代理，调 api.github.com 偶发
   # `RequestError: fetch failed`（octokit 把网络层错误一律记成 status 500）。轮询要持续
   # 几小时、几百次请求，一次抖动就让整个 job 白等是不可接受的，所以只在连续失败到这个
-  # 次数（× WAIT_POLL_SECONDS ≈ 10 分钟持续不通）才判定为真故障。查询成功即清零。
+  # 次数（× WAIT_POLL_SECONDS ≈ 20 分钟持续不通）才判定为真故障。查询成功即清零。
   WAIT_MAX_API_FAILURES: "10"
 
 jobs:
-  ppu-smoke-890p-single:
-    name: ppu-smoke (890P 单卡)
+  # ---------------------------------------------------------------------------
+  # 只做一件事：等本 PR 的 whl 编好，把 build 的 run-id 交给下面的测试分片。
+  #
+  # 为什么单独拆一个 job（这是与 ppu_smoke.yml 的唯一结构差异）：
+  #   - 本 workflow 有 8 个测试分片。若把「等待」内联进每个分片（像另外三条门禁那样），
+  #     就是 8 份秒表同时轮询 api.github.com 数小时，白烧 GITHUB_TOKEN 的每小时配额；
+  #   - 而且那 8 个 job 会在整个编译期间一直占着 k8s-runner-group-cpu-flytiger 的 runner
+  #     槽位干等，把同期其它 workflow 挤在 queued。
+  #   - 拆开后编译期只占 1 个槽位，whl 就绪才由 needs 放行 8 个分片。
+  #   下载 whl 没法这样共享：ppu-distributed-action 打包的是**各 job 自己 workspace 里的
+  #   源码树**，whl 必须落在每个分片的 workspace 内，所以下载仍然是每个分片各做一次。
+  # ---------------------------------------------------------------------------
+  wait-build:
+    name: 等待 ppu-linux-build
     runs-on: k8s-runner-group-cpu-flytiger
     container:
       image: ghcr.io/actions/actions-runner:latest
-    # = 等 build 的上限(390) + 用例超时(60) + checkout/下载 whl/pod 启动与打包余量(30)。
-    # 必须大于 WAIT_TIMEOUT_MINUTES：否则秒表还没到点、job 先被砍，日志里只剩一条没有
-    # 任何原因说明的 job 超时。命中缓存时实际远低于此。
+    # 略大于 WAIT_TIMEOUT_MINUTES(390)：否则秒表还没到点、job 先被砍，日志里只剩一条没有
+    # 任何原因说明的 job 超时。
     # 注：6 小时 job 上限只约束 GitHub 托管 runner，本 job 在自建 ARC runner 上不受该限制。
-    timeout-minutes: 480
+    timeout-minutes: 400
+    outputs:
+      run-id: ${{ steps.wait-build.outputs.run-id }}
+      run-url: ${{ steps.wait-build.outputs.run-url }}
 
     steps:
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          # 签出 PR head commit（github.sha 在 PR 场景是 merge commit），保证测试代码与 PR 一致
-          ref: ${{ github.event.pull_request.head.sha }}
-          # 只跑 python 测试，不需要 third_party 子模块；浅克隆加速，也减小传到 NAS 的包体积
-          fetch-depth: 1
-
-      # -----------------------------------------------------------------------
-      # 等本 PR 的 whl 编好 → 下载到源码树内 → 校验。以下三步在 ppu_smoke.yml /
-      # ppu_accuracy.yml / ppu_perf.yml 里逐字相同，改一处必须同步改另两处
-      # （diff 这三个文件即可确认没漂移）。
-      # ppu_full_ut.yml 把「等待」拆成了独立 job（给 8 个分片共用），但它的
-      # github-script 脚本与下面那一段也是逐字相同的，改这里同样要同步改它。
+      # 本 job 不需要 checkout：github-script 只调 REST API，不读源码。
+      #
+      # 下面这段脚本与 ppu_smoke.yml / ppu_accuracy.yml / ppu_perf.yml 的「等待
+      # ppu-linux-build 编译完成」步骤逐字相同，改一处必须同步改另三处
+      # （diff 这四个文件即可确认没漂移）。
       #
       # 为什么不抽成 composite action：本 job 跑在 ARC(Actions Runner Controller) 自建
       # runner 上且带 container，ARC 的 k8s hook 把 workspace 拷进 job 容器，runner 进程
@@ -137,7 +169,6 @@ jobs:
       # "Can't find 'action.yml' ... Did you forget to run actions/checkout"，即便
       # checkout 成功。改写成 owner/repo/.github/actions/xxx@ref 也不行：uses 不支持
       # 表达式，ref 只能写死，而改 action 的 PR 就没法自测自己那一版。
-      # -----------------------------------------------------------------------
       - name: 等待 ppu-linux-build 编译完成
         id: wait-build
         # 只调 REST API，不占 PPU 卡；pod 要到真正跑用例那一步才拉起
@@ -150,7 +181,7 @@ jobs:
           # 于是报 "TypeError: Cannot read properties of undefined (reading 'head')"。
           # （context.repo 不受影响：它读的是 GITHUB_REPOSITORY 环境变量。）
           # pull_request 事件下 github.sha 是 merge commit，而两条 workflow 的 run 都以
-          # PR head commit 作为 head_sha，所以用它做关联键（也与上面 checkout 的 ref 一致）
+          # PR head commit 作为 head_sha，所以用它做关联键（也与测试分片里 checkout 的 ref 一致）
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         with:
           # 单次请求内部也重试（octokit retry 插件），先扛掉最短的网络抖动；
@@ -247,14 +278,64 @@ jobs:
               await sleep(pollMs);
             }
 
+  # ---------------------------------------------------------------------------
+  # 全量 UT 分片：每个 matrix 条目一个单卡 PPU pod。
+  # ---------------------------------------------------------------------------
+  ppu-full-ut:
+    name: "ppu-full-ut ${{ matrix.config }} ${{ matrix.shard }}/${{ matrix.num_shards }} (890P 单卡)"
+    needs: wait-build
+    runs-on: k8s-runner-group-cpu-flytiger
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    # = 用例超时上限(480) + checkout/下载 whl/pod 启动与打包余量(60)。
+    # 等 build 的时间不算在本 job 里（已由 wait-build 承担），所以不需要再叠 390。
+    # 各分片实际的 pod 超时由 matrix.pod_timeout 给（slow 档更短）。
+    # 注：6 小时 job 上限只约束 GitHub 托管 runner，本 job 在自建 ARC runner 上不受该限制。
+    timeout-minutes: 540
+    strategy:
+      # 必须关掉 fail-fast：全量 UT 的价值就是一次拿到完整的失败清单。默认行为下
+      # 任何一个分片先红都会取消其余 7 个，等于每修一个问题都要把 8 个分片重跑一遍。
+      fail-fast: false
+      matrix:
+        include:
+          # config: "default" —— 对齐 periodic.yml 的 5 分片。
+          # pod 超时 480 分钟：单分片约摊到全量 UT 的 1/5，PPU 上比官方 g6.4xlarge 慢，
+          # 且 install_wheel / install_test_deps 每个 pod 都要各做一次。
+          - { config: default, shard: 1, num_shards: 5, pod_timeout: 480 }
+          - { config: default, shard: 2, num_shards: 5, pod_timeout: 480 }
+          - { config: default, shard: 3, num_shards: 5, pod_timeout: 480 }
+          - { config: default, shard: 4, num_shards: 5, pod_timeout: 480 }
+          - { config: default, shard: 5, num_shards: 5, pod_timeout: 480 }
+          # config: "slow" —— 对齐 slow.yml 的 3 分片。
+          # pod 超时给 300：这一档靠 PYTORCH_TEST_SKIP_FAST=1 只跑 @slowTest 标记的用例，
+          # 用例数远少于 default（虽然单个更慢）。
+          - { config: slow, shard: 1, num_shards: 3, pod_timeout: 300 }
+          - { config: slow, shard: 2, num_shards: 3, pod_timeout: 300 }
+          - { config: slow, shard: 3, num_shards: 3, pod_timeout: 300 }
+
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          # 签出 PR head commit（github.sha 在 PR 场景是 merge commit），保证测试代码与 PR 一致；
+          # 也必须与 wait-build 里用来关联 build run 的那个 sha 一致
+          ref: ${{ github.event.pull_request.head.sha }}
+          # 只跑 python 测试，不需要 third_party 子模块；浅克隆加速，也减小传到 NAS 的包体积
+          fetch-depth: 1
+
+      # -----------------------------------------------------------------------
       # 下载分三次写：download-artifact 没有 retries 输入（github-script 的 retries 只作用于
-      # 上面那一步），而这一步要跨 run 拉一个几百 MB 的 zip，自建 runner 出网走代理，偶发
+      # wait-build 那一步），而这一步要跨 run 拉一个几百 MB 的 zip，自建 runner 出网走代理，偶发
       #   Unable to download artifact(s): ... tunneling socket could not be established,
       #   cause=getaddrinfo ENOTFOUND <proxy>
       # 也就是代理域名一时解析不出来。走到这一步时已经等掉了几小时编译，为一次 DNS 抖动把
-      # 门禁判红、要人手动重跑是不可接受的（与上面 apiFailures 容忍连续失败同一个理由），
-      # 所以前两次 continue-on-error、用 outcome 串成「失败才重试」，最后一次不兜着——
+      # 门禁判红、要人手动重跑是不可接受的（与 wait-build 里 apiFailures 容忍连续失败同一个
+      # 理由），所以前两次 continue-on-error、用 outcome 串成「失败才重试」，最后一次不兜着——
       # 真的连不通就该失败。
+      #
+      # 以下四步（下载 ×3 + 校验）与 ppu_smoke.yml / ppu_accuracy.yml / ppu_perf.yml 里的
+      # 对应步骤等价，只是 run-id 取自 needs.wait-build 而不是本 job 内的 steps.wait-build。
+      # -----------------------------------------------------------------------
       - name: 下载 whl artifact
         id: download-wheel
         continue-on-error: true
@@ -266,7 +347,7 @@ jobs:
           merge-multiple: true
           path: ${{ env.WHEEL_DIR_REL }}
           # 跨 run 下载必须显式给 run-id + token（默认只在当前 run 内找）
-          run-id: ${{ steps.wait-build.outputs.run-id }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
           github-token: ${{ github.token }}
 
       - name: 重试前清场 (1)
@@ -289,7 +370,7 @@ jobs:
           pattern: ppu-wheel-*
           merge-multiple: true
           path: ${{ env.WHEEL_DIR_REL }}
-          run-id: ${{ steps.wait-build.outputs.run-id }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
           github-token: ${{ github.token }}
 
       - name: 重试前清场 (2)
@@ -308,7 +389,7 @@ jobs:
           pattern: ppu-wheel-*
           merge-multiple: true
           path: ${{ env.WHEEL_DIR_REL }}
-          run-id: ${{ steps.wait-build.outputs.run-id }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
           github-token: ${{ github.token }}
 
       - name: 校验 whl 已就位
@@ -316,7 +397,9 @@ jobs:
           # 用相对路径：${{ github.workspace }} 求值出的是 runner 自己的路径
           # (/home/runner/_work/...)，而本步骤跑在 container 里看到的是挂载点 (/__w/...)
           WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
-          BUILD_RUN_URL: ${{ steps.wait-build.outputs.run-url }}
+          BUILD_RUN_URL: ${{ needs.wait-build.outputs.run-url }}
+          UT_CONFIG: ${{ matrix.config }}
+          SHARD_LABEL: "${{ matrix.shard }}/${{ matrix.num_shards }}"
         run: |
           # 卡在这里，而不是等 pod 起来才发现没包 —— 那时已经占着 PPU 卡了
           # 本步骤在 actions-runner 容器里跑，容器无 bash，默认 shell 会回退到 sh：
@@ -337,13 +420,13 @@ jobs:
           wheel_name=$(basename "$wheel")
           echo "[wheel] ${wheel_name} ($(du -h "$wheel" | cut -f1))"
           {
-            echo "### 被测 whl"
+            echo "### 被测 whl (${UT_CONFIG} ${SHARD_LABEL})"
             echo ""
             echo "- 包: \`${wheel_name}\`"
             echo "- 来源: ${BUILD_RUN_URL}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: "890P 单卡 (1 PPU) CUDA 冒烟测试"
+      - name: "890P 单卡 (1 PPU) CUDA 全量 UT"
         uses: flytiger-eco/ppu-distributed-action@main
         with:
           nnodes: 0
@@ -353,8 +436,8 @@ jobs:
           image: ${{ env.IMAGE }}
           namespace: ${{ env.NAMESPACE }}
           source_dir: ${{ env.SOURCE_DIR }}
-          timeout_minutes: 60
-          # 环境变量必须在 command 里注入：job 级 env 不会传进 PPU pod。
+          timeout_minutes: ${{ matrix.pod_timeout }}
+          # 环境变量必须在 command 里注入：job 级 env 不会传进 PPU pod，matrix 上下文同理。
           # 脚本自身会 cd 到源码根目录，所以这里只给绝对路径即可。
           # WHEEL_DIR 指向上面下载的 whl（已随源码被 action 打包到 pod 的 source_dir 下）。
           command: |
@@ -362,4 +445,7 @@ jobs:
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
-            bash ${{ env.SOURCE_DIR }}/.ci/ppu/smoke_test.sh
+            UT_CONFIG="${{ matrix.config }}" \
+            SHARD_NUMBER="${{ matrix.shard }}" \
+            NUM_TEST_SHARDS="${{ matrix.num_shards }}" \
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/full_ut_test.sh
