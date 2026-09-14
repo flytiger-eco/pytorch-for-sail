@@ -8,6 +8,8 @@
 #     使用，避免 CPU 节点拉大镜像超时。
 #   - runs-on 沿用 ppu_smoke.yml 的 runner 标签，未做任何改动。
 #   - 每个分片一个单卡 pod：nnodes: 0 + nproc_per_node: 1。
+#   - 8 个分片是 8 个**独立 job**（不是一个 matrix job），原因见下面 ut-default-1 上方的
+#     长注释 —— action 的 NAS 暂存路径与 pod 名都只按 github.job 区分。
 #   - pod 内实际逻辑见 .ci/ppu/full_ut_test.sh（含仅 CUDA 的两层过滤与 FP8 排除）。
 #
 # 被测的 torch 从哪来（与另外三条测试门禁一致）：
@@ -279,39 +281,55 @@ jobs:
             }
 
   # ---------------------------------------------------------------------------
-  # 全量 UT 分片：每个 matrix 条目一个单卡 PPU pod。
+  # 全量 UT 分片：8 个独立 job，每个一个单卡 PPU pod。
+  #   - config: "default" 5 个分片（对齐 periodic.yml），pod 超时 480 分钟：单分片约摊到
+  #     全量 UT 的 1/5，PPU 上比官方 g6.4xlarge 慢，且 install_wheel / install_test_deps
+  #     每个 pod 都要各做一次。
+  #   - config: "slow" 3 个分片（对齐 slow.yml），pod 超时给 300：这一档靠
+  #     PYTORCH_TEST_SKIP_FAST=1 只跑 @slowTest 标记的用例，用例数远少于 default
+  #     （虽然单个更慢）。
+  #
+  # 为什么是 8 个独立 job 而不是一个 8 条目的 matrix job（改回 matrix 会立刻踩坑）：
+  #   flytiger-eco/ppu-distributed-action 把「同一个 job 里跑两个分片」当成不会发生的事，
+  #   它区分并发调用的唯一维度就是 github.job，而 matrix 的所有分片 github.job 相同
+  #   （等于 matrix job 的 key，matrix 取值不参与）：
+  #     - NAS 暂存路径写死成
+  #       /wl_nas/devops/<run_id>-<attempt>/${GITHUB_JOB}/{stage,source.tar.gz}。8 个分片
+  #       并发 `cp -a $GITHUB_WORKSPACE/. stage/`、并发 `tar czf` 同一个 tarball，且任一
+  #       分片打完包就 `rm -rf stage/`（把别人正在 cp 的目录删掉）。最先炸的是 .git 里
+  #       mode 0444 的 pack 文件（源码树里唯一的只读文件）—— 第二个分片覆盖时 cp 拿不到
+  #       写权限，报错原文：
+  #         cp: cannot create regular file
+  #         '/wl_nas/devops/<run_id>-1/ppu-full-ut/stage/./.git/objects/pack/pack-*.pack':
+  #         Permission denied
+  #     - worker pod 名同样只由 <run_id>-<attempt>-<sanitize(github.job) 截 20 字符> 拼成，
+  #       8 个分片算出同一个名字又用 kubectl apply 提交 —— 互相覆盖，日志与成败判定全乱。
+  #     - 它的 cleanup（默认 always）会删掉那个共享 tarball，牵连还在跑的其它分片。
+  #   action 也没有任何入参可以区分同一个 job 内的多次调用（没有 stage_id / job_suffix
+  #   之类），所以唯一可靠的做法是：一个分片 = 一个 job key。若哪天 action 支持了分片
+  #   隔离入参，下面 8 个 job 可以收回成一个 matrix job。
+  #
+  # 拆成独立 job 顺带保住了原来 `fail-fast: false` 的语义：分片之间互不牵连，一次就能拿到
+  # 完整的失败清单（全量 UT 的价值所在），而不是一个分片先红就取消其余 7 个。
+  #
+  # 代价是下面 8 段 YAML 几乎逐字重复。GHA 不支持 YAML anchor，而抽成本仓库的 composite
+  # action 在 ARC + container 下不可用（理由见 wait-build 里那段注释），只能物理重复。
+  # 8 段之间**只允许**这几处不同，其余必须逐字一致：
+  #   - job key：必须前 20 字符就唯一（submit.sh 会把 job 名截到 20 字符去拼 pod 名）
+  #   - name: 里的 config 与分片标签（这串是 PR 上的检查名，改了要同步改分支保护规则）
+  #   - timeout_minutes，以及 command 里的 UT_CONFIG / SHARD_NUMBER / NUM_TEST_SHARDS
   # ---------------------------------------------------------------------------
-  ppu-full-ut:
-    name: "ppu-full-ut ${{ matrix.config }} ${{ matrix.shard }}/${{ matrix.num_shards }} (890P 单卡)"
+  ut-default-1:
+    name: "ppu-full-ut default 1/5 (890P 单卡)"
     needs: wait-build
     runs-on: k8s-runner-group-cpu-flytiger
     container:
       image: ghcr.io/actions/actions-runner:latest
-    # = 用例超时上限(480) + checkout/下载 whl/pod 启动与打包余量(60)。
+    # = 本分片的 pod 超时上限(480) + checkout/下载 whl/pod 启动与打包余量(60)。
     # 等 build 的时间不算在本 job 里（已由 wait-build 承担），所以不需要再叠 390。
-    # 各分片实际的 pod 超时由 matrix.pod_timeout 给（slow 档更短）。
+    # slow 档的 pod 超时更短(300)，但 job 上限统一给 540，方便 8 段保持一致。
     # 注：6 小时 job 上限只约束 GitHub 托管 runner，本 job 在自建 ARC runner 上不受该限制。
     timeout-minutes: 540
-    strategy:
-      # 必须关掉 fail-fast：全量 UT 的价值就是一次拿到完整的失败清单。默认行为下
-      # 任何一个分片先红都会取消其余 7 个，等于每修一个问题都要把 8 个分片重跑一遍。
-      fail-fast: false
-      matrix:
-        include:
-          # config: "default" —— 对齐 periodic.yml 的 5 分片。
-          # pod 超时 480 分钟：单分片约摊到全量 UT 的 1/5，PPU 上比官方 g6.4xlarge 慢，
-          # 且 install_wheel / install_test_deps 每个 pod 都要各做一次。
-          - { config: default, shard: 1, num_shards: 5, pod_timeout: 480 }
-          - { config: default, shard: 2, num_shards: 5, pod_timeout: 480 }
-          - { config: default, shard: 3, num_shards: 5, pod_timeout: 480 }
-          - { config: default, shard: 4, num_shards: 5, pod_timeout: 480 }
-          - { config: default, shard: 5, num_shards: 5, pod_timeout: 480 }
-          # config: "slow" —— 对齐 slow.yml 的 3 分片。
-          # pod 超时给 300：这一档靠 PYTORCH_TEST_SKIP_FAST=1 只跑 @slowTest 标记的用例，
-          # 用例数远少于 default（虽然单个更慢）。
-          - { config: slow, shard: 1, num_shards: 3, pod_timeout: 300 }
-          - { config: slow, shard: 2, num_shards: 3, pod_timeout: 300 }
-          - { config: slow, shard: 3, num_shards: 3, pod_timeout: 300 }
 
     steps:
       - name: Checkout PyTorch
@@ -398,8 +416,8 @@ jobs:
           # (/home/runner/_work/...)，而本步骤跑在 container 里看到的是挂载点 (/__w/...)
           WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
           BUILD_RUN_URL: ${{ needs.wait-build.outputs.run-url }}
-          UT_CONFIG: ${{ matrix.config }}
-          SHARD_LABEL: "${{ matrix.shard }}/${{ matrix.num_shards }}"
+          UT_CONFIG: default
+          SHARD_LABEL: "1/5"
         run: |
           # 卡在这里，而不是等 pod 起来才发现没包 —— 那时已经占着 PPU 卡了
           # 本步骤在 actions-runner 容器里跑，容器无 bash，默认 shell 会回退到 sh：
@@ -426,6 +444,19 @@ jobs:
             echo "- 来源: ${BUILD_RUN_URL}"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # -----------------------------------------------------------------------
+      # 下一步 action 会 `cp -a $GITHUB_WORKSPACE/.` 到 NAS 再打包，先把 .git 删掉：
+      #   - 体积：即使 fetch-depth: 1，.git 的 pack 仍占 workspace 的大头，而 staging 是
+      #     写 NAS(NFS)，单次就要花几分钟 × 8 个分片。
+      #   - 正确性：pod 内跑的 run_test.py、全部用例与 .ci/ppu/full_ut_test.sh 都不调 git，
+      #     删掉不影响测试（只有 build 侧的 .ci/ppu/build_wheel.sh 要 rev-parse，不在本链路）。
+      #   - 兼删了上面那类 cp "Permission denied" 的唯一触发源：.git 的 *.pack/*.idx/*.rev
+      #     是源码树里唯一的只读(0444)文件。
+      # 本步骤在 actions-runner 容器里跑（无 bash，回退 sh），只用 POSIX 写法。
+      # -----------------------------------------------------------------------
+      - name: 删掉 .git（减小 NAS 暂存体积）
+        run: rm -rf .git
+
       - name: "890P 单卡 (1 PPU) CUDA 全量 UT"
         uses: flytiger-eco/ppu-distributed-action@main
         with:
@@ -436,8 +467,8 @@ jobs:
           image: ${{ env.IMAGE }}
           namespace: ${{ env.NAMESPACE }}
           source_dir: ${{ env.SOURCE_DIR }}
-          timeout_minutes: ${{ matrix.pod_timeout }}
-          # 环境变量必须在 command 里注入：job 级 env 不会传进 PPU pod，matrix 上下文同理。
+          timeout_minutes: 480
+          # 环境变量必须在 command 里注入：job 级 env 不会传进 PPU pod。
           # 脚本自身会 cd 到源码根目录，所以这里只给绝对路径即可。
           # WHEEL_DIR 指向上面下载的 whl（已随源码被 action 打包到 pod 的 source_dir 下）。
           command: |
@@ -445,7 +476,822 @@ jobs:
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
-            UT_CONFIG="${{ matrix.config }}" \
-            SHARD_NUMBER="${{ matrix.shard }}" \
-            NUM_TEST_SHARDS="${{ matrix.num_shards }}" \
+            UT_CONFIG="default" \
+            SHARD_NUMBER="1" \
+            NUM_TEST_SHARDS="5" \
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/full_ut_test.sh
+
+  # 以下 7 个 job 与 ut-default-1 逐字相同，只改 job key / name / UT_CONFIG / SHARD_NUMBER /
+  # NUM_TEST_SHARDS / timeout_minutes。步骤为什么这么写（三次下载、清场、校验、删 .git）
+  # 全部见 ut-default-1 里的注释，改一处必须同步改这 8 段。
+  ut-default-2:
+    name: "ppu-full-ut default 2/5 (890P 单卡)"
+    needs: wait-build
+    runs-on: k8s-runner-group-cpu-flytiger
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 540
+
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: 下载 whl artifact
+        id: download-wheel
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (1)
+        if: steps.download-wheel.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 30
+
+      - name: 下载 whl artifact (重试 1)
+        id: download-wheel-retry-1
+        if: steps.download-wheel.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 60
+
+      - name: 下载 whl artifact (重试 2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 校验 whl 已就位
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+          BUILD_RUN_URL: ${{ needs.wait-build.outputs.run-url }}
+          UT_CONFIG: default
+          SHARD_LABEL: "2/5"
+        run: |
+          count=0
+          wheel=""
+          for f in "${WHEEL_DIR}"/torch-*.whl; do
+            [ -e "$f" ] || continue
+            count=$((count + 1))
+            wheel="$f"
+          done
+          if [ "$count" -ne 1 ]; then
+            echo "::error::期望 ${WHEEL_DIR} 下恰好 1 个 torch-*.whl，实际 ${count} 个"
+            ls -la "${WHEEL_DIR}" 2>/dev/null || echo "（目录不存在）"
+            exit 1
+          fi
+          wheel_name=$(basename "$wheel")
+          echo "[wheel] ${wheel_name} ($(du -h "$wheel" | cut -f1))"
+          {
+            echo "### 被测 whl (${UT_CONFIG} ${SHARD_LABEL})"
+            echo ""
+            echo "- 包: \`${wheel_name}\`"
+            echo "- 来源: ${BUILD_RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 删掉 .git（减小 NAS 暂存体积）
+        run: rm -rf .git
+
+      - name: "890P 单卡 (1 PPU) CUDA 全量 UT"
+        uses: flytiger-eco/ppu-distributed-action@main
+        with:
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: ${{ env.NODE_SELECTOR }}
+          host_volumes: ${{ env.HOST_VOLUMES }}
+          image: ${{ env.IMAGE }}
+          namespace: ${{ env.NAMESPACE }}
+          source_dir: ${{ env.SOURCE_DIR }}
+          timeout_minutes: 480
+          command: |
+            PR_NUMBER="${{ github.event.pull_request.number }}" \
+            WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
+            SDK_INSTALL_DIR="/usr/local" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
+            UT_CONFIG="default" \
+            SHARD_NUMBER="2" \
+            NUM_TEST_SHARDS="5" \
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/full_ut_test.sh
+
+  ut-default-3:
+    name: "ppu-full-ut default 3/5 (890P 单卡)"
+    needs: wait-build
+    runs-on: k8s-runner-group-cpu-flytiger
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 540
+
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: 下载 whl artifact
+        id: download-wheel
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (1)
+        if: steps.download-wheel.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 30
+
+      - name: 下载 whl artifact (重试 1)
+        id: download-wheel-retry-1
+        if: steps.download-wheel.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 60
+
+      - name: 下载 whl artifact (重试 2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 校验 whl 已就位
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+          BUILD_RUN_URL: ${{ needs.wait-build.outputs.run-url }}
+          UT_CONFIG: default
+          SHARD_LABEL: "3/5"
+        run: |
+          count=0
+          wheel=""
+          for f in "${WHEEL_DIR}"/torch-*.whl; do
+            [ -e "$f" ] || continue
+            count=$((count + 1))
+            wheel="$f"
+          done
+          if [ "$count" -ne 1 ]; then
+            echo "::error::期望 ${WHEEL_DIR} 下恰好 1 个 torch-*.whl，实际 ${count} 个"
+            ls -la "${WHEEL_DIR}" 2>/dev/null || echo "（目录不存在）"
+            exit 1
+          fi
+          wheel_name=$(basename "$wheel")
+          echo "[wheel] ${wheel_name} ($(du -h "$wheel" | cut -f1))"
+          {
+            echo "### 被测 whl (${UT_CONFIG} ${SHARD_LABEL})"
+            echo ""
+            echo "- 包: \`${wheel_name}\`"
+            echo "- 来源: ${BUILD_RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 删掉 .git（减小 NAS 暂存体积）
+        run: rm -rf .git
+
+      - name: "890P 单卡 (1 PPU) CUDA 全量 UT"
+        uses: flytiger-eco/ppu-distributed-action@main
+        with:
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: ${{ env.NODE_SELECTOR }}
+          host_volumes: ${{ env.HOST_VOLUMES }}
+          image: ${{ env.IMAGE }}
+          namespace: ${{ env.NAMESPACE }}
+          source_dir: ${{ env.SOURCE_DIR }}
+          timeout_minutes: 480
+          command: |
+            PR_NUMBER="${{ github.event.pull_request.number }}" \
+            WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
+            SDK_INSTALL_DIR="/usr/local" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
+            UT_CONFIG="default" \
+            SHARD_NUMBER="3" \
+            NUM_TEST_SHARDS="5" \
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/full_ut_test.sh
+
+  ut-default-4:
+    name: "ppu-full-ut default 4/5 (890P 单卡)"
+    needs: wait-build
+    runs-on: k8s-runner-group-cpu-flytiger
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 540
+
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: 下载 whl artifact
+        id: download-wheel
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (1)
+        if: steps.download-wheel.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 30
+
+      - name: 下载 whl artifact (重试 1)
+        id: download-wheel-retry-1
+        if: steps.download-wheel.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 60
+
+      - name: 下载 whl artifact (重试 2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 校验 whl 已就位
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+          BUILD_RUN_URL: ${{ needs.wait-build.outputs.run-url }}
+          UT_CONFIG: default
+          SHARD_LABEL: "4/5"
+        run: |
+          count=0
+          wheel=""
+          for f in "${WHEEL_DIR}"/torch-*.whl; do
+            [ -e "$f" ] || continue
+            count=$((count + 1))
+            wheel="$f"
+          done
+          if [ "$count" -ne 1 ]; then
+            echo "::error::期望 ${WHEEL_DIR} 下恰好 1 个 torch-*.whl，实际 ${count} 个"
+            ls -la "${WHEEL_DIR}" 2>/dev/null || echo "（目录不存在）"
+            exit 1
+          fi
+          wheel_name=$(basename "$wheel")
+          echo "[wheel] ${wheel_name} ($(du -h "$wheel" | cut -f1))"
+          {
+            echo "### 被测 whl (${UT_CONFIG} ${SHARD_LABEL})"
+            echo ""
+            echo "- 包: \`${wheel_name}\`"
+            echo "- 来源: ${BUILD_RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 删掉 .git（减小 NAS 暂存体积）
+        run: rm -rf .git
+
+      - name: "890P 单卡 (1 PPU) CUDA 全量 UT"
+        uses: flytiger-eco/ppu-distributed-action@main
+        with:
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: ${{ env.NODE_SELECTOR }}
+          host_volumes: ${{ env.HOST_VOLUMES }}
+          image: ${{ env.IMAGE }}
+          namespace: ${{ env.NAMESPACE }}
+          source_dir: ${{ env.SOURCE_DIR }}
+          timeout_minutes: 480
+          command: |
+            PR_NUMBER="${{ github.event.pull_request.number }}" \
+            WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
+            SDK_INSTALL_DIR="/usr/local" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
+            UT_CONFIG="default" \
+            SHARD_NUMBER="4" \
+            NUM_TEST_SHARDS="5" \
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/full_ut_test.sh
+
+  ut-default-5:
+    name: "ppu-full-ut default 5/5 (890P 单卡)"
+    needs: wait-build
+    runs-on: k8s-runner-group-cpu-flytiger
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 540
+
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: 下载 whl artifact
+        id: download-wheel
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (1)
+        if: steps.download-wheel.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 30
+
+      - name: 下载 whl artifact (重试 1)
+        id: download-wheel-retry-1
+        if: steps.download-wheel.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 60
+
+      - name: 下载 whl artifact (重试 2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 校验 whl 已就位
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+          BUILD_RUN_URL: ${{ needs.wait-build.outputs.run-url }}
+          UT_CONFIG: default
+          SHARD_LABEL: "5/5"
+        run: |
+          count=0
+          wheel=""
+          for f in "${WHEEL_DIR}"/torch-*.whl; do
+            [ -e "$f" ] || continue
+            count=$((count + 1))
+            wheel="$f"
+          done
+          if [ "$count" -ne 1 ]; then
+            echo "::error::期望 ${WHEEL_DIR} 下恰好 1 个 torch-*.whl，实际 ${count} 个"
+            ls -la "${WHEEL_DIR}" 2>/dev/null || echo "（目录不存在）"
+            exit 1
+          fi
+          wheel_name=$(basename "$wheel")
+          echo "[wheel] ${wheel_name} ($(du -h "$wheel" | cut -f1))"
+          {
+            echo "### 被测 whl (${UT_CONFIG} ${SHARD_LABEL})"
+            echo ""
+            echo "- 包: \`${wheel_name}\`"
+            echo "- 来源: ${BUILD_RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 删掉 .git（减小 NAS 暂存体积）
+        run: rm -rf .git
+
+      - name: "890P 单卡 (1 PPU) CUDA 全量 UT"
+        uses: flytiger-eco/ppu-distributed-action@main
+        with:
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: ${{ env.NODE_SELECTOR }}
+          host_volumes: ${{ env.HOST_VOLUMES }}
+          image: ${{ env.IMAGE }}
+          namespace: ${{ env.NAMESPACE }}
+          source_dir: ${{ env.SOURCE_DIR }}
+          timeout_minutes: 480
+          command: |
+            PR_NUMBER="${{ github.event.pull_request.number }}" \
+            WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
+            SDK_INSTALL_DIR="/usr/local" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
+            UT_CONFIG="default" \
+            SHARD_NUMBER="5" \
+            NUM_TEST_SHARDS="5" \
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/full_ut_test.sh
+
+  ut-slow-1:
+    name: "ppu-full-ut slow 1/3 (890P 单卡)"
+    needs: wait-build
+    runs-on: k8s-runner-group-cpu-flytiger
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 540
+
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: 下载 whl artifact
+        id: download-wheel
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (1)
+        if: steps.download-wheel.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 30
+
+      - name: 下载 whl artifact (重试 1)
+        id: download-wheel-retry-1
+        if: steps.download-wheel.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 60
+
+      - name: 下载 whl artifact (重试 2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 校验 whl 已就位
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+          BUILD_RUN_URL: ${{ needs.wait-build.outputs.run-url }}
+          UT_CONFIG: slow
+          SHARD_LABEL: "1/3"
+        run: |
+          count=0
+          wheel=""
+          for f in "${WHEEL_DIR}"/torch-*.whl; do
+            [ -e "$f" ] || continue
+            count=$((count + 1))
+            wheel="$f"
+          done
+          if [ "$count" -ne 1 ]; then
+            echo "::error::期望 ${WHEEL_DIR} 下恰好 1 个 torch-*.whl，实际 ${count} 个"
+            ls -la "${WHEEL_DIR}" 2>/dev/null || echo "（目录不存在）"
+            exit 1
+          fi
+          wheel_name=$(basename "$wheel")
+          echo "[wheel] ${wheel_name} ($(du -h "$wheel" | cut -f1))"
+          {
+            echo "### 被测 whl (${UT_CONFIG} ${SHARD_LABEL})"
+            echo ""
+            echo "- 包: \`${wheel_name}\`"
+            echo "- 来源: ${BUILD_RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 删掉 .git（减小 NAS 暂存体积）
+        run: rm -rf .git
+
+      - name: "890P 单卡 (1 PPU) CUDA 全量 UT"
+        uses: flytiger-eco/ppu-distributed-action@main
+        with:
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: ${{ env.NODE_SELECTOR }}
+          host_volumes: ${{ env.HOST_VOLUMES }}
+          image: ${{ env.IMAGE }}
+          namespace: ${{ env.NAMESPACE }}
+          source_dir: ${{ env.SOURCE_DIR }}
+          timeout_minutes: 300
+          command: |
+            PR_NUMBER="${{ github.event.pull_request.number }}" \
+            WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
+            SDK_INSTALL_DIR="/usr/local" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
+            UT_CONFIG="slow" \
+            SHARD_NUMBER="1" \
+            NUM_TEST_SHARDS="3" \
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/full_ut_test.sh
+
+  ut-slow-2:
+    name: "ppu-full-ut slow 2/3 (890P 单卡)"
+    needs: wait-build
+    runs-on: k8s-runner-group-cpu-flytiger
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 540
+
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: 下载 whl artifact
+        id: download-wheel
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (1)
+        if: steps.download-wheel.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 30
+
+      - name: 下载 whl artifact (重试 1)
+        id: download-wheel-retry-1
+        if: steps.download-wheel.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 60
+
+      - name: 下载 whl artifact (重试 2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 校验 whl 已就位
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+          BUILD_RUN_URL: ${{ needs.wait-build.outputs.run-url }}
+          UT_CONFIG: slow
+          SHARD_LABEL: "2/3"
+        run: |
+          count=0
+          wheel=""
+          for f in "${WHEEL_DIR}"/torch-*.whl; do
+            [ -e "$f" ] || continue
+            count=$((count + 1))
+            wheel="$f"
+          done
+          if [ "$count" -ne 1 ]; then
+            echo "::error::期望 ${WHEEL_DIR} 下恰好 1 个 torch-*.whl，实际 ${count} 个"
+            ls -la "${WHEEL_DIR}" 2>/dev/null || echo "（目录不存在）"
+            exit 1
+          fi
+          wheel_name=$(basename "$wheel")
+          echo "[wheel] ${wheel_name} ($(du -h "$wheel" | cut -f1))"
+          {
+            echo "### 被测 whl (${UT_CONFIG} ${SHARD_LABEL})"
+            echo ""
+            echo "- 包: \`${wheel_name}\`"
+            echo "- 来源: ${BUILD_RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 删掉 .git（减小 NAS 暂存体积）
+        run: rm -rf .git
+
+      - name: "890P 单卡 (1 PPU) CUDA 全量 UT"
+        uses: flytiger-eco/ppu-distributed-action@main
+        with:
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: ${{ env.NODE_SELECTOR }}
+          host_volumes: ${{ env.HOST_VOLUMES }}
+          image: ${{ env.IMAGE }}
+          namespace: ${{ env.NAMESPACE }}
+          source_dir: ${{ env.SOURCE_DIR }}
+          timeout_minutes: 300
+          command: |
+            PR_NUMBER="${{ github.event.pull_request.number }}" \
+            WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
+            SDK_INSTALL_DIR="/usr/local" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
+            UT_CONFIG="slow" \
+            SHARD_NUMBER="2" \
+            NUM_TEST_SHARDS="3" \
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/full_ut_test.sh
+
+  ut-slow-3:
+    name: "ppu-full-ut slow 3/3 (890P 单卡)"
+    needs: wait-build
+    runs-on: k8s-runner-group-cpu-flytiger
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 540
+
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: 下载 whl artifact
+        id: download-wheel
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (1)
+        if: steps.download-wheel.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 30
+
+      - name: 下载 whl artifact (重试 1)
+        id: download-wheel-retry-1
+        if: steps.download-wheel.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 重试前清场 (2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 60
+
+      - name: 下载 whl artifact (重试 2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-wheel-*
+          merge-multiple: true
+          path: ${{ env.WHEEL_DIR_REL }}
+          run-id: ${{ needs.wait-build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: 校验 whl 已就位
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+          BUILD_RUN_URL: ${{ needs.wait-build.outputs.run-url }}
+          UT_CONFIG: slow
+          SHARD_LABEL: "3/3"
+        run: |
+          count=0
+          wheel=""
+          for f in "${WHEEL_DIR}"/torch-*.whl; do
+            [ -e "$f" ] || continue
+            count=$((count + 1))
+            wheel="$f"
+          done
+          if [ "$count" -ne 1 ]; then
+            echo "::error::期望 ${WHEEL_DIR} 下恰好 1 个 torch-*.whl，实际 ${count} 个"
+            ls -la "${WHEEL_DIR}" 2>/dev/null || echo "（目录不存在）"
+            exit 1
+          fi
+          wheel_name=$(basename "$wheel")
+          echo "[wheel] ${wheel_name} ($(du -h "$wheel" | cut -f1))"
+          {
+            echo "### 被测 whl (${UT_CONFIG} ${SHARD_LABEL})"
+            echo ""
+            echo "- 包: \`${wheel_name}\`"
+            echo "- 来源: ${BUILD_RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 删掉 .git（减小 NAS 暂存体积）
+        run: rm -rf .git
+
+      - name: "890P 单卡 (1 PPU) CUDA 全量 UT"
+        uses: flytiger-eco/ppu-distributed-action@main
+        with:
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: ${{ env.NODE_SELECTOR }}
+          host_volumes: ${{ env.HOST_VOLUMES }}
+          image: ${{ env.IMAGE }}
+          namespace: ${{ env.NAMESPACE }}
+          source_dir: ${{ env.SOURCE_DIR }}
+          timeout_minutes: 300
+          command: |
+            PR_NUMBER="${{ github.event.pull_request.number }}" \
+            WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
+            SDK_INSTALL_DIR="/usr/local" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
+            UT_CONFIG="slow" \
+            SHARD_NUMBER="3" \
+            NUM_TEST_SHARDS="3" \
             bash ${{ env.SOURCE_DIR }}/.ci/ppu/full_ut_test.sh
