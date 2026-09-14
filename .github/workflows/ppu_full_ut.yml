@@ -100,6 +100,12 @@ env:
   # 写成 pypiindex 会命中不存在的仓库，Artifactory 对所有包返回 404，pip 报
   # "Could not find a version that satisfies the requirement ... (from versions: none)"。
   PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
+  # inductor 的 codegen 后端 triton：钉版本，且只从上面那个内部仓装（镜像自带的版本不保证
+  # 与本 PR 的 torch 匹配）。安装由 .ci/ppu/install_triton.sh 完成，不做多源回退、也不退回
+  # 镜像默认源，所以改这个版本号前请先确认它在 PIP_INDEX 那个仓上确实存在；否则 8 个
+  # 分片会全部在装 triton 这一步失败（每个分片是独立 pod，各自装一次）。
+  # 四条测试门禁（smoke 除外）共用同一个版本号，改一侧就要同步改另几侧。
+  TRITON_VERSION: "3.6.0"
   # 依赖的编译门禁：按 workflow 文件名找它在同一个 head sha 上的 run
   BUILD_WORKFLOW: ppu_linux_build.yml
   # whl 落地目录（相对源码根）。必须在源码树内，且不能被 .gitignore 命中：
@@ -524,6 +530,8 @@ jobs:
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_VERSION="${{ env.TRITON_VERSION }}" \
             UT_CONFIG="default" \
             SHARD_NUMBER="1" \
             NUM_TEST_SHARDS="5" \
@@ -669,6 +677,8 @@ jobs:
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_VERSION="${{ env.TRITON_VERSION }}" \
             UT_CONFIG="default" \
             SHARD_NUMBER="2" \
             NUM_TEST_SHARDS="5" \
@@ -811,6 +821,8 @@ jobs:
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_VERSION="${{ env.TRITON_VERSION }}" \
             UT_CONFIG="default" \
             SHARD_NUMBER="3" \
             NUM_TEST_SHARDS="5" \
@@ -953,6 +965,8 @@ jobs:
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_VERSION="${{ env.TRITON_VERSION }}" \
             UT_CONFIG="default" \
             SHARD_NUMBER="4" \
             NUM_TEST_SHARDS="5" \
@@ -1095,6 +1109,8 @@ jobs:
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_VERSION="${{ env.TRITON_VERSION }}" \
             UT_CONFIG="default" \
             SHARD_NUMBER="5" \
             NUM_TEST_SHARDS="5" \
@@ -1237,6 +1253,8 @@ jobs:
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_VERSION="${{ env.TRITON_VERSION }}" \
             UT_CONFIG="slow" \
             SHARD_NUMBER="1" \
             NUM_TEST_SHARDS="3" \
@@ -1379,6 +1397,8 @@ jobs:
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_VERSION="${{ env.TRITON_VERSION }}" \
             UT_CONFIG="slow" \
             SHARD_NUMBER="2" \
             NUM_TEST_SHARDS="3" \
@@ -1521,6 +1541,8 @@ jobs:
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_VERSION="${{ env.TRITON_VERSION }}" \
             UT_CONFIG="slow" \
             SHARD_NUMBER="3" \
             NUM_TEST_SHARDS="3" \

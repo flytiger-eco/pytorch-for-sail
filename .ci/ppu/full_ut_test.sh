@@ -66,6 +66,8 @@
 #   WHEEL_DIR        - torch whl 所在目录（默认 <repo>/.ci/ppu/wheelhouse，供 install_wheel.sh 使用）
 #   SDK_INSTALL_DIR  - PPU SDK 安装目录（默认 /usr/local，供 sdk_env.sh 使用）
 #   PIP_INDEX        - 内部 pip 源（可选；不设则用 pip_sources.sh 的内置候选源）
+#   TRITON_INDEX     - 装 triton 的**唯一**源（默认取 PIP_INDEX，供 install_triton.sh 使用）
+#   TRITON_VERSION   - 钉住的 triton 版本（默认 3.6.0，供 install_triton.sh 使用）
 #   PR_NUMBER        - 仅用于日志溯源（可选）
 #   PYTORCH_TEST_RUN_EVERYTHING_IN_SERIAL - 可选逃生阀，见文末「显存不够怎么办」
 # =============================================================================
@@ -106,6 +108,11 @@ source .ci/ppu/sdk_env.sh
 
 # 安装被测的 torch：本 PR 由 ppu_linux_build.yml 编出来的 whl
 bash .ci/ppu/install_wheel.sh
+
+# inductor 用例的 codegen 后端：钉版本、且只从内部源装（理由见 install_triton.sh 头注释）。
+# 必须在 install_wheel.sh 之后；四条测试门禁用同一份脚本，改行为只改那一处。
+# 注：每个分片都是独立的 pod，所以这一步每个分片各自跑一次，不能只在某一个分片里装。
+bash .ci/ppu/install_triton.sh
 
 echo "=== 环境自检 (CUDA) ==="
 echo "pr=${PR_NUMBER:-none} hostname=$(hostname) node=${NODE_NAME:-unknown}"

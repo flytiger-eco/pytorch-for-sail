@@ -86,6 +86,11 @@ env:
   # 写成 pypiindex 会命中不存在的仓库，Artifactory 对所有包返回 404，pip 报
   # "Could not find a version that satisfies the requirement ... (from versions: none)"。
   PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
+  # inductor 精度用例的 codegen 全靠 triton，必须钉到内部源上适配 PPU 的那一版：镜像自带的
+  # triton 版本不保证与本 PR 的 torch 匹配。accuracy_test.sh 只会从下面 command 里传的
+  # TRITON_INDEX（= PIP_INDEX，即 pypi_index 仓）装它，不做多源回退、也不退回镜像默认源，
+  # 所以改这个版本号前请先确认该版本在那个仓上确实存在，否则此步直接失败。
+  TRITON_VERSION: "3.6.0"
   # 依赖的编译门禁：按 workflow 文件名找它在同一个 head sha 上的 run
   BUILD_WORKFLOW: ppu_linux_build.yml
   # whl 落地目录（相对源码根）。必须在源码树内，且不能被 .gitignore 命中：
@@ -419,6 +424,8 @@ jobs:
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_VERSION="${{ env.TRITON_VERSION }}" \
             bash ${{ env.SOURCE_DIR }}/.ci/ppu/accuracy_test.sh
             
 
