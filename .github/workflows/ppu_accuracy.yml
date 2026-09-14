@@ -139,8 +139,9 @@ jobs:
           fetch-depth: 1
 
       # -----------------------------------------------------------------------
-      # 等本 PR 的 whl 编好 → 下载到源码树内 → 校验。以下三步在 ppu_smoke.yml 与
-      # ppu_accuracy.yml 里逐字相同，改一处必须同步改另一处（diff 两个文件即可确认没漂移）。
+      # 等本 PR 的 whl 编好 → 下载到源码树内 → 校验。以下三步在 ppu_smoke.yml /
+      # ppu_accuracy.yml / ppu_perf.yml 里逐字相同，改一处必须同步改另两处
+      # （diff 这三个文件即可确认没漂移）。
       #
       # 为什么不抽成 composite action：本 job 跑在 ARC(Actions Runner Controller) 自建
       # runner 上且带 container，ARC 的 k8s hook 把 workspace 拷进 job 容器，runner 进程

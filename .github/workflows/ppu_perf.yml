@@ -1,36 +1,66 @@
-# P0 smoke gate: PPU CUDA 冒烟测试，跑在自建 PPU 集群的单卡 pod 上。
+# P2 perf gate: PPU Inductor 性能测试，跑在自建 PPU 集群的单卡 pod 上。
 #
-# 执行模型（与"直接在 runner 容器里跑测试"的早期版本不同）：
-#   - 本 job 只在 CPU runner 上做编排：checkout 源码后，由
+# 执行模型（与 ppu_smoke.yml / ppu_accuracy.yml 一致）：
+#   - job 只在 CPU runner 上做编排：checkout 源码后，由
 #     flytiger-eco/ppu-distributed-action 把源码打包暂存到 NAS，在带 PPU 卡的节点上
 #     拉起 pod，解压到 source_dir，再执行 command。
 #   - 所以 runner 容器只需小体积的 actions-runner 镜像；PPU 发布镜像只在 PPU pod 内
-#     使用，避免 CPU 节点拉大镜像超时（此前 "initialize container" 失败的原因）。
-#   - 冒烟用例只需单卡：nnodes: 0 + nproc_per_node: 1。
+#     使用，避免 CPU 节点拉大镜像超时。
+#   - 性能用例只需单卡：nnodes: 0 + nproc_per_node: 1。
+#   - pod 内实际逻辑见 .ci/ppu/perf_test.sh（含 include 白名单与 FP8 排除表达式）。
 #
-# 被测的 torch 从哪来：
+# 被测的 torch 从哪来（与 ppu_smoke.yml / ppu_accuracy.yml 一致）：
 #   - 等 ppu_linux_build.yml 把本 PR 的 whl 编完 → 下载它的 artifact → 随源码送进 pod →
-#     在 pod 内 pip install 成功后才跑用例。门禁因此测的是本 PR 真正编出来的 torch。
+#     在 pod 内 pip install 成功后才跑用例。inductor 的性能特征（融合决策、访存量、
+#     生成 kernel 的计时）对 torch 本体的改动极敏感，用镜像里那份与 PR 无关的 torch
+#     跑 perf 没有意义。
 #   - 「等」是轮询 ppu-linux-build 在同一个 head sha 上的 run，而不是用 workflow_run：
 #     workflow_run 只读默认分支上的 workflow 文件，且它的 run 不会作为 PR 的 check 出现，
 #     当不了 PR 门禁。
-#   - 代价：触发条件必须与 ppu_linux_build.yml 完全一致（见下面的 branches / paths），
-#     否则会出现「本 workflow 触发了、但那个 PR 根本没编包」→ 永远等不到 whl。
 #
-# 与 test-h100.yml 的差异：
-#   - 不在本 workflow 里编：test-h100 走 _linux-build.yml 同条流水线先编 wheel 再测；
-#     这里复用 ppu_linux_build.yml 已经编好的产物，避免每条测试门禁各编一次
-#     （PPU 冷编译要 4~5h）。
-#   - 不装 PPU SDK：PPU 镜像里已自带，.ci/ppu/sdk_env.sh 只做校验 + source envsetup.sh。
-#     但测试框架依赖（pytest 及其插件等）镜像里没有，由 .ci/ppu/install_test_deps.sh 按
-#     .ci/docker/requirements-ci.txt 的版本补装，保证与官方 CI 跑 test case 的环境一致。
-#   - 只跑 CUDA 相关用例，且裁掉 H100/B200 专属用例，以及 FP8 用例（真武 PPU 当前不支持
-#     FP8）。用例清单见 .ci/ppu/smoke_test.sh。
-name: ppu-smoke
+# 设计取舍（重要）：
+#   - 参考模板 inductor-perf-test-nightly-h100.yml 只是一个"薄编排层"：它调用
+#     _linux-build.yml（先编 wheel）+ _linux-test.yml，跑在 pytorch 官方云 GPU runner
+#     （linux.aws.h100）上，并且带 `github.repository_owner == 'pytorch'` 守卫。这套结构
+#     （先 build 再 test、云端 runner、pytorch-only、5/7/9 分片）与本仓库「复用
+#     ppu_linux_build.yml 已编好的 whl + 自建 PPU 集群单卡 pod」的诉求本质互斥，
+#     无法照搬其 job / runner / test-matrix 定义。
+#   - 因此这里只保留它的**测试语义**（perf：inductor 生成代码的性能与访存特征 +
+#     torch.compile 端到端计时），执行机制完全沿用 ppu_smoke.yml / ppu_accuracy.yml。
+#   - 不照搬它的跑批内容：它的 perf 语义是 .ci/pytorch/test.sh 的 test_perf_for_dashboard，
+#     用 DASHBOARD_TAG 驱动 benchmarks/dynamo/{huggingface,timm_models,torchbench}.py
+#     带 --performance 跑模型套件；这三个套件全部要联网拉模型权重（huggingface.co /
+#     timm 预训练权重 / clone pytorch/benchmark），而 PPU pod 无外网出口，照搬必然卡死
+#     在拉模型阶段。取舍的完整推导与后续演进路径写在 .ci/ppu/perf_test.sh 头注释里。
+#   - 测试范围（仅 CUDA，零下载、自包含）：
+#       * inductor/test_perf              生成代码的访存量计数
+#       * inductor/test_benchmark_fusion  benchmark 驱动的融合决策
+#       * inductor/test_kernel_benchmark  生成 triton kernel 的独立 benchmark 路径
+#       * inductor/test_benchmarking      benchmarker / TritonBenchmarker 计时基座
+#       * inductor/test_analysis          profile_analysis 的耗时/带宽/FLOPS 归因
+#       * benchmarks/gpt_fast 的 4 个微基准（对齐官方 test_inductor_micro_benchmark，
+#         唯一一条零下载的 perf 跑批；受 torchao 可用性影响，是尽力而为段）
+#   - 只跑 CUDA 一条线：上面这些文件统一走 inductor_utils 的 GPU_TYPE，在 PPU 上即
+#     "cuda"；纯 CPU 分支由 HAS_GPU / requires_gpu_and_triton 装饰器自行 skip，
+#     不做 inductor-cpu 对应的那条线。
+#   - FP8：真武 PPU 当前不支持 FP8。上面 5 个文件经 grep 确认零 FP8 命中，脚本里仍显式挂
+#     `-k "not fp8 and not float8 and not e4m3 and not e5m2"` 作为防回归护栏，
+#     与 ppu_smoke.yml / ppu_accuracy.yml 剔掉 test_scaled_matmul_cuda / inductor/test_fp8
+#     的取舍保持一致。
+#   - H100/B200(SM90/TMA/CUTLASS) 专属用例不必手工剔除：它们在这几个文件里是**文件内的
+#     少数用例**，由 IS_BIG_GPU / is_big_gpu() / SM80OrLater 等运行期能力探测装饰，
+#     在 PPU 上是 skip 而不是 fail（不同于 ppu_accuracy.yml 里整文件剔掉
+#     inductor/test_max_autotune 那类情况）。
+#   - 触发方式：与 ppu_smoke.yml / ppu_accuracy.yml 一致，仅 pull_request（作为 PR 门禁），
+#     且 branches / paths 必须与 ppu_linux_build.yml 对齐 —— 本 workflow 要等它的 whl，
+#     两边过滤不一致就会出现「性能流水线触发了、但那个 PR 根本没编包」→ 永远等不到 whl。
+#     不沿用参考模板的 schedule + workflow_dispatch + repository_owner=='pytorch' 守卫
+#     （那是官方 nightly 专用）。
+#     注意：pull_request 事件读取的是**默认分支**上的 workflow 文件，本文件需先合入默认分支才会对新 PR 生效。
+name: ppu-perf
 
 on:
-  # 触发条件必须与 ppu_linux_build.yml 保持一致：本 workflow 依赖它的 whl，
-  # 「smoke 触发了但 build 没触发」等价于卡死到超时。改一侧就要同步改另一侧。
+  # 触发条件必须与 ppu_linux_build.yml 保持一致，改一侧就要同步改另一侧
   pull_request:
     branches:
       - v2.11.0
@@ -43,7 +73,7 @@ on:
       - '.ci/ppu/**'
       - '.github/workflows/ppu_linux_build.yml'
       - '.github/workflows/_ppu_build.yml'
-      - '.github/workflows/ppu_smoke.yml'
+      - '.github/workflows/ppu_perf.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -58,17 +88,17 @@ env:
   # PPU 基础镜像：python3.12 + CUDA13 + PPU SDK + triton，不含 torch —— torch 由
   # ppu-linux-build 的 whl 提供。刻意与 _ppu_build.yml 的 docker-image 默认值用同一个 tag：
   # 编译与运行同镜像，才不会出现 whl 与镜像里 SDK / 工具链对不上的问题。
-  # 注意：这里必须是 PPU 镜像，不能填 actions-runner 镜像——后者以非 root 用户 runner
-  # (uid 1001) 启动，action 在 pod 内创建 source_dir 时会 mkdir /workspace 失败（Permission denied）。
-  # 前置要求：该镜像须已预拉到 NODE_SELECTOR 指定板型的节点上（action 文档「前置要求」第 3 条）。
-  # 换镜像 tag 或换板型时都要重新确认预拉，否则 pod 会卡在拉取阶段直至超时。
+  # 前置要求：该镜像须已预拉到 NODE_SELECTOR 指定板型的节点上，否则 pod 会卡在拉取阶段直至超时。
   IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   # action 在 pod 内解压源码的路径（也是 action 的默认值，这里显式写出便于 command 引用）
   SOURCE_DIR: /workspace/source
   # 板型选 890P：集群里 890P 有 16 台（每台 8 PPU），810E 只有 1 台（16 PPU）。
-  # 本 workflow 是每个 PR 都触发的高频门禁，钉在 810E 会把所有 PR 排队到同一台机器上。
+  # 本 workflow 是每个 PR 都触发的长耗时门禁，钉在 810E 会与 ppu-smoke / ppu-accuracy
+  # 互相排队在同一台机器上。
+  # 另一个必须钉板型的理由：perf 数字（带宽 / flops 利用率）跨板型不可比，飘板型会让
+  # 日志里的数字忽高忽低，看不出是代码退化还是换了机器。
   NODE_SELECTOR: "board-type=ZW-M890P"
   # 内部 pip 源：pod 内只能访问内网，补装 run_test.py 必需的 pytest 插件要走这个源。
   # 仓库名是 pypi_index（带下划线的 VIRTUAL 仓，聚合 pypi_formal/aliyun/huawei/tsinghua 等代理）。
@@ -84,8 +114,8 @@ env:
   # 等 build 的上限。这是**兜底**而不是正常退出路径：正常情况下等待由 build run 自己的结论
   # 终止 —— 编译成功就往下走；编译失败、或它自己撞上 job 超时（GitHub 记成
   # conclusion=failure），都会立刻命中下面的「未成功」分支快速失败。
-  # 所以这个值必须严格大于 build 自己的 job 上限，否则会出现「build 还在正常编、smoke 先判
-  # 超时」的假失败：whl 最终编出来了，却没有任何门禁测它，只能手动重跑。
+  # 所以这个值必须严格大于 build 自己的 job 上限，否则会出现「build 还在正常编、性能门禁先
+  # 判超时」的假失败：whl 最终编出来了，却没有任何门禁测它，只能手动重跑。
   # 取值 = 350 + 40：
   #   - 350 是 build 的硬上限（ppu_linux_build.yml 不传 timeout-minutes，取 _ppu_build.yml
   #     的默认值 350，覆盖冷编译 4~5h 的情况）。改那个默认值必须同步改这里。
@@ -104,16 +134,19 @@ env:
   WAIT_MAX_API_FAILURES: "10"
 
 jobs:
-  ppu-smoke-890p-single:
-    name: ppu-smoke (890P 单卡)
+  # ---------------------------------------------------------------------------
+  # CUDA/PPU 侧 inductor 性能测试（对齐 inductor-perf-test-nightly-h100.yml 的测试语义）
+  # ---------------------------------------------------------------------------
+  ppu-perf-cuda:
+    name: ppu-perf-cuda (890P 单卡)
     runs-on: k8s-runner-group-cpu-flytiger
     container:
       image: ghcr.io/actions/actions-runner:latest
-    # = 等 build 的上限(390) + 用例超时(60) + checkout/下载 whl/pod 启动与打包余量(30)。
+    # = 等 build 的上限(390) + 用例超时(150) + checkout/下载 whl/pod 启动与打包余量(30)。
     # 必须大于 WAIT_TIMEOUT_MINUTES：否则秒表还没到点、job 先被砍，日志里只剩一条没有
     # 任何原因说明的 job 超时。命中缓存时实际远低于此。
     # 注：6 小时 job 上限只约束 GitHub 托管 runner，本 job 在自建 ARC runner 上不受该限制。
-    timeout-minutes: 480
+    timeout-minutes: 570
 
     steps:
       - name: Checkout PyTorch
@@ -309,7 +342,7 @@ jobs:
           run-id: ${{ steps.wait-build.outputs.run-id }}
           github-token: ${{ github.token }}
 
-      - name: 校验 whl 已就位
+      - name: 校验 whl
         env:
           # 用相对路径：${{ github.workspace }} 求值出的是 runner 自己的路径
           # (/home/runner/_work/...)，而本步骤跑在 container 里看到的是挂载点 (/__w/...)
@@ -341,7 +374,7 @@ jobs:
             echo "- 来源: ${BUILD_RUN_URL}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: "890P 单卡 (1 PPU) CUDA 冒烟测试"
+      - name: "890P 单卡 (1 PPU) CUDA inductor 性能测试"
         uses: flytiger-eco/ppu-distributed-action@main
         with:
           nnodes: 0
@@ -351,7 +384,10 @@ jobs:
           image: ${{ env.IMAGE }}
           namespace: ${{ env.NAMESPACE }}
           source_dir: ${{ env.SOURCE_DIR }}
-          timeout_minutes: 60
+          # 比 accuracy 的 120 再放宽：perf 用例除了编译，还要真的反复计时
+          # （test_kernel_benchmark 会起子进程 benchmark 生成的 kernel，
+          # gpt_fast 每个实验都带 5 轮 warmup + 4 个输入规模）。
+          timeout_minutes: 150
           # 环境变量必须在 command 里注入：job 级 env 不会传进 PPU pod。
           # 脚本自身会 cd 到源码根目录，所以这里只给绝对路径即可。
           # WHEEL_DIR 指向上面下载的 whl（已随源码被 action 打包到 pod 的 source_dir 下）。
@@ -360,4 +396,4 @@ jobs:
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
-            bash ${{ env.SOURCE_DIR }}/.ci/ppu/smoke_test.sh
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/perf_test.sh
