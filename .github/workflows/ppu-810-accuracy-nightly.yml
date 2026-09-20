@@ -1,6 +1,10 @@
 name: ppu-810-accuracy-nightly
 
 on:
+  push:
+    branches:
+      - v2.11.0-for-ci
+      - v2.11.0
   schedule:
     - cron: '0 16 * * *'
   workflow_dispatch:
