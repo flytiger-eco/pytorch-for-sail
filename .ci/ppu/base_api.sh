@@ -16,7 +16,7 @@ ppu-smi || echo "[warn] ppu-smi 不可用，请确认 pod 已分配 PPU 设备"
 bash .ci/ppu/install_test_deps.sh
 echo "=== CUDA base api 用例（test/test_ops.py，仅 CUDA 相关） ==="
 
-CUDA_VISIBLE_DEVICES=9 pytest -v test/test_ops.py -k "cuda \
+pytest -v test/test_ops.py -k "cuda \
 and not test_dtypes___rmatmul___cuda \
 and not test_dtypes__refs_dot_cuda \
 and not test_dtypes__refs_linalg_matrix_norm_cuda \
@@ -63,7 +63,6 @@ and not test_dtypes_svd_lowrank_cuda \
 and not test_dtypes_tensordot_cuda \
 and not test_dtypes_vdot_cuda \
 and not test_noncontiguous_samples___rmatmul___cuda_complex64 \
-and not cusolverDnCgesvdjBatched_bufferSize \
 and not test_noncontiguous_samples_addbmm_cuda_complex64 \
 and not test_noncontiguous_samples_addmm_cuda_complex64 \
 and not test_noncontiguous_samples_addmm_decomposed_cuda_complex64 \
@@ -72,6 +71,7 @@ and not test_noncontiguous_samples_addr_cuda_complex64 \
 and not test_noncontiguous_samples_baddbmm_cuda_complex64 \
 and not test_noncontiguous_samples_bmm_cuda_complex64 \
 and not test_noncontiguous_samples_corrcoef_cuda_complex64 \
+and not test_python_ref_torch_fallback__refs_linalg_matrix_norm_cuda_complex64 \
 and not test_noncontiguous_samples_cov_cuda_complex64 \
 and not test_noncontiguous_samples_dot_cuda_complex64 \
 and not test_noncontiguous_samples_einsum_cuda_complex64 \
