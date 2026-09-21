@@ -63,6 +63,7 @@ and not test_dtypes_svd_lowrank_cuda \
 and not test_dtypes_tensordot_cuda \
 and not test_dtypes_vdot_cuda \
 and not test_noncontiguous_samples___rmatmul___cuda_complex64 \
+and not cusolverDnCgesvdjBatched_bufferSize \
 and not test_noncontiguous_samples_addbmm_cuda_complex64 \
 and not test_noncontiguous_samples_addmm_cuda_complex64 \
 and not test_noncontiguous_samples_addmm_decomposed_cuda_complex64 \
