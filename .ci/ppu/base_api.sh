@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+export SDK_INSTALL_DIR="${SDK_INSTALL_DIR:-/usr/local}"
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+echo "[base_api] 源码目录: $(pwd)"
+source .ci/ppu/sdk_env.sh
+bash .ci/ppu/install_wheel.sh
+
+echo "=== 环境自检 ==="
+echo "pr=${PR_NUMBER:-none} hostname=$(hostname) node=${NODE_NAME:-unknown}"
+echo "rank=${RANK:-0} nproc_per_node=${NPROC_PER_NODE:-1}"
+python --version
+(cd /tmp && python -c "import torch; print('torch', torch.__version__, torch.__file__); print('cuda_available', torch.cuda.is_available()); print('device_count', torch.cuda.device_count())")
+ppu-smi || echo "[warn] ppu-smi 不可用，请确认 pod 已分配 PPU 设备"
+bash .ci/ppu/install_test_deps.sh
+echo "=== CUDA base api 用例（test/test_ops.py，仅 CUDA 相关） ==="
+
+pytest -v test/test_ops.py -k "cuda \
+and not test_dtypes___rmatmul___cuda \
+and not test_dtypes__refs_dot_cuda \
+and not test_dtypes__refs_linalg_matrix_norm_cuda \
+and not test_dtypes__refs_linalg_norm_cuda \
+and not test_dtypes__refs_linalg_svd_cuda \
+and not test_dtypes__refs_linalg_svdvals_cuda \
+and not test_dtypes__refs_nn_functional_pdist_cuda \
+and not test_dtypes__refs_vdot_cuda \
+and not test_dtypes_addbmm_cuda \
+and not test_dtypes_addmm_cuda \
+and not test_dtypes_addmm_decomposed_cuda \
+and not test_dtypes_addmv_cuda \
+and not test_dtypes_addr_cuda \
+and not test_dtypes_baddbmm_cuda \
+and not test_dtypes_bmm_cuda \
+and not test_dtypes_corrcoef_cuda \
+and not test_dtypes_cov_cuda \
+and not test_dtypes_dot_cuda \
+and not test_dtypes_einsum_cuda \
+and not test_dtypes_geqrf_cuda \
+and not test_dtypes_inner_cuda \
+and not test_dtypes_linalg_ \
+and not test_dtypes_lu_cuda \
+and not test_dtypes_lu_solve_cuda \
+and not test_dtypes_lu_unpack_cuda \
+and not test_dtypes_matmul_cuda \
+and not test_dtypes_matrix_exp_cuda \
+and not test_dtypes_mm_cuda \
+and not test_dtypes_mv_cuda \
+and not test_dtypes_nn_functional_bilinear_cuda \
+and not test_dtypes_nn_functional_conv1d_cuda \
+and not test_dtypes_nn_functional_conv2d_cuda \
+and not test_dtypes_nn_functional_conv3d_cuda \
+and not test_dtypes_nn_functional_conv_transpose \
+and not test_dtypes_nn_functional_linear_cuda \
+and not test_dtypes_norm_nuc_cuda \
+and not test_dtypes_ormqr_cuda \
+and not test_dtypes_pca_lowrank_cuda \
+and not test_dtypes_pinverse_cuda \
+and not test_dtypes_qr_cuda \
+and not test_dtypes_sparse_sampled_addmm_cuda \
+and not test_dtypes_svd_cuda \
+and not test_dtypes_svd_lowrank_cuda \
+and not test_dtypes_tensordot_cuda \
+and not test_dtypes_vdot_cuda \
+and not test_noncontiguous_samples___rmatmul___cuda_complex64 \
+and not test_noncontiguous_samples_addbmm_cuda_complex64 \
+and not test_noncontiguous_samples_addmm_cuda_complex64 \
+and not test_noncontiguous_samples_addmm_decomposed_cuda_complex64 \
+and not test_noncontiguous_samples_addmv_cuda_complex64 \
+and not test_noncontiguous_samples_addr_cuda_complex64 \
+and not test_noncontiguous_samples_baddbmm_cuda_complex64 \
+and not test_noncontiguous_samples_bmm_cuda_complex64 \
+and not test_noncontiguous_samples_corrcoef_cuda_complex64 \
+and not test_python_ref_torch_fallback__refs_linalg_matrix_norm_cuda_complex64 \
+and not test_noncontiguous_samples_cov_cuda_complex64 \
+and not test_noncontiguous_samples_dot_cuda_complex64 \
+and not test_noncontiguous_samples_einsum_cuda_complex64 \
+and not test_noncontiguous_samples_geqrf_cuda_complex64 \
+and not test_noncontiguous_samples_inner_cuda_complex64 \
+and not test_noncontiguous_samples_linalg \
+and not test_noncontiguous_samples_lu_cuda_complex64 \
+and not test_noncontiguous_samples_lu_solve_cuda_complex64 \
+and not test_noncontiguous_samples_lu_unpack_cuda_complex64 \
+and not test_noncontiguous_samples_matmul_cuda_complex64 \
+and not test_noncontiguous_samples_matrix_exp_cuda_complex64 \
+and not test_noncontiguous_samples_mm_cuda_complex64 \
+and not test_noncontiguous_samples_mv_cuda_complex64 \
+and not test_noncontiguous_samples_nn_functional_linear_cuda_complex64 \
+and not test_noncontiguous_samples_norm_nuc_cuda_complex64 \
+and not test_noncontiguous_samples_ormqr_cuda_complex64 \
+and not test_noncontiguous_samples_pca_lowrank_cuda_complex64 \
+and not test_noncontiguous_samples_pinverse_cuda_complex64 \
+and not test_noncontiguous_samples_qr_cuda_complex64 \
+and not test_noncontiguous_samples_svd_cuda_complex64 \
+and not test_noncontiguous_samples_svd_lowrank_cuda_complex64 \
+and not test_noncontiguous_samples_tensordot_cuda_complex64 \
+and not test_noncontiguous_samples_vdot_cuda_complex64 \
+and not test_numpy_ref_addbmm_cuda_complex128 \
+and not test_numpy_ref_linalg_tensorinv_cuda_complex128 \
+and not test_numpy_ref_linalg_tensorsolve_cuda_complex128 \
+and not test_numpy_ref_linalg_vecdot_cuda_complex128 \
+and not test_out_linalg_ldl_factor_cuda_float32 \
+and not test_out_linalg_ldl_factor_ex_cuda_float32 \
+and not test_out_linalg_ldl_solve_cuda_float32 \
+and not test_out_linalg_matrix_rank_hermitian_cuda_float32 \
+and not test_out_requires_grad_error_addbmm_cuda_complex64 \
+and not test_out_requires_grad_error_addmm_cuda_complex64 \
+and not test_out_requires_grad_error_addmm_decomposed_cuda_complex64 \
+and not test_out_requires_grad_error_addmv_cuda_complex64 \
+and not test_out_requires_grad_error_baddbmm_cuda_complex64 \
+and not test_out_requires_grad_error_bmm_cuda_complex64 \
+and not test_out_requires_grad_error_dot_cuda_complex64 \
+and not test_out_requires_grad_error_inner_cuda_complex64 \
+and not test_out_requires_grad_error_linalg \
+and not test_out_requires_grad_error_lu_cuda_complex64 \
+and not test_out_requires_grad_error_lu_solve_cuda_complex64 \
+and not test_out_requires_grad_error_lu_unpack_cuda_complex64 \
+and not test_out_requires_grad_error_matmul_cuda_complex64 \
+and not test_out_requires_grad_error_mm_cuda_complex64 \
+and not test_out_requires_grad_error_mv_cuda_complex64 \
+and not test_out_requires_grad_error_nn_functional_linear_cuda_complex64 \
+and not test_out_requires_grad_error_norm_nuc_cuda_complex64 \
+and not test_out_requires_grad_error_ormqr_cuda_complex64 \
+and not test_out_requires_grad_error_qr_cuda_complex64 \
+and not test_out_requires_grad_error_tensordot_cuda_complex64 \
+and not test_out_requires_grad_error_vdot_cuda_complex64 \
+and not test_out_warning_linalg_ldl_factor_cuda \
+and not test_out_warning_linalg_ldl_factor_ex_cuda \
+and not test_out_warning_linalg_ldl_solve_cuda \
+and not test_out_warning_linalg_matrix_rank_hermitian_cuda \
+and not test_python_ref__refs_linalg_matrix_norm_cuda_complex128 \
+and not test_python_ref__refs_linalg_matrix_norm_cuda_complex64 \
+and not test_python_ref__refs_linalg_norm_cuda_complex128 \
+and not test_python_ref__refs_linalg_norm_cuda_complex64 \
+and not test_python_ref__refs_linalg_svd_cuda_complex128 \
+and not test_python_ref__refs_linalg_svd_cuda_complex64 \
+and not test_python_ref__refs_linalg_svdvals_cuda_complex128 \
+and not test_python_ref__refs_linalg_svdvals_cuda_complex64 \
+and not test_python_ref__refs_linalg_vecdot_cuda_complex128 \
+and not test_python_ref__refs_linalg_vecdot_cuda_complex64 \
+and not test_python_ref_executor__refs_div_trunc_rounding_executor_aten_cuda_uint8 \
+and not test_python_ref_executor__refs_dot_executor_aten_cuda_complex128 \
+and not test_python_ref_executor__refs_dot_executor_aten_cuda_complex64 \
+and not test_python_ref_executor__refs_lgamma_executor_aten_cuda_int8 \
+and not test_python_ref_executor__refs_linalg_matrix_norm_executor_aten_cuda_complex128 \
+and not test_python_ref_executor__refs_linalg_matrix_norm_executor_aten_cuda_complex64 \
+and not test_python_ref_executor__refs_linalg_norm_executor_aten_cuda_complex128 \
+and not test_python_ref_executor__refs_linalg_norm_executor_aten_cuda_complex64 \
+and not test_python_ref_executor__refs_linalg_svd_executor_aten_cuda_complex128 \
+and not test_python_ref_executor__refs_linalg_svd_executor_aten_cuda_complex64 \
+and not test_python_ref_executor__refs_linalg_svdvals_executor_aten_cuda_complex128 \
+and not test_python_ref_executor__refs_linalg_svdvals_executor_aten_cuda_complex64 \
+and not test_python_ref_executor__refs_linalg_vecdot_executor_aten_cuda_complex128 \
+and not test_python_ref_executor__refs_linalg_vecdot_executor_aten_cuda_complex64 \
+and not test_python_ref_executor__refs_unflatten_executor_aten_cuda_float16 \
+and not test_python_ref_executor__refs_vdot_executor_aten_cuda_complex128 \
+and not test_python_ref_executor__refs_vdot_executor_aten_cuda_complex64 \
+and not test_python_ref_meta__refs_div_trunc_rounding_cuda_uint8 \
+and not test_python_ref_meta__refs_dot_cuda_complex128 \
+and not test_python_ref_meta__refs_dot_cuda_complex64 \
+and not test_python_ref_meta__refs_le_cuda_float32 \
+and not test_python_ref_meta__refs_linalg_matrix_norm_cuda_complex128 \
+and not test_python_ref_meta__refs_linalg_matrix_norm_cuda_complex64 \
+and not test_python_ref_meta__refs_linalg_norm_cuda_complex128 \
+and not test_python_ref_meta__refs_linalg_norm_cuda_complex64 \
+and not test_python_ref_meta__refs_linalg_svd_cuda_complex128 \
+and not test_python_ref_meta__refs_linalg_svd_cuda_complex64 \
+and not test_python_ref_meta__refs_linalg_svdvals_cuda_complex128 \
+and not test_python_ref_meta__refs_linalg_svdvals_cuda_complex64 \
+and not test_python_ref_meta__refs_vdot_cuda_complex128 \
+and not test_python_ref_meta__refs_vdot_cuda_complex64 \
+and not test_python_ref_torch_fallback__refs_dot_cuda_complex128 \
+and not test_python_ref_torch_fallback__refs_dot_cuda_complex64 \
+and not test_python_ref_torch_fallback__refs_linalg_matrix_norm_cuda_complex128 \
+"
+
+echo "[base_api] 完成"

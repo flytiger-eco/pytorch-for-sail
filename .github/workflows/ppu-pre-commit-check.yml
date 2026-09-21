@@ -17,16 +17,6 @@ jobs:
     name: Pre-check
     uses: flytiger-eco/.github/.github/workflows/user-precheck.yml@main
 
-  smoke-test:
-    name: Smoke Test
-    needs: precheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run smoke tests
-        run: |
-          echo "smoke test passed"
-
   ai-code-review:
     name: AI Code Review (Copilot Gate)
     needs: precheck
@@ -38,13 +28,3 @@ jobs:
     needs: [smoke-test, ai-code-review]
     uses: flytiger-eco/.github/.github/workflows/human-review.yml@main
     secrets: inherit
-
-  ci:
-    name: Full CI
-    needs: human-review
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run full CI
-        run: |
-          echo "full CI passed"

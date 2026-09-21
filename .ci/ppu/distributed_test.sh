@@ -85,7 +85,6 @@ run_case "" distributed/tensor/test_dtensor_compile
 run_case "" distributed/tensor/parallel/test_micro_pipeline_tp
 run_case "" distributed/_composable/test_replicate_with_compiler
 
-# --- FSDP2（test_fully_shard_*）---
 run_case "test_train_parity_multi_group"                   distributed/_composable/fsdp/test_fully_shard_training
 run_case "test_train_parity_with_activation_checkpointing" distributed/_composable/fsdp/test_fully_shard_training
 run_case "test_train_parity_hsdp"                          distributed/_composable/fsdp/test_fully_shard_training
