@@ -28,13 +28,3 @@ jobs:
     needs: ai-code-review
     uses: flytiger-eco/.github/.github/workflows/human-review.yml@main
     secrets: inherit
-
-  ci:
-    name: Full CI
-    needs: human-review
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run full CI
-        run: |
-          echo "end!"
