@@ -103,14 +103,48 @@ if [[ -n "${MODEL_PERF_EXTRA_ARGS:-}" ]]; then
     read -r -a EXTRA_FLAGS <<<"${MODEL_PERF_EXTRA_ARGS}"
 fi
 
+BAD_RESULTS=()
+result_ok() {
+    local f="$1"
+    [[ -s "$f" ]] || return 1
+    case "$f" in
+        *.csv)
+            local rows
+            rows="$(grep -cve '^[[:space:]]*$' "$f" || true)"
+            (( rows > 1 ))
+            ;;
+        *.json)
+            python - "$f" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1]) as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(1)
+# null / {} / [] 视为“无测量结果”
+sys.exit(0 if data else 1)
+PY
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
 dump_result() {
     local f="$1"
     echo "=== model-perf 结果: $(basename "$f") ==="
     if [[ -s "$f" ]]; then
         cat "$f"
-    else
-        echo "[model-perf][warn] 没有在 ${f} 拿到结果（命令以 0 退出但没写出文件）。"
     fi
+    if result_ok "$f"; then
+        return 0
+    fi
+    echo "[model-perf][error] ${f} 没有产出有效测量结果（文件缺失/为空/无数据行）。" \
+         "benchmark 命令可能以 0 退出但逐模型异常被吞掉，判定为失败。" >&2
+    BAD_RESULTS+=("$f")
 }
 
 case "$BENCH_CONFIG" in
@@ -156,5 +190,13 @@ case "$BENCH_CONFIG" in
         done
         ;;
 esac
+
+if (( ${#BAD_RESULTS[@]} > 0 )); then
+    echo "[model-perf][error] 共 ${#BAD_RESULTS[@]} 个结果无有效测量数据，判定本 job 失败：" >&2
+    for f in "${BAD_RESULTS[@]}"; do
+        echo "  - $f" >&2
+    done
+    exit 1
+fi
 
 echo "[model-perf] 完成 (config=${BENCH_CONFIG} shard=${SHARD_NUMBER}/${NUM_TEST_SHARDS})"

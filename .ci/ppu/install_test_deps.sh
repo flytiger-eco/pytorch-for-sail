@@ -88,7 +88,13 @@ ppu_build_pip_candidates
 CANDIDATES=("${PIP_CANDIDATES[@]}")
 
 echo "=== pip 源连通性诊断 ==="
-echo "[probe] proxy 环境变量: $(env | grep -iE '^(http_proxy|https_proxy|no_proxy|HTTP_PROXY|HTTPS_PROXY|NO_PROXY)=' | tr '\n' ' ' || echo '<无>')"
+echo "[probe] 已设置的 proxy 环境变量（仅列名称，不打印取值，避免泄漏内嵌凭证）: $(
+    _set_proxy_names=""
+    for _pv in http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+        [[ -n "${!_pv:-}" ]] && _set_proxy_names="${_set_proxy_names}${_pv} "
+    done
+    printf '%s' "${_set_proxy_names:-<无>}"
+)"
 echo "[probe] pip 配置:"
 python -m pip config list 2>&1 | sed 's/^/        /' || true
 python - "${CANDIDATES[@]}" <<'PY' || true
