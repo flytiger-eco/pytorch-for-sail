@@ -2,7 +2,7 @@ name: ppu-model-perf-810
 
 on:
   workflow_dispatch:
-  # 北京时间每周六 04:00（UTC 周五 18:00）触发一次
+  # 北京时间每周六 04:00（UTC 周五 20:00）触发一次
   schedule:
     - cron: "0 20 * * 5"
 
