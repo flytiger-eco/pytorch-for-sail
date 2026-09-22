@@ -1,12 +1,9 @@
 name: ppu-full-ut-890
 
 on:
-  push:
-    branches:
-      - v2.11.0
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "0 22 * * 5"
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

@@ -1,11 +1,9 @@
 name: ppu-890-accuracy-nightly
 
 on:
-  push:
-    branches:
-      - v2.11.0
   schedule:
-    - cron: '0 17 * * *'
+    # 北京时间每周六 03:00（UTC 周五 19:00）触发一次
+    - cron: '0 19 * * 5'
   workflow_dispatch:
 
 concurrency:

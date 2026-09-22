@@ -26,6 +26,8 @@ on:
       - '.github/workflows/ppu_refresh_cache.yml'
       - '.github/workflows/_ppu_build.yml'
       - '.ci/ppu/**'
+  schedule:
+    - cron: "0 10 * * 5"
 
 permissions:
   contents: read
