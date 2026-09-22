@@ -614,14 +614,12 @@ def run_test(
         os.close(log_fd)
 
     command = (launcher_cmd or []) + executable + argv
-    # [临时] 不停止、不重跑：强制单次运行，跳过 run_test_retries 的自定义重试循环，
-    # 配合下方 get_pytest_args 去掉的 -x，每个测试文件会把用例全部跑完。
-    # 恢复时把下行换回原逻辑：
-    #   should_retry = (
-    #       "--subprocess" not in command and not RERUN_DISABLED_TESTS
-    #       and not is_cpp_test and "-n" not in command
-    #   )
-    should_retry = False
+    should_retry = (
+        "--subprocess" not in command
+        and not RERUN_DISABLED_TESTS
+        and not is_cpp_test
+        and "-n" not in command
+    )
     timeout = (
         None
         if not options.enable_timeout
@@ -1258,9 +1256,9 @@ def get_pytest_args(options, is_cpp_test=False, is_distributed_test=False):
         # flakiness status. Default to 50 re-runs
         rerun_options = ["--flake-finder", f"--flake-runs={count}"]
     else:
-        # [临时] 不停止、不重跑：去掉 -x（不在首个失败处停止）、--reruns=0（不重跑），
-        # 让每个测试文件里的用例全部跑完（恢复时改回 ["-x", "--reruns=2"]）
-        rerun_options = ["--reruns=0"]
+        # When under the normal mode, retry a failed test 2 more times. -x means stop at the first
+        # failure
+        rerun_options = ["-x", "--reruns=2"]
 
     pytest_args = [
         "-vv",
@@ -1609,8 +1607,6 @@ def parse_args():
     if "--" in extra:
         extra.remove("--")
     args.additional_args = extra
-    # [临时] 不停止：文件级失败也不中断，跑完所有测试文件（恢复时删掉下行）
-    args.continue_through_error = True
     return args
 
 

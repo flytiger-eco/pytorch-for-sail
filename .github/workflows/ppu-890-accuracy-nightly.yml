@@ -3,7 +3,6 @@ name: ppu-890-accuracy-nightly
 on:
   push:
     branches:
-      - v2.11.0-for-ci
       - v2.11.0
   schedule:
     - cron: '0 17 * * *'
@@ -32,7 +31,7 @@ jobs:
     uses: ./.github/workflows/_ppu_build.yml
     with:
       board: "890"
-      cache-branch: v2.11.0-for-ci
+      cache-branch: v2.11.0
       upload-wheel: true
 
   accuracy:

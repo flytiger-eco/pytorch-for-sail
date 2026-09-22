@@ -3,7 +3,6 @@ name: ppu-890-distributed-nightly
 on:
   push:
     branches:
-      - v2.11.0-for-ci
       - v2.11.0
   schedule:
     - cron: '0 19 * * *'
@@ -32,7 +31,7 @@ jobs:
     uses: ./.github/workflows/_ppu_build.yml
     with:
       board: "890"
-      cache-branch: v2.11.0-for-ci
+      cache-branch: v2.11.0
       upload-wheel: true
   distribute:
     name: ppu-distribute (890P 多卡 2 PPU)
@@ -40,7 +39,6 @@ jobs:
     runs-on: k8s-runner-group-cpu-flytiger
     container:
       image: ghcr.io/actions/actions-runner:latest
-    # = 用例超时(240) + checkout / 下载 whl / pod 启动与打包余量(60)
     timeout-minutes: 300
 
     steps:

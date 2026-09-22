@@ -1,11 +1,11 @@
-name: ppu-810-distributed-nightly
+name: ppu-890-base-api-nightly
 
 on:
   push:
     branches:
       - v2.11.0
   schedule:
-    - cron: '0 18 * * *'
+    - cron: '0 16 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -21,29 +21,27 @@ env:
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   SOURCE_DIR: /workspace/source
-  NODE_SELECTOR: "board-type=OAM-810E"
+  NODE_SELECTOR: "board-type=ZW-M890P"
   PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
-  TRITON_VERSION: "3.6.0"
   WHEEL_DIR_REL: .ci/ppu/wheelhouse
 
 jobs:
   build:
     uses: ./.github/workflows/_ppu_build.yml
     with:
-      board: "810"
+      board: "890"
       cache-branch: v2.11.0
       upload-wheel: true
 
-  distribute:
-    name: ppu-distribute (810E 多卡 2 PPU)
+  base_api:
+    name: ppu-base-api-cuda (890P 单卡)
     needs: build
     runs-on: k8s-runner-group-cpu-flytiger
     container:
       image: ghcr.io/actions/actions-runner:latest
-    timeout-minutes: 300
+    timeout-minutes: 180
 
     steps:
-
       - name: Checkout PyTorch
         id: checkout
         continue-on-error: true
@@ -75,6 +73,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
+
       - name: 下载 whl artifact
         id: download-wheel
         continue-on-error: true
@@ -144,25 +143,19 @@ jobs:
             echo "- 来源: ${BUILD_RUN_URL}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: 删掉 .git（减小 NAS 暂存体积）
-        run: rm -rf .git
-
-      - name: "810E 多卡 (2 PPU) CUDA 分布式测试"
+      - name: "890P 单卡 (1 PPU) base api"
         uses: flytiger-eco/ppu-distributed-action@main
         with:
-
           nnodes: 0
-          nproc_per_node: 2
+          nproc_per_node: 1
           node_selector: ${{ env.NODE_SELECTOR }}
           host_volumes: ${{ env.HOST_VOLUMES }}
           image: ${{ env.IMAGE }}
           namespace: ${{ env.NAMESPACE }}
           source_dir: ${{ env.SOURCE_DIR }}
-          timeout_minutes: 240
+          timeout_minutes: 120
           command: |
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
-            TRITON_INDEX="${{ env.PIP_INDEX }}" \
-            TRITON_VERSION="${{ env.TRITON_VERSION }}" \
-            bash ${{ env.SOURCE_DIR }}/.ci/ppu/distributed_test.sh
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/base_api.sh
