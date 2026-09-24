@@ -286,6 +286,11 @@ class TORCH_API Context {
   void setSDPUseOverrideable(bool /*e*/);
   bool userEnabledOverrideableSDP() const;
 
+#ifdef USE_PPU // PPU modification: flex flash attention SDPA flag
+  void setSDPUseFlexFlash(bool /*e*/);
+  bool userEnabledFlexFlashSDP() const;
+#endif
+
   at::LinalgBackend linalgPreferredBackend() const;
   void setLinalgPreferredBackend(at::LinalgBackend /*b*/);
 
@@ -465,6 +470,11 @@ class TORCH_API Context {
   bool _deterministic_fill_uninitialized_memory = true;
   std::array<at::SDPBackend, at::num_sdp_backends> sdp_priority_order = {
       at::SDPBackend::flash_attention,
+#ifdef USE_PPU // PPU modification: flex flash attention backend is the fallback when
+               // FA2 cannot serve the request (arbitrary bool masks, GQA
+               // that FA2 rejects); FA2 wins whenever it is usable.
+      at::SDPBackend::flex_flash_attention,
+#endif
       at::SDPBackend::efficient_attention,
       at::SDPBackend::math,
       at::SDPBackend::cudnn_attention,
@@ -475,6 +485,10 @@ class TORCH_API Context {
   bool enabled_mathSDP = true;
   bool enabled_cudnnSDP = true;
   bool enabled_overrideable = true;
+#ifdef USE_PPU // PPU modification
+  bool enabled_flex_flashSDP =
+      c10::utils::check_env("TORCH_FLEX_FLASH_SDPA_ENABLED") == true;
+#endif
   bool allow_fp16_bf16_reduction_mathSDP = false;
   bool benchmark_cudnn = false;
   bool immediate_miopen = false;

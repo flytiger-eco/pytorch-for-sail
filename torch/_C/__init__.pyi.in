@@ -1206,6 +1206,9 @@ def _get_flash_sdp_enabled() -> _bool: ...  # THPModule_userEnabledFusedSDP
 def _set_sdp_use_flash(arg: _bool) -> None: ...  # THPModule_setSDPUseFlash
 def _get_fa3_sdp_enabled() -> _bool: ...  # THPModule_userEnabledFA3SDP
 def _set_sdp_use_fa3(arg: _bool) -> None: ...  # THPModule_setSDPUseFA3
+# PPU modification: flex flash attention SDPA support.
+def _get_flex_flash_attention_sdp_enabled() -> _bool: ...
+def _set_sdp_use_flex_flash_attention(arg: _bool) -> None: ...
 def _get_mem_efficient_sdp_enabled() -> _bool: ...  # THPModule_userEnabledMathSDP
 def _set_sdp_use_mem_efficient(
     arg: _bool,

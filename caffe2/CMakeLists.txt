@@ -2048,3 +2048,10 @@ if(MSVC)
   endforeach()
 endif()
 endif()
+
+# PPU modification: out-of-tree flex flash attention SDPA backend
+# shim; see Note [Flex Flash Attention SDPA backend integration] in
+# cmake/flex_flash_attention.cmake. No-op when the submodule is absent.
+if(USE_PPU)
+  include(${PROJECT_SOURCE_DIR}/cmake/flex_flash_attention.cmake)
+endif()

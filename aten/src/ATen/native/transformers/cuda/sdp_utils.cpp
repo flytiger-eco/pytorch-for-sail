@@ -11,7 +11,12 @@
 #include <ATen/native/DispatchStub.h>
 #include <ATen/native/transformers/cuda/sdp_utils.h>
 #include <ATen/native/transformers/sdp_utils_cpp.h>
+// PPU modification: FA3 flex flash attention backend headers
+#if defined(USE_PPU) && defined(USE_FLEX_FLASH_ATTENTION)
+#include "ATen/native/transformers/flex_flash_attention_loader.h"
+#endif
 #include <c10/core/ScalarType.h>
+#include <c10/cuda/CUDAGraphsC10Utils.h>
 #include <c10/util/env.h>
 #include <c10/util/irange.h>
 #include <c10/util/Array.h>
@@ -791,6 +796,271 @@ bool is_flash_attention_available() {
 #endif
 }
 
+#ifdef USE_PPU // PPU modification: FA3 flex flash attention backend (begin)
+// FA3 flex flash attention backend (flash_attn_3 flex_flash_attention extension).
+// Eligibility is deliberately *structural* and cheap: the heavy semantic
+// work (mask decomposition, unsupported-shape fallback to the math path)
+// happens inside the registered _scaled_dot_product_flex_flash_attention implementation
+// itself.
+bool can_use_flex_flash_attention(sdp_params const& params, bool debug) {
+  auto& ctx = at::globalContext();
+  if (!ctx.userEnabledFlexFlashSDP()) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend disabled by the user.");
+    }
+    return false;
+  }
+  static const bool env_enabled =
+      c10::utils::check_env("TORCH_FLEX_FLASH_SDPA_ENABLED") == true;
+  if (!env_enabled) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend is disabled by default; "
+                 "set TORCH_FLEX_FLASH_SDPA_ENABLED=1 before starting Python "
+                 "to enable it.");
+    }
+    return false;
+  }
+  // The CUDA implementation calls libflex_flash_attention.so directly; if torch
+  // was built without the third_party/flex-flash-attention submodule the op
+  // only has its NOT_IMPLEMENTED default, so skip the backend.
+#ifndef USE_FLEX_FLASH_ATTENTION
+  if (debug) {
+    TORCH_WARN("FLEX_FLASH_ATTENTION backend unavailable: torch was "
+               "built without USE_FLEX_FLASH_ATTENTION.");
+  }
+  return false;
+#else
+  if (!flex_flash_attention_loader::sdpa_available()) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend unavailable: "
+                 "libflex_flash_attention kernel ops are not registered.");
+    }
+    return false;
+  }
+  if (params.query.is_nested() || params.key.is_nested() || params.value.is_nested()) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend does not support nested tensors.");
+    }
+    return false;
+  }
+  if (!params.query.is_cuda() || !params.key.is_cuda() || !params.value.is_cuda()) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend requires CUDA tensors.");
+    }
+    return false;
+  }
+  // The kernels consume strictly 4-D (batch, heads, seqlen, head_dim)
+  // tensors; SDPA-level validation only requires dim >= 2, so reject
+  // lower-rank inputs here instead of failing inside the op.
+  if (params.query.dim() != 4 || params.key.dim() != 4 || params.value.dim() != 4) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend requires 4-D "
+                 "(batch, heads, seqlen, head_dim) q/k/v tensors.");
+    }
+    return false;
+  }
+  // The kernels load the head dim with unit stride; glue passes the
+  // tensors through as transposed BSHD views without re-layout, so a
+  // strided last dim must fall back to another backend.  When the head
+  // dim is a singleton the stride cannot matter (cf. the FA2 gate).
+  const bool last_dim_unit_stride = params.query.stride(-1) == 1 &&
+      params.key.stride(-1) == 1 && params.value.stride(-1) == 1;
+  if (!last_dim_unit_stride && params.query.size(-1) != 1) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend requires the last "
+                 "dimension of q, k and v to have stride 1.");
+    }
+    return false;
+  }
+  // The kernel set is compiled for sm_89 only (ZW-M890P).  A single build
+  // can be deployed on any PPU part, so gate on the actual device at
+  // runtime rather than at build time (e.g. ZW-M810E reports (8, 0)).
+  auto dprops = at::cuda::getCurrentDeviceProperties();
+  if (dprops->major != 8 || dprops->minor != 9) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend requires ZW-M890P (sm_89); "
+                 "current device \"", dprops->name, "\" is not supported.");
+    }
+    return false;
+  }
+  const auto q_dtype = params.query.scalar_type();
+  // fp32 rides the ISOLATED fwd_f32/bwd_f32 kernel set (TF32 MMA); fp16/bf16
+  // keep the original kernels and dispatch table untouched.
+  const bool is_f32 = q_dtype == at::kFloat;
+  if (q_dtype != at::kHalf && q_dtype != at::kBFloat16 && !is_f32) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend only supports fp16, bf16 and fp32.");
+    }
+    return false;
+  }
+  if (params.key.scalar_type() != q_dtype || params.value.scalar_type() != q_dtype) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend requires q, k, v to share a dtype.");
+    }
+    return false;
+  }
+  // Dropout is supported (kernel-side Philox; rng_state round-trips through
+  // autograd); only the probability range is checked here.
+  if (params.dropout < 0.0 || params.dropout >= 1.0) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend requires dropout_p in [0, 1), got ",
+                 params.dropout, ".");
+    }
+    return false;
+  }
+  // q/k/v must share a batch size: the API derives the batch from q and
+  // shape-checks k/v against it, so a mismatch must fall back here
+  // instead of failing inside the op (cf. the FA2 gate).
+  if (params.query.size(0) != params.key.size(0) ||
+      params.query.size(0) != params.value.size(0)) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend requires q, k and v to "
+                 "share a batch size.");
+    }
+    return false;
+  }
+  // Zero head counts are degenerate and must be rejected BEFORE the GQA
+  // modulo below — integer remainder by zero is undefined behaviour and
+  // crashes the whole process (SIGFPE), not even catchable from Python.
+  if (params.query.size(-3) == 0 || params.key.size(-3) == 0 ||
+      params.value.size(-3) == 0) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend requires a nonzero "
+                 "head count on q, k and v.");
+    }
+    return false;
+  }
+  // GQA is supported: k/v must share a head count and q heads must be an
+  // integer multiple of it (kernel TORCH_CHECKs num_heads % num_heads_k).
+  if (params.key.size(-3) != params.value.size(-3)) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend requires key and value to have the same number of heads.");
+    }
+    return false;
+  }
+  if (params.query.size(-3) % params.key.size(-3) != 0) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend requires the number of query heads to be "
+                 "divisible by the number of key/value heads (GQA).");
+    }
+    return false;
+  }
+  // head_dim_v may differ from head_dim; the kernel rounds both up to the
+  // same padded width, so only the max matters (and both must be nonzero).
+  const int64_t head_dim = params.query.size(-1);
+  const int64_t head_dim_v = params.value.size(-1);
+  if (head_dim == 0 || head_dim_v == 0 ||
+      std::max(head_dim, head_dim_v) > 256) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend supports head dimensions in (0, 256], got ",
+                 head_dim, " and ", head_dim_v, ".");
+    }
+    return false;
+  }
+  const int64_t seqlen_q = params.query.size(-2);
+  const int64_t seqlen_k = params.key.size(-2);
+  if (seqlen_q == 0 || seqlen_k == 0) {
+    if (debug) {
+      TORCH_WARN("FLEX_FLASH_ATTENTION backend does not support zero sequence lengths.");
+    }
+    return false;
+  }
+  if (params.attn_mask.has_value()) {
+    const auto& mask = params.attn_mask.value();
+    // The mask decomposition scan grids are capped at 256*256 blocks of 256
+    // rows (cascaded phase B), i.e. 16777216 rows; the synthetic
+    // dense/causal descriptors used without an explicit mask bypass the
+    // decomposition entirely, so longer sequences stay admissible when no
+    // mask is given.
+    if (seqlen_q > 16777216 || seqlen_k > 16777216) {
+      if (debug) {
+        TORCH_WARN("FLEX_FLASH_ATTENTION backend supports attn_mask "
+                   "decomposition for sequence lengths up to 16777216.");
+      }
+      return false;
+    }
+    // Additive float masks are not representable as slice geometry.
+    if (mask.scalar_type() != at::kBool) {
+      if (debug) {
+        TORCH_WARN("FLEX_FLASH_ATTENTION backend only supports boolean attn_mask.");
+      }
+      return false;
+    }
+    // Only a single (sq, sk) pattern is supported: 2-D masks or 4-D masks
+    // whose batch/head dims are singletons.  Per-(batch, head) masks are
+    // not routed through SDPA.
+    const auto mdim = mask.dim();
+    const bool ok_shape =
+        (mdim == 2 && mask.size(0) == seqlen_q && mask.size(1) == seqlen_k) ||
+        (mdim == 4 && mask.size(0) == 1 && mask.size(1) == 1 &&
+         mask.size(2) == seqlen_q && mask.size(3) == seqlen_k);
+    if (!ok_shape) {
+      if (debug) {
+        TORCH_WARN("FLEX_FLASH_ATTENTION backend attn_mask must be (seqlen_q, seqlen_k) or "
+                   "(1, 1, seqlen_q, seqlen_k).");
+      }
+      return false;
+    }
+    if (!mask.is_cuda()) {
+      if (debug) {
+        TORCH_WARN("FLEX_FLASH_ATTENTION backend requires attn_mask on CUDA.");
+      }
+      return false;
+    }
+    // Content-level envelope check: run the actual mask decomposition NOW
+    // (fwd 128-row and bwd 768-row Q-tile grids) so masks beyond the
+    // layered-interval envelope get routed to another backend instead of
+    // being accepted and failing inside the op.  The decomposition results
+    // are cached by mask identity inside the library, so the execution
+    // path reuses them at zero cost.  Subclass/fake-tensor masks (e.g.
+    // under torch.compile tracing) cannot be decomposed here; let them
+    // through and rely on the defensive checks in sdpa_fwd/bwd.
+    if (!isTensorSubclassLike(mask)) {
+      if (c10::cuda::currentStreamCaptureStatusMayInitCtx() !=
+          c10::cuda::CaptureStatus::None) {
+        // CUDA graph capture: the decomposition probe performs device->host
+        // syncs, which break stream capture.  Route on the host-side
+        // verdict recorded by the eager warmup probe of this same mask
+        // identity instead (warmup-then-capture contract).  Unknown or
+        // unsupported verdicts reject cleanly — capture aborts before any
+        // node is recorded.
+        int verdict = 0;
+        try {
+          verdict = flex_flash_attention_loader::sdpa_mask_verdict_cached(mask);
+        } catch (const c10::Error&) {
+          verdict = 0;
+        }
+        if (verdict != 1) {
+          if (debug) {
+            TORCH_WARN("FLEX_FLASH_ATTENTION backend cannot probe the "
+                       "attn_mask envelope during CUDA graph capture; run "
+                       "this exact mask through SDPA eagerly (warmup) "
+                       "before capturing.");
+          }
+          return false;
+        }
+      } else {
+        bool decomposable = false;
+        try {
+          decomposable = flex_flash_attention_loader::sdpa_mask_decomposable(mask);
+        } catch (const c10::Error&) {
+          decomposable = false;
+        }
+        if (!decomposable) {
+          if (debug) {
+            TORCH_WARN("FLEX_FLASH_ATTENTION backend attn_mask is outside the "
+                       "decomposition envelope (too many hole layers/slices).");
+          }
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+#endif // USE_FLEX_FLASH_ATTENTION
+}
+#endif // USE_PPU (FA3 flex flash attention backend, end)
+
 bool can_use_flash_attention(sdp_params const& params, bool debug) {
 #ifndef USE_FLASH_ATTENTION
   if (debug) {
@@ -935,7 +1205,11 @@ SDPBackend select_sdp_backend(sdp_params const& kernel_params) {
   // 3. Math fallback
   auto& ctx = at::globalContext();
   if (!ctx.userEnabledMathSDP() && !ctx.userEnabledFlashSDP() &&
-      !ctx.userEnabledMemEfficientSDP() && !ctx.userEnabledCuDNNSDP()) {
+      !ctx.userEnabledMemEfficientSDP() && !ctx.userEnabledCuDNNSDP()
+#ifdef USE_PPU // PPU modification
+      && !ctx.userEnabledFlexFlashSDP()
+#endif
+  ) {
     return SDPBackend::error;
   }
   // Get ideal kernel ordering
@@ -971,6 +1245,13 @@ SDPBackend select_sdp_backend(sdp_params const& kernel_params) {
           TORCH_CHECK(false, "Invalid backend");
         }
         break;
+#ifdef USE_PPU // PPU modification
+      case SDPBackend::flex_flash_attention:
+        if (sdp::can_use_flex_flash_attention(kernel_params, print_debug)) {
+          return SDPBackend::flex_flash_attention;
+        }
+        break;
+#endif
       default:
         TORCH_CHECK(false, "Invalid backend");
     }
@@ -983,6 +1264,10 @@ SDPBackend select_sdp_backend(sdp_params const& kernel_params) {
   // reason why the kernel was not selected
 
   print_debug = true;
+#ifdef USE_PPU // PPU modification
+  TORCH_WARN("Flex flash attention kernel not used because:");
+  sdp::can_use_flex_flash_attention(kernel_params, print_debug);
+#endif
   TORCH_WARN("Memory efficient kernel not used because:");
   sdp::can_use_mem_efficient_attention(kernel_params, print_debug);
   TORCH_WARN("Flash attention kernel not used because:");

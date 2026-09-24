@@ -72,7 +72,6 @@ from torch.testing._internal.opinfo.core import (
     XFailRule,
 )
 from torch.testing._internal.opinfo.definitions.nested import _sample_njts, njt_op_db
-from torch.testing._utils import is_ppu
 from torch.utils._pytree import tree_flatten, tree_map_only
 from torch.utils.checkpoint import checkpoint, create_selective_checkpoint_contexts
 
@@ -7343,10 +7342,7 @@ torch.cuda.synchronize()
 
         output = f(values, offsets)
         output.sum().backward()
-        if is_ppu():
-            self.assertEqual(values.grad, torch.ones_like(values), atol=2e-4, rtol=1e-6)
-        else:
-            self.assertEqual(values.grad, torch.ones_like(values))
+        self.assertEqual(values.grad, torch.ones_like(values))
 
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FUSED_ATTENTION,

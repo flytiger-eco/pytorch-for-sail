@@ -52,6 +52,16 @@
 #include <ATen/ops/_scaled_dot_product_fused_attention_overrideable_native.h>
 #include <ATen/ops/_scaled_dot_product_fused_attention_overrideable_backward.h>
 #include <ATen/ops/_scaled_dot_product_fused_attention_overrideable_backward_native.h>
+#ifdef USE_PPU // PPU modification: FA3 flex flash attention SDPA backend
+#include <ATen/ops/_scaled_dot_product_flex_flash_attention.h>
+#include <ATen/ops/_scaled_dot_product_flex_flash_attention_native.h>
+#include <ATen/ops/_scaled_dot_product_flex_flash_attention_backward.h>
+#include <ATen/ops/_scaled_dot_product_flex_flash_attention_backward_native.h>
+#if defined(USE_PPU) && defined(USE_FLEX_FLASH_ATTENTION)
+#include "ATen/native/transformers/flex_flash_attention_loader.h"
+#endif
+#include <ATen/EmptyTensor.h>
+#endif // USE_PPU
 #include <ATen/ops/_softmax.h>
 #include <ATen/ops/_transform_bias_rescale_qkv.h>
 #include <ATen/ops/_transform_bias_rescale_qkv_native.h>
@@ -808,8 +818,21 @@ Tensor scaled_dot_product_attention(
   }
   const auto query_device_type = query_.device().type();
   const auto backend = static_cast<SDPBackend>(choice_int);
+#ifdef USE_PPU // PPU modification
+  std::optional<Tensor> attn_mask;
+  if (backend == SDPBackend::flex_flash_attention) {
+    // flex_flash_attention consumes the RAW mask (it decomposes a bool
+    // mask into slice geometry), so pass it through without the
+    // bool->float conversion applied by the other backends.
+    attn_mask = attn_mask_;
+  } else {
+    const auto convert_attn_func = (backend != SDPBackend::cudnn_attention) ? convert_boolean_attn_mask : convert_boolean_attn_mask_cudnn;
+    attn_mask = convert_attn_func(attn_mask_, query_.dtype());
+  }
+#else
   const auto convert_attn_func = backend != SDPBackend::cudnn_attention ? convert_boolean_attn_mask : convert_boolean_attn_mask_cudnn;
   auto attn_mask = convert_attn_func(attn_mask_, query_.dtype());
+#endif
   switch (backend) {
     case SDPBackend::cudnn_attention: {
       if (std::getenv("PPU_SDPA_PRINT_PARAMS"))
@@ -855,6 +878,15 @@ Tensor scaled_dot_product_attention(
           query_, key, value, attn_mask, dropout_p, is_causal, false /*return_debug_mask*/, scale);
       return std::get<0>(out_lse_softmax);
     }
+#ifdef USE_PPU // PPU modification
+    case SDPBackend::flex_flash_attention: {
+      if (std::getenv("PPU_SDPA_PRINT_PARAMS"))
+        std::cout << "SDPA backend: flex_flash_attention" << std::endl;
+      auto out_lse_rng = at::_scaled_dot_product_flex_flash_attention(
+          query_, key, value, attn_mask, dropout_p, is_causal, scale);
+      return std::get<0>(out_lse_rng);
+    }
+#endif
     case SDPBackend::math: {
 #ifdef USE_MPS
       TORCH_CHECK_NOT_IMPLEMENTED(
@@ -1140,6 +1172,124 @@ _scaled_dot_product_fused_attention_overrideable_backward(
           at::empty_like(value),
           at::empty_like(attn_bias));
 }
+
+#ifdef USE_PPU // PPU modification: FA3 flex flash attention SDPA impls (begin)
+std::tuple<at::Tensor, at::Tensor, at::Tensor>
+_scaled_dot_product_flex_flash_attention_cuda(
+    const at::Tensor& query,
+    const at::Tensor& key,
+    const at::Tensor& value,
+    const std::optional<at::Tensor>& attn_mask,
+    double dropout_p,
+    bool is_causal,
+    std::optional<double> scale) {
+  TORCH_CHECK(dropout_p >= 0.0 && dropout_p < 1.0,
+              "_scaled_dot_product_flex_flash_attention: dropout_p must be in [0, 1), got ",
+              dropout_p);
+#ifdef USE_FLEX_FLASH_ATTENTION
+  return flex_flash_attention_loader::sdpa_fwd(query, key, value, attn_mask, is_causal,
+                                   dropout_p, scale);
+#else
+  TORCH_CHECK_NOT_IMPLEMENTED(false,
+      "_scaled_dot_product_flex_flash_attention: torch was built "
+      "without USE_FLEX_FLASH_ATTENTION (third_party/flex-flash-attention submodule "
+      "absent at build time).");
+#endif
+}
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor>
+_scaled_dot_product_flex_flash_attention_backward_cuda(
+    const at::Tensor& grad_out,
+    const at::Tensor& query,
+    const at::Tensor& key,
+    const at::Tensor& value,
+    const std::optional<at::Tensor>& attn_mask,
+    std::array<bool,3> grad_input_mask,
+    const at::Tensor& out,
+    const at::Tensor& logsumexp,
+    const at::Tensor& rng_state,
+    double dropout_p,
+    bool is_causal,
+    std::optional<double> scale) {
+#ifdef USE_FLEX_FLASH_ATTENTION
+  return flex_flash_attention_loader::sdpa_bwd(grad_out, query, key, value, attn_mask,
+                                   grad_input_mask, out, logsumexp,
+                                   rng_state, is_causal, dropout_p, scale);
+#else
+  TORCH_CHECK_NOT_IMPLEMENTED(false,
+      "_scaled_dot_product_flex_flash_attention_backward: torch was "
+      "built without USE_FLEX_FLASH_ATTENTION (third_party/flex-flash-attention "
+      "submodule absent at build time).");
+#endif
+}
+
+// The flex flash attention kernels run on BSHD views and sdpa_fwd/bwd hand back
+// `transpose(1, 2)` views of those BSHD results.  Meta tensors must
+// advertise exactly those (non-contiguous) strides, otherwise Inductor's
+// post-op stride check rejects the compiled graph.
+static std::vector<int64_t> flex_flash_sdpa_bshd_strides(
+    const at::Tensor& like) {
+  // Indexes size(1..3) for the BSHD (batch, heads, seqlen, head_dim) layout.
+  // can_use_flex_flash_attention() already rejects non-4-D q/k/v, but these
+  // meta ops can be reached directly (torch.ops / Inductor lowering), so fail
+  // with a clear contract error instead of an out-of-range size() access.
+  TORCH_CHECK(like.dim() == 4,
+              "flex_flash_sdpa_bshd_strides: expected a 4-D (batch, heads, "
+              "seqlen, head_dim) tensor, got ", like.dim(), "-D");
+  const auto H = like.size(1), S = like.size(2), D = like.size(3);
+  return {S * H * D, D, H * D, 1};
+}
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor>
+_scaled_dot_product_flex_flash_attention_meta(
+    const at::Tensor& query,
+    const at::Tensor& key,
+    const at::Tensor& value,
+    const std::optional<at::Tensor>& attn_mask,
+    double dropout_p,
+    bool is_causal,
+    std::optional<double> scale) {
+  TORCH_CHECK(dropout_p >= 0.0 && dropout_p < 1.0,
+              "_scaled_dot_product_flex_flash_attention: dropout_p must be in [0, 1), got ",
+              dropout_p);
+  auto out = at::Tensor(at::detail::empty_strided_meta(
+      query.sizes(), flex_flash_sdpa_bshd_strides(query), query.options()));
+  auto lse = at::Tensor(at::detail::empty_meta(
+      {query.size(0), query.size(1), query.size(2)},
+      query.options().dtype(at::kFloat)));
+  auto rng = at::Tensor(at::detail::empty_meta({2}, at::kLong));
+  return {out, lse, rng};
+}
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor>
+_scaled_dot_product_flex_flash_attention_backward_meta(
+    const at::Tensor& grad_out,
+    const at::Tensor& query,
+    const at::Tensor& key,
+    const at::Tensor& value,
+    const std::optional<at::Tensor>& attn_mask,
+    std::array<bool,3> grad_input_mask,
+    const at::Tensor& out,
+    const at::Tensor& logsumexp,
+    const at::Tensor& rng_state,
+    double dropout_p,
+    bool is_causal,
+    std::optional<double> scale) {
+  TORCH_CHECK(dropout_p >= 0.0 && dropout_p < 1.0,
+              "_scaled_dot_product_flex_flash_attention_backward: dropout_p must be in [0, 1), got ",
+              dropout_p);
+  TORCH_CHECK(grad_out.sizes() == query.sizes(),
+              "_scaled_dot_product_flex_flash_attention_backward: grad_out shape mismatch");
+  at::Tensor grad_q, grad_k, grad_v;
+  if (grad_input_mask[0]) grad_q = at::Tensor(at::detail::empty_strided_meta(
+      query.sizes(), flex_flash_sdpa_bshd_strides(query), query.options()));
+  if (grad_input_mask[1]) grad_k = at::Tensor(at::detail::empty_strided_meta(
+      key.sizes(), flex_flash_sdpa_bshd_strides(key), key.options()));
+  if (grad_input_mask[2]) grad_v = at::Tensor(at::detail::empty_strided_meta(
+      value.sizes(), flex_flash_sdpa_bshd_strides(value), value.options()));
+  return {grad_q, grad_k, grad_v};
+}
+#endif // USE_PPU (FA3 flex flash attention SDPA impls, end)
 
 Tensor triton_multi_head_attention(
     const Tensor& query,

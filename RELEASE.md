@@ -45,6 +45,12 @@
 
 <!-- tocstop -->
 
+## PPU Flex Flash Attention Configuration
+
+The `USE_FLEX_FLASH_ATTENTION` build option is enabled by default. To disable it, set `USE_FLEX_FLASH_ATTENTION=False` when building the wheel.
+
+At runtime, set `TORCH_FLEX_FLASH_SDPA_ENABLED=1` before starting the Python process; otherwise, this backend remains disabled. This variable is read when the Python process starts, so restart the process after changing it. Flex Flash Attention is supported only on 890P machines; setting this variable on 810E machines has no effect.
+
 ## Release Compatibility Matrix
 
 Following is the Release Compatibility Matrix for PyTorch releases:

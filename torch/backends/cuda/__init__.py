@@ -26,6 +26,14 @@ __all__ = [
     "mem_efficient_sdp_enabled",
     "math_sdp_enabled",
     "enable_math_sdp",
+    *(
+        [
+            "enable_flex_flash_attention_sdp",  # PPU modification
+            "flex_flash_attention_sdp_enabled",  # PPU modification
+        ]
+        if torch.version.ppu is not None
+        else []
+    ),
     "allow_fp16_bf16_reduction_math_sdp",
     "fp16_bf16_reduction_math_sdp_allowed",
     "is_flash_attention_available",
@@ -437,6 +445,27 @@ def enable_math_sdp(enabled: bool):
     Enables or disables math scaled dot product attention.
     """
     torch._C._set_sdp_use_math(enabled)
+
+
+# PPU modification: FA3 flex flash attention SDPA enable/query flags (PPU only,
+# gated on the build-time torch.version.ppu to match the C++ USE_PPU guard)
+if torch.version.ppu is not None:
+
+    def flex_flash_attention_sdp_enabled():
+        r"""
+        .. warning:: This flag is beta and subject to change.
+
+        Returns whether FA3 flex flash attention scaled dot product attention is enabled or not.
+        """
+        return torch._C._get_flex_flash_attention_sdp_enabled()
+
+    def enable_flex_flash_attention_sdp(enabled: bool):
+        r"""
+        .. warning:: This flag is beta and subject to change.
+
+        Enables or disables FA3 flex flash attention scaled dot product attention.
+        """
+        torch._C._set_sdp_use_flex_flash_attention(enabled)
 
 
 def allow_fp16_bf16_reduction_math_sdp(enabled: bool):

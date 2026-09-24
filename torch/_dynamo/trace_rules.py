@@ -2319,6 +2319,12 @@ torch_c_binding_in_graph_functions = dict.fromkeys(
     TorchInGraphFunctionVariable,
 )
 
+# PPU modification: flex flash attention SDPA support.
+if torch.version.ppu is not None:
+    torch_c_binding_in_graph_functions[
+        "torch._C._get_flex_flash_attention_sdp_enabled"
+    ] = TorchInGraphFunctionVariable
+
 
 if sys.version_info >= (3, 11):
     torch_c_binding_in_graph_functions["math.exp2"] = TorchInGraphFunctionVariable

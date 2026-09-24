@@ -155,6 +155,12 @@ export TORCH_CUDA_ARCH_LIST="8.0"
 # To build for SM89 only, comment out the line above and uncomment the following line.
 # export TORCH_CUDA_ARCH_LIST="8.9"
 
+# Compile time: the elementwise operator optimization is compiled by default and is only effective for the 8.9
+# architecture; uncomment the following line if you do not want to compile this optimization.
+# export USE_ELEMENTWISE_OPT=False
+# Runtime: the elementwise operator optimization is off by default; set PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT=True
+# at runtime to enable it.
+
 # 4. Build the wheel package with the configured build backend
 NCCL_INCLUDE_DIR=/usr/local/PPU_SDK/CUDA_SDK/include \
 NCCL_LIB_DIR=/usr/local/PPU_SDK/CUDA_SDK/lib64 \

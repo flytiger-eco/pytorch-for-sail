@@ -15233,6 +15233,25 @@
   dispatch:
     CompositeExplicitAutograd: _scaled_dot_product_fused_attention_overrideable_backward
 
+# PPU modification (yaml cannot be #ifdef-guarded; the C++ side of this
+# integration is guarded by USE_PPU): FA3 flex flash attention backend (fork of
+# flash-attn flex_flash_attention): the CUDA impls call flex_flash_attention::sdpa_fwd/
+# bwd from the libflex_flash_attention.so built out of the
+# third_party/flex-flash-attention submodule (see cmake/flex_flash_attention.cmake);
+# compiled out when USE_FLEX_FLASH_ATTENTION is off or the submodule is absent.
+- func: _scaled_dot_product_flex_flash_attention(Tensor query, Tensor key, Tensor value, Tensor? attn_mask=None, float dropout_p=0.0, bool is_causal=False, *, float? scale=None) -> (Tensor output, Tensor logsumexp, Tensor rng_state)
+  dispatch:
+    CUDA: _scaled_dot_product_flex_flash_attention_cuda
+    Meta: _scaled_dot_product_flex_flash_attention_meta
+  tags: nondeterministic_seeded
+
+- func: _scaled_dot_product_flex_flash_attention_backward(Tensor grad_out, Tensor query, Tensor key, Tensor value, Tensor? attn_mask, bool[3] grad_input_mask, Tensor out, Tensor logsumexp, Tensor rng_state, float dropout_p, bool is_causal, *, float? scale=None) -> (Tensor grad_query, Tensor grad_key, Tensor grad_value)
+  device_check: NoCheck
+  variants: function
+  dispatch:
+    CUDA: _scaled_dot_product_flex_flash_attention_backward_cuda
+    Meta: _scaled_dot_product_flex_flash_attention_backward_meta
+
 - func: _scaled_dot_product_efficient_attention(Tensor query, Tensor key, Tensor value, Tensor? attn_bias, bool compute_log_sumexp, float dropout_p=0.0, bool is_causal=False, *, float? scale=None) -> (Tensor output, Tensor log_sumexp, Tensor philox_seed, Tensor philox_offset)
   dispatch:
     CUDA: _scaled_dot_product_efficient_attention_cuda

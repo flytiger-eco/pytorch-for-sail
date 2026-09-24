@@ -141,4 +141,9 @@
 [submodule "third_party/cudafy-for-sail"]
     path = third_party/cudafy-for-sail
     url = https://github.com/flytiger-eco/cudafy-for-sail.git
-    branch = main
+    branch = pytorch
+[submodule "third_party/flex-flash-attention"]
+    ignore = dirty
+    path = third_party/flex-flash-attention
+    url = https://github.com/t-head/flash-attention-for-sail.git
+    branch = flex-flash-attention

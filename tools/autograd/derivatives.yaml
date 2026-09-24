@@ -2922,6 +2922,13 @@
   output_differentiability: [True, False, False, False, False, False, False, False, False]
   query, key, value, attn_bias: _scaled_dot_product_fused_attention_overrideable_backward_symint(grad, query, key, value, attn_bias, grad_input_mask, output, logsumexp, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, philox_seed, philox_offset, scale)
 
+# PPU modification (yaml cannot be #ifdef-guarded; the C++ side of this
+# integration is guarded by USE_PPU): autograd formula for the FA3
+# flex flash attention SDPA backend.
+- name: _scaled_dot_product_flex_flash_attention(Tensor query, Tensor key, Tensor value, Tensor? attn_mask=None, float dropout_p=0.0, bool is_causal=False, *, float? scale=None) -> (Tensor output, Tensor logsumexp, Tensor rng_state)
+  output_differentiability: [True, False, False]
+  query, key, value: _scaled_dot_product_flex_flash_attention_backward(grad, query, key, value, attn_mask, grad_input_mask, output, logsumexp, rng_state, dropout_p, is_causal, scale)
+
 # fft
 - name: _fft_r2c(Tensor self, int[] dim, int normalization, bool onesided) -> Tensor
   self: fft_r2c_backward(grad, dim, normalization, onesided, self.sym_size(dim.back()))

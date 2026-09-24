@@ -6,6 +6,12 @@ from collections import namedtuple
 import os
 import sys
 import torch
+
+# PPU uses native FP32 Tensor Cores by default. Disable them before any device
+# query or test execution so the backend observes the override on first use.
+if torch.version.ppu:
+    os.environ["PPU_FP32_TENSOR_OVERRIDE"] = "0"
+
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.functional import scaled_dot_product_attention
@@ -524,10 +530,7 @@ class TestTransformers(NNTestCase):
                 # no garauntees on output corresponding to masked tokens, so they may vary between slow/fast path. set all to 0.
                 fastpath_output_expanded = fastpath_output_expanded.masked_fill(src_key_padding_mask.unsqueeze(-1), 0)
                 slowpath_output = slowpath_output.masked_fill(src_key_padding_mask.unsqueeze(-1), 0)
-                if is_ppu():
-                    self.assertEqual(fastpath_output_expanded, slowpath_output, atol=1e-4, rtol=1e-6)
-                else:
-                    self.assertEqual(fastpath_output_expanded, slowpath_output)
+                self.assertEqual(fastpath_output_expanded, slowpath_output)
 
     @tf32_on_and_off(0.001)
     @parametrize("with_no_grad", [True, False])

@@ -40,6 +40,10 @@
 #include <c10/macros/Macros.h>
 #include <c10/util/TypeCast.h>
 
+// PPU elementwise optimization
+#if defined(USE_PPU) && defined(USE_ELEMENTWISE_OPT)
+#include "ppu_opt_elementwise_kernels/include.cuh"
+#endif
 #ifdef __NVCC__
 #define ASSERT_HOST_DEVICE_LAMBDA(type)                       \
   static_assert(                                              \
@@ -660,9 +664,18 @@ void gpu_kernel_impl_nocast(TensorIteratorBase& iter, const func_t& f) {
   if (contiguous) {
     return launch_vectorized_kernel(numel, f, data);
   }
+#if defined(USE_PPU) && defined(USE_ELEMENTWISE_OPT)
+  // PPU specialized path.
+  if (try_launch_ppu_nocast_elementwise_kernel(iter, f, data)) {
+    return;
+  }
+#endif
   auto offset_calc = ::make_offset_calculator<traits::arity + 1>(iter);
 #ifndef USE_ROCM
   constexpr int unroll_factor = sizeof(arg0_t) >= 4 ? 2 : 4;
+#if defined(USE_PPU) && defined(USE_ELEMENTWISE_OPT)
+  log_elementwise_info(iter, "nocast_legacy", f);
+#endif
   launch_legacy_kernel<128, unroll_factor>(numel, [=] GPU_LAMBDA(int idx) {
     auto offsets = offset_calc.get(idx);
     arg0_t* out = (arg0_t*)(data[0] + offsets[0]);
@@ -1053,6 +1066,14 @@ void gpu_kernel_impl(TensorIteratorBase& iter, const func_t& f) {
     auto storer = memory::StoreWithCast<1>(iter);
     auto input_offset_calculator = TrivialOffsetCalculator<traits::arity>();
     auto output_offset_calculator = TrivialOffsetCalculator<1>();
+#if defined(USE_PPU) && defined(USE_ELEMENTWISE_OPT)
+    // PPU vectorized cast copies; log the legacy path only after the
+    // specialization rejects the iterator.
+    if (try_launch_ppu_cast_contiguous_unrolled_kernel(iter, f, data)) {
+      return;
+    }
+    log_elementwise_info(iter, "cast_contiguous-unrolled", f);
+#endif
     launch_unrolled_kernel(
         numel,
         f,
@@ -1068,6 +1089,12 @@ void gpu_kernel_impl(TensorIteratorBase& iter, const func_t& f) {
       dtypes[i] = iter.dtype(i);
     }
     auto offset_calc = ::make_offset_calculator<traits::arity + 1>(iter);
+#if defined(USE_PPU) && defined(USE_ELEMENTWISE_OPT)
+    // PPU cast-specialized kernel.
+    if (try_launch_ppu_cast_elementwise_kernel(iter, f, data)) {
+      return;
+    }
+#endif
 #ifdef USE_ROCM
     if (check_binary_rt_types_for_specialization(iter)) {
       // constexpr to reduce the amount of kernels generated for
@@ -1122,6 +1149,9 @@ void gpu_kernel_impl(TensorIteratorBase& iter, const func_t& f) {
       }
     });
 #else
+#if defined(USE_PPU) && defined(USE_ELEMENTWISE_OPT)
+    log_elementwise_info(iter, "cast_legacy", f);
+#endif
     launch_legacy_kernel<128, 4>(numel, [=] GPU_LAMBDA(int idx) {
       auto offsets = offset_calc.get(idx);
       void* out = data[0] + offsets[0];

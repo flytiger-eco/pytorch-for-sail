@@ -1731,72 +1731,33 @@ def _missing_submodule_error(torch_root: str, submodule_path: str) -> FileNotFou
     )
 
 
-def _cudafy_stamp_path(target_root: str, command: str, version: str) -> str:
-    safe_version = version.replace("/", "_")
-    return os.path.join(target_root, ".cudafy-for-sail", f"{command}-{safe_version}.stamp")
+def _restore_pristine(target_root: str) -> None:
+    """Reset a cudafy target subtree back to its committed (pristine) state.
 
-
-def _write_cudafy_stamp(target_root: str, command: str, version: str) -> None:
-    stamp_path = _cudafy_stamp_path(target_root, command, version)
-    os.makedirs(os.path.dirname(stamp_path), exist_ok=True)
-    with open(stamp_path, "w") as f:
-        f.write(f"command={command}\nversion={version}\n")
-
-
-def _file_contains(path: str, needle: str) -> bool:
-    if not os.path.isfile(path):
-        return False
+    cudafy is not idempotent on an already-converted tree: besides the plain
+    hggc -> cuda text substitution it also *injects* content (SM75/SM80
+    wrappers, arch-map/shim headers, SM->PPU aliases). Re-running it on such a
+    tree would double-inject. To force a clean conversion on every build we
+    discard cudafy's tracked-file edits (git checkout) and drop the untracked
+    files it generated (git clean) for exactly this subtree, so cudafy always
+    sees pristine hggc sources.
+    """
     try:
-        with open(path, encoding="utf-8", errors="ignore") as f:
-            return needle in f.read()
-    except OSError:
-        return False
+        toplevel = subprocess.run(
+            ["git", "-C", target_root, "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, OSError):
+        # Sources vendored without a git working tree: nothing to reset.
+        print(f"Skip pristine restore for {target_root}: not a git working tree.")
+        return
 
-
-def _tree_contains_any(root: str, markers: tuple[str, ...]) -> bool:
-    source_suffixes = (
-        ".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".inl",
-        ".py", ".txt", ".cmake", ".md",
-    )
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in {".git", "build", "dist", "__pycache__"}]
-        for filename in filenames:
-            if not filename.endswith(source_suffixes):
-                continue
-            path = os.path.join(dirpath, filename)
-            try:
-                with open(path, encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-            except OSError:
-                continue
-            if any(marker in content for marker in markers):
-                return True
-    return False
-
-
-def _is_cudafy_converted(command: str, version: str, target_root: str) -> bool:
-    if os.path.exists(_cudafy_stamp_path(target_root, command, version)):
-        return True
-
-    if command == "flash-attention":
-        return not _tree_contains_any(
-            target_root,
-            (
-                "hggc", "HGGC", "HGTX", "__HGGCCC__",
-                "PPU_", "PPU_CP_ASYNC", "CUTE_ARCH_CP_ASYNC_PPU_ENABLED",
-            ),
-        )
-
-    if command == "actlize":
-        return (
-            os.path.exists(os.path.join(target_root, "cute", "hggc_arch_compat.h"))
-            and _file_contains(
-                os.path.join(target_root, "cutlass", "arch", "mma_sm80.h"),
-                "File name compatibility shim",
-            )
-        )
-
-    return False
+    pathspec = os.path.relpath(target_root, toplevel)
+    print(f"Restore pristine: {pathspec} in {toplevel}")
+    subprocess.run(["git", "-C", toplevel, "checkout", "--", pathspec], check=True)
+    subprocess.run(["git", "-C", toplevel, "clean", "-fdx", "--", pathspec], check=True)
 
 
 def run_cudafy_once(
@@ -1814,9 +1775,10 @@ def run_cudafy_once(
         target_arg = os.path.relpath(target_root, torch_root)
         raise _missing_submodule_error(torch_root, target_arg)
 
-    if _is_cudafy_converted(command, version, target_root):
-        print(f"Skip cudafy {command} {version}: already converted.")
-        return
+    # Always convert from pristine sources. Reset the target subtree first so a
+    # previous build's conversion can never be re-converted (cudafy is not
+    # idempotent) nor mistaken for up-to-date after a `git submodule update`.
+    _restore_pristine(target_root)
 
     target_arg = os.path.relpath(target_root, torch_root)
     cudafy_arg = os.path.relpath(cudafy_script, torch_root)
@@ -1826,7 +1788,6 @@ def run_cudafy_once(
     cmd = ["python3", cudafy_arg, command, f"--version={cli_version}", target_arg]
     print(f"Run cudafy: {' '.join(cmd)}")
     subprocess.run(cmd, cwd=torch_root, check=True)
-    _write_cudafy_stamp(target_root, command, version)
 
 
 def check_path_exists(path: str) -> None:
@@ -1855,6 +1816,10 @@ def Init_ppu_build_env() -> None:
     # enable building flash attention for scaled dot product attention
     if os.getenv("USE_FLASH_ATTENTION") is None:
         os.environ["USE_FLASH_ATTENTION"] = "True"
+
+    # enable the FA3 flex flash attention backend (third_party/flex-flash-attention)
+    if os.getenv("USE_FLEX_FLASH_ATTENTION") is None:
+        os.environ["USE_FLEX_FLASH_ATTENTION"] = "True"
 
     # enable building memory efficient attention for scaled dot product attention
     if os.getenv("USE_MEM_EFF_ATTENTION") is None:
@@ -1927,6 +1892,22 @@ def main() -> None:
                 patch_root, "flash_attention_namespace_config.patch"
             )
             apply_patch(fa_patch_file, fa_root)
+
+        use_flex_fa = os.environ.get("USE_FLEX_FLASH_ATTENTION")
+        if use_flex_fa in ["True", "1", "TRUE"]:
+            fa_flex_root = os.path.join(patch_root, "flex-flash-attention")
+            actlize_root = os.path.join(fa_flex_root, "csrc", "actlize")
+            actlize_include_root = os.path.join(actlize_root, "include")
+            if not os.path.exists(fa_flex_root):
+                raise _missing_submodule_error(torch_root, "third_party/flex-flash-attention")
+            if not os.path.exists(actlize_include_root):
+                raise _missing_submodule_error(
+                    torch_root, "third_party/flex-flash-attention/csrc/actlize"
+                )
+
+            run_cudafy_once(torch_root, "flex-flash-attention", "2.8.2", fa_flex_root)
+            run_cudafy_once(torch_root, "actlize", "v1.0.0", actlize_include_root)
+
     install_requires = [
         "filelock",
         "typing-extensions>=4.10.0",

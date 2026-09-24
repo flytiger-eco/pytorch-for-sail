@@ -154,6 +154,16 @@ export TORCH_CUDA_ARCH_LIST="8.0"
 # 如需仅编译 SM89，请注释上一行并取消下一行的注释。
 # export TORCH_CUDA_ARCH_LIST="8.9"
 
+# 编译期：elementwise 算子优化默认编译，该优化仅对 8.9 架构有效；如不想编译该优化，请取消下一行的注释。
+# export USE_ELEMENTWISE_OPT=False
+# 运行时：elementwise 算子优化默认关闭，请在运行时设置 PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT=True 开启优化。
+
+# 编译选项 USE_FLEX_FLASH_ATTENTION 默认开启；如需关闭，请在下方 wheel
+# 编译命令中设置 USE_FLEX_FLASH_ATTENTION=False。
+# 运行时，在启动 Python 进程前执行以下命令；未设置时该后端默认关闭。
+# Flex Flash Attention 后端仅适用于 890P 机器，在 810E 机器上设置该变量不会生效：
+# export TORCH_FLEX_FLASH_SDPA_ENABLED=1
+
 # 4. 使用配置的构建后端编译生成 wheel 安装包
 NCCL_INCLUDE_DIR=/usr/local/PPU_SDK/CUDA_SDK/include \
 NCCL_LIB_DIR=/usr/local/PPU_SDK/CUDA_SDK/lib64 \

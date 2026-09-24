@@ -248,6 +248,9 @@ endif()
 
 option(USE_CUDA "Use CUDA" ON)
 option(USE_PPU "Build for PPU" ON)
+cmake_dependent_option(
+  USE_ELEMENTWISE_OPT "Build PPU elementwise optimization kernels" ON
+  "USE_PPU" OFF)
 option(USE_XPU "Use XPU" ON)
 cmake_dependent_option(
   BUILD_LAZY_CUDA_LINALG "Build cuda linalg ops as separate library" ON
@@ -404,6 +407,9 @@ if(USE_PPU)
   add_definitions(-DUSE_HGGC)
   add_definitions(-DHAS_PYTORCH)
   add_definitions(-DUSE_PYTORCH_SDPA)
+  if(USE_ELEMENTWISE_OPT)
+    add_definitions(-DUSE_ELEMENTWISE_OPT)
+  endif()
 endif()
 option(USE_MIMALLOC "Use mimalloc" OFF)
 # Enable third party mimalloc library to improve memory allocation performance
