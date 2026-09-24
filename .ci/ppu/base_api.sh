@@ -669,4 +669,21 @@ and not test_neg_view_geqrf_cuda_float64 \
 and not test_fake_crossref_backward_amp_nn_functional_bilinear_cuda_float32 \
 "
 
+echo "=== CUDA base api 用例（test/test_ops_gradients.py，仅 CUDA 相关） ==="
+
+pytest -v test/test_ops_gradients.py -k "\
+not TestBwdGradientsCPU \
+and not test_fn_grad___rmatmul___cuda_complex \
+and not test_fn_grad_addmm_ \
+and not test_fn_grad_addbmm \
+and not test_fn_grad_addmv \
+and not test_fn_grad_addr \
+and not test_fn_grad_baddbmm \
+and not test_fn_grad_bmm \
+and not test_fn_grad_corrcoef \
+and not test_fn_grad_cov \
+and not test_fn_grad_dot_cuda \
+and not test_fn_grad_einsum_cuda \
+"
+
 echo "[base_api] 完成"

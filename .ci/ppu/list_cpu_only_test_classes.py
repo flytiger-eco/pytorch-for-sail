@@ -23,7 +23,6 @@ ANY_CLASS_RE = re.compile(r"^\s*class\s+(\w+)\s*[(:]", re.M)
 
 
 def collect(test_dir: Path) -> tuple[set[str], set[str]]:
-    """返回 (CPU 专属类名集合, test/ 下所有类名集合)。"""
     cpu_only: set[str] = set()
     declared: set[str] = set()
     for path in sorted(test_dir.rglob("*.py")):
