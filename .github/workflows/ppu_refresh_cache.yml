@@ -4,9 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       target-branch:
-        description: Branch to seed the cache for (must match the PR base branch name, otherwise the prefix will not align)
+        description: |
+          Leave empty (default) to seed the branch chosen in the "Run workflow"
+          dropdown: the normal way to refresh any branch (v2.10.0, v2.11.0, ...)
+          with this single file. Only set it to override; a value that differs
+          from the selected branch misaligns key vs scope (the cache still lands
+          in the selected branch scope but is keyed by this name).
         type: string
-        default: v2.11.0
+        default: ""
       ccache-maxsize:
         description: ccache size limit (board count × branch count × this value must stay within the 10GiB quota)
         type: string
@@ -21,7 +26,7 @@ on:
         default: false
   push:
     branches:
-      - v2.11.0
+      - 'v2.*'
     paths:
       - '.github/workflows/ppu_refresh_cache.yml'
       - '.github/workflows/_ppu_build.yml'

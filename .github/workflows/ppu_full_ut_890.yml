@@ -27,7 +27,6 @@ jobs:
     uses: ./.github/workflows/_ppu_build.yml
     with:
       board: "890"
-      cache-branch: v2.11.0
       upload-wheel: true
 
   ut-shard-1:

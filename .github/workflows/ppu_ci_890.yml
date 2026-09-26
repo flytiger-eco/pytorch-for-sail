@@ -3,7 +3,7 @@ name: ppu-ci-890
 on:
   pull_request:
     branches:
-      - v2.11.0
+      - 'v2.*'
     paths:
       - 'aten/**'
       - 'torch/**'
@@ -15,7 +15,7 @@ on:
       - '.github/workflows/_ppu_build.yml'
   push:
     branches:
-      - v2.11.0
+      - 'v2.*'
   workflow_dispatch:
 
 
