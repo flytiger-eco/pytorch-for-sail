@@ -12,7 +12,7 @@
 namespace at::native {
 
 struct PPUDeviceCapabilities {
-  bool is_890p{false};
+  bool is_890{false};
   std::array<int64_t, 3> max_grid_size{0, 0, 0};
 };
 
@@ -37,16 +37,16 @@ static inline const PPUDeviceCapabilities* current_ppu_device_capabilities() {
     return nullptr;
   }
   PPUDeviceCapabilities capabilities;
-  capabilities.is_890p = std::string(prop.name).find("ZW-M890P") != std::string::npos;
+  capabilities.is_890 = (prop.major == 8 && prop.minor == 9);
   for (int axis = 0; axis < 3; ++axis) {
     capabilities.max_grid_size[axis] = prop.maxGridSize[axis];
   }
   return &cache.emplace(device, capabilities).first->second;
 }
 
-static inline bool is_890p_device() {
+static inline bool is_890_device() {
   const PPUDeviceCapabilities* capabilities = current_ppu_device_capabilities();
-  return capabilities != nullptr && capabilities->is_890p;
+  return capabilities != nullptr && capabilities->is_890;
 }
 
 // Returns zero when the current device cannot be queried; callers treat that
@@ -85,7 +85,7 @@ static inline bool elementwise_ppu_enabled() {
     const char* v = std::getenv("PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT");
     return v != nullptr && v[0] != '0' && v[0] != 'F' && v[0] != 'f';
   }();
-  return env_enabled && is_890p_device();
+  return env_enabled && is_890_device();
 }
 
 static inline const std::string& local_rank() {
