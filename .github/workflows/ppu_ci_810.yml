@@ -255,7 +255,7 @@ jobs:
           WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
         run: |
           rm -rf "${WHEEL_DIR}"
-          sleep 60
+          sleep 50
 
       - name: 下载 whl artifact (重试 2)
         if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
