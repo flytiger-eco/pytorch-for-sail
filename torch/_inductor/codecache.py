@@ -118,6 +118,7 @@ from torch.fx.experimental.symbolic_shapes import (
     has_guarding_hint,
     ShapeEnv,
 )
+from torch.testing._utils import is_ppu
 from torch.utils._ordered_set import OrderedSet
 
 from .output_code import CompiledFxGraph
@@ -1931,8 +1932,8 @@ class CudaKernelParamCache:
             config.aot_inductor.emit_multi_arch_kernel
             or config.aot_inductor.package_cpp_only
         ):
-            # Allow ROCm single-arch to skip (asm=None OK), require for everything else
-            if torch.version.hip is None or (asm and asm_type):
+            # Allow ROCm & PPU single-arch to skip (asm=None OK), require for everything else
+            if not is_ppu() and (torch.version.hip is None or (asm and asm_type)):
                 assert asm, "Missing kernel assembly code"
                 assert asm_type, "Missing kernel assembly type"
 
@@ -2635,6 +2636,8 @@ end
                     if (
                         config.aot_inductor.emit_multi_arch_kernel
                         and device_type == "cuda"
+                        # PPU has no PTX stage for multi-arch fatbin
+                        and not is_ppu()
                     ):
                         if torch.version.hip is None:
                             fatbin_cmds.append((asm_file, cubin_file))

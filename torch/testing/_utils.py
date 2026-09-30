@@ -3,7 +3,7 @@ import contextlib
 
 import torch
 
-
+import os
 # Common testing utilities for use in public testing APIs.
 # NB: these should all be importable without optional dependencies
 # (like numpy and expecttest).
@@ -60,3 +60,6 @@ def freeze_rng_state():
                         accelerator_rng_state  # type: ignore[possibly-undefined]
                     )
             torch.set_rng_state(rng_state)
+
+def is_ppu() -> bool:
+    return "PPU_SDK" in os.environ

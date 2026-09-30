@@ -1776,7 +1776,7 @@ class TestFullyShardForceSumReduction(FSDPTest):
         )
     else:
         COLLECTIVE_RE = (
-            "NCCL INFO {coll}: opCount [0-9a-f]+ sendbuff 0x[0-9a-f]+ recvbuff 0x[0-9a-f]+ "
+            "PCCL INFO {coll}: opCount [0-9a-f]+ sendbuff 0x[0-9a-f]+ recvbuff 0x[0-9a-f]+ "
             "count {count} datatype [0-9]+ op {reduce_op} root [0-9]+ comm 0x[0-9a-f]+"
         )
     # See here for the numerical values for each reduction op:

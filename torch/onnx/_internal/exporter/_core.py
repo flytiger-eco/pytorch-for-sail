@@ -595,7 +595,7 @@ def _handle_call_function_node_with_lowering(
             )
 
         with onnxscript.evaluator.default_as(
-            tracer := _building.OpRecorder(opset, constant_farm)
+            tracer := _building.OpRecorder(opset, constant_farm)  # type: ignore[abstract]
         ):
             global current_tracer
             current_tracer = tracer

@@ -1,6 +1,7 @@
 /******************************************************************************
  * Copyright (c) 2024, Tri Dao.
  ******************************************************************************/
+#ifndef USE_PPU
 #include <c10/core/ScalarType.h>
 #include <c10/core/DeviceType.h>
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
@@ -1546,3 +1547,4 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
 } // namespace pytorch_fmha
 
 #endif
+#endif // USE_PPU

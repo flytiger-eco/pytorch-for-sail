@@ -22,9 +22,14 @@
 
 #include <cutlass/gemm/threadblock/default_mma.h>
 #include <cutlass/gemm/threadblock/default_mma_core_simt.h>
+// PPU: sm70/sm75/sm80 default_mma_core all map to ppu0010 (no separate instantiation below sm80)
+#if defined(USE_PPU)
+#include <cutlass/gemm/threadblock/default_mma_core_ppu0010.h>
+#else
 #include <cutlass/gemm/threadblock/default_mma_core_sm70.h>
 #include <cutlass/gemm/threadblock/default_mma_core_sm75.h>
 #include <cutlass/gemm/threadblock/default_mma_core_sm80.h>
+#endif
 
 namespace cutlass {
 namespace gemm {

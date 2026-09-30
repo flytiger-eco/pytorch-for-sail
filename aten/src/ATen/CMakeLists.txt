@@ -194,9 +194,16 @@ file(GLOB native_transformers_xpu_cpp "native/transformers/xpu/*.cpp")
 file(GLOB native_quantized_cudnn_hip_cpp "native/quantized/cudnn/hip/*.cpp")
 file(GLOB native_utils_cpp "native/utils/*.cpp")
 file(GLOB flash_attention_cuda_kernels_cu ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cu)
-file(GLOB flash_attention_cuda_cpp ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cpp)
-file(GLOB native_flash_attn_api_cpp "native/transformers/cuda/flash_attn/flash_api.cpp")
-
+# Flash attention C++ sources
+if(USE_PPU)
+  file(GLOB flash_attention_cuda_cpp
+      "${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cpp"
+      "${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/flash_api.cpp"
+  )
+else()
+  file(GLOB flash_attention_cuda_cpp ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cpp)
+  file(GLOB native_flash_attn_api_cpp "native/transformers/cuda/flash_attn/flash_api.cpp")
+endif()
 
 # flash_attention hip sources
 file(GLOB flash_attention_hip_hip "native/transformers/hip/flash_attn/*.hip")
@@ -310,10 +317,23 @@ if(USE_FLASH_ATTENTION)
   file(GLOB flash_attention_src_hip_hip "native/transformers/hip/flash_attn/src/*.hip")
 endif()
 
+
 #Mem_eff attention sources
+if(USE_PPU)
+  message(STATUS "Compile Both Opensource Mem_efficient kernels and PPU Mem_efficient kernels")
+  file(GLOB mem_eff_attention_cuda_kernels_cu "native/transformers/cuda/mem_eff_attention/kernels/*.cu")
+  # PPU: xformers is now built as a shared library in third_party/xformers
+endif()
+
 file(GLOB mem_eff_attention_cuda_cu "native/transformers/cuda/mem_eff_attention/*.cu")
-file(GLOB mem_eff_attention_cuda_kernels_cu "native/transformers/cuda/mem_eff_attention/kernels/*.cu")
 file(GLOB mem_eff_attention_cuda_cpp "native/transformers/cuda/mem_eff_attention/*.cpp")
+
+# PPU FA v2.7.2 lacks function definitions for hdim224, so compilation is disabled.
+# The open-source version has the same issue.
+if(USE_PPU)
+  file(GLOB hdim224_kernels_cu ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*hdim224*.cu)
+  list(REMOVE_ITEM flash_attention_cuda_kernels_cu ${hdim224_kernels_cu})
+endif()
 
 if(USE_CUDA AND (USE_FLASH_ATTENTION OR USE_MEM_EFF_ATTENTION))
   add_library(flash_attention OBJECT EXCLUDE_FROM_ALL ${flash_attention_cuda_kernels_cu} ${flash_attention_cuda_cpp})
@@ -337,7 +357,13 @@ if(USE_CUDA AND (USE_FLASH_ATTENTION OR USE_MEM_EFF_ATTENTION))
 endif()
 
 if(USE_FLASH_ATTENTION)
-  list(APPEND native_transformers_cuda_cpp ${native_flash_attn_api_cpp})
+  if(USE_PPU)
+    list(APPEND native_transformers_cuda_cu ${flash_attention_cuda_cu})
+    list(APPEND native_transformers_cuda_cu ${flash_attention_cuda_kernels_cu})
+    list(APPEND native_transformers_cuda_cpp ${flash_attention_cuda_cpp})
+  else()
+    list(APPEND native_transformers_cuda_cpp ${native_flash_attn_api_cpp})
+  endif()
   list(APPEND FLASH_ATTENTION_CUDA_SOURCES ${flash_attention_cuda_cu} ${flash_attention_cuda_kernels_cu})
   list(APPEND ATen_ATTENTION_KERNEL_SRCS ${flash_attention_cuda_kernels_cu})
 
@@ -347,11 +373,46 @@ if(USE_FLASH_ATTENTION)
 endif()
 
 if(USE_MEM_EFF_ATTENTION)
+  # For non-PPU, use open source mem_eff_attention kernels
+  # For PPU, xformers_ppu shared library is used instead (added via add_subdirectory)
+  if(NOT USE_PPU)
+    file(GLOB mem_eff_attention_cuda_kernels_cu "native/transformers/cuda/mem_eff_attention/kernels/*.cu")
+  endif()
+
   list(APPEND native_transformers_cuda_cu ${mem_eff_attention_cuda_cu})
   list(APPEND native_transformers_cuda_cu ${mem_eff_attention_cuda_kernels_cu})
   list(APPEND native_transformers_cuda_cpp ${mem_eff_attention_cuda_cpp})
   list(APPEND MEM_EFF_ATTENTION_CUDA_SOURCES ${native_transformers_cuda_cu} ${mem_eff_attention_cuda_cu} ${mem_eff_attention_cuda_kernels_cu})
+  list(APPEND PPU_MEM_EFF_ATTENTION_CUDA_SOURCES ${mem_eff_attention_cuda_cu} ${mem_eff_attention_cuda_kernels_cu})
   list(APPEND ATen_ATTENTION_KERNEL_SRCS ${mem_eff_attention_cuda_kernels_cu})
+endif()
+
+# PPU: Add xformers shared library (must be before linking)
+if(USE_PPU)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/xformers ${CMAKE_BINARY_DIR}/xformers_ppu)
+  # Note: Include paths are set in third_party/xformers/CMakeLists.txt
+
+  # Add xformers include paths for attention.cu compilation
+  # This must be done AFTER add_subdirectory(xformers) so XFORMERS_PPU_INCLUDE_DIRS is available
+  if(USE_MEM_EFF_ATTENTION AND DEFINED XFORMERS_PPU_INCLUDE_DIRS)
+    list(APPEND ATen_CUDA_INCLUDE ${XFORMERS_PPU_INCLUDE_DIRS})
+  endif()
+endif()
+
+# PPU: Link xformers shared library to ATen CUDA
+if(USE_PPU AND USE_MEM_EFF_ATTENTION)
+  # The xformers_ppu library is already built as a shared library in third_party/xformers
+  # We just need to link against it, not re-include its sources
+  if(TARGET xformers_ppu)
+    # Add xformers_ppu to CUDA dependencies (this is a pre-compiled shared library)
+    list(APPEND ATen_CUDA_DEPENDENCY_LIBS xformers_ppu)
+
+    # Add PPU library paths to link directories for ATen
+    # These paths are exported from third_party/xformers/CMakeLists.txt
+    if(DEFINED XFORMERS_PPU_LIB_PATHS)
+      link_directories(${XFORMERS_PPU_LIB_PATHS})
+    endif()
+  endif()
 endif()
 
 # MSLK
@@ -843,22 +904,25 @@ if(USE_CUDA AND NOT USE_ROCM)
   endif($ENV{ATEN_STATIC_CUDA})
 endif()
 
+if(USE_PPU)
+  list(APPEND ATen_CUDA_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/cutlass2/include)
+endif()
 
-  if(USE_MAGMA)
-    if(USE_CUDA AND NOT BUILD_LAZY_CUDA_LINALG)
-      list(APPEND ATen_CUDA_DEPENDENCY_LIBS torch::magma)
-    endif(USE_CUDA AND NOT BUILD_LAZY_CUDA_LINALG)
-    if(USE_ROCM)
-      list(APPEND ATen_HIP_DEPENDENCY_LIBS torch::magma)
-    endif(USE_ROCM)
-    if(MSVC)
-      if($ENV{TH_BINARY_BUILD})
-        # Do not do this on Linux: see Note [Extra MKL symbols for MAGMA in torch_cpu]
-        # in caffe2/CMakeLists.txt
-        list(APPEND ATen_CUDA_DEPENDENCY_LIBS ${BLAS_LIBRARIES})
-      endif($ENV{TH_BINARY_BUILD})
-    endif(MSVC)
-  endif(USE_MAGMA)
+if(USE_MAGMA)
+  if(USE_CUDA AND NOT BUILD_LAZY_CUDA_LINALG)
+    list(APPEND ATen_CUDA_DEPENDENCY_LIBS torch::magma)
+  endif(USE_CUDA AND NOT BUILD_LAZY_CUDA_LINALG)
+  if(USE_ROCM)
+    list(APPEND ATen_HIP_DEPENDENCY_LIBS torch::magma)
+  endif(USE_ROCM)
+  if(MSVC)
+    if($ENV{TH_BINARY_BUILD})
+      # Do not do this on Linux: see Note [Extra MKL symbols for MAGMA in torch_cpu]
+      # in caffe2/CMakeLists.txt
+      list(APPEND ATen_CUDA_DEPENDENCY_LIBS ${BLAS_LIBRARIES})
+    endif($ENV{TH_BINARY_BUILD})
+  endif(MSVC)
+endif(USE_MAGMA)
 
 # Include CPU paths for CUDA/HIP as well
 list(APPEND ATen_CUDA_INCLUDE ${ATen_CPU_INCLUDE})
@@ -1033,4 +1097,5 @@ set(ATen_XPU_DEPENDENCY_LIBS ${ATen_XPU_DEPENDENCY_LIBS} PARENT_SCOPE)
 set(ATen_HIP_DEPENDENCY_LIBS ${ATen_HIP_DEPENDENCY_LIBS} PARENT_SCOPE)
 set(FLASH_ATTENTION_CUDA_SOURCES ${FLASH_ATTENTION_CUDA_SOURCES} PARENT_SCOPE)
 set(MEM_EFF_ATTENTION_CUDA_SOURCES ${MEM_EFF_ATTENTION_CUDA_SOURCES} PARENT_SCOPE)
+set(PPU_MEM_EFF_ATTENTION_CUDA_SOURCES ${PPU_MEM_EFF_ATTENTION_CUDA_SOURCES} PARENT_SCOPE)
 set(ATen_ATTENTION_KERNEL_SRCS ${ATen_ATTENTION_KERNEL_SRCS} PARENT_SCOPE)

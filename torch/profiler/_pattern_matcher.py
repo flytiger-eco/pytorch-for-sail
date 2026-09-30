@@ -314,8 +314,9 @@ class FP32MatMulPattern(Pattern):
         else:
             # Anything less than sm_80 is not Ampere which doesn't support TF32
             has_tf32 = all(
-                int(re.sub("sm_|compute_", "", arch)) >= 80
+                int("".join(re.findall(r"^\d+", arch.split("_")[1]))) >= 80
                 for arch in torch.cuda.get_arch_list()
+                if "sm_" in arch or "compute_" in arch
             )
         return has_tf32 is False or super().skip or not self.prof.record_shapes
 

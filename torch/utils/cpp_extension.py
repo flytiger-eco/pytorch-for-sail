@@ -2570,9 +2570,10 @@ def _get_cuda_arch_flags(cflags: list[str] | None = None) -> list[str]:
     ])
 
     supported_arches = ['3.5', '3.7', '5.0', '5.2', '5.3', '6.0', '6.1', '6.2',
-                        '7.0', '7.2', '7.5', '8.0', '8.6', '8.7', '8.9', '9.0', '9.0a',
-                        '10.0', '10.0a', '11.0', '11.0a', '10.3', '10.3a', '12.0',
+                        '7.0', '7.2', '7.5', '8.0', '8.0a', '8.6', '8.7', '8.9', '9.0', '9.0a',
+                        '10.0', '10.0a', '10.1', '10.1a', '10.3', '10.3a', '12.0',
                         '12.0a', '12.1', '12.1a']
+
     valid_arch_strings = supported_arches + [s + "+PTX" for s in supported_arches]
 
     # The default is sm_30 for CUDA 9.x and 10.x
@@ -2621,16 +2622,27 @@ def _get_cuda_arch_flags(cflags: list[str] | None = None) -> list[str]:
 
     flags = []
     for arch in arch_list:
+        if not arch:
+            continue
         if arch not in valid_arch_strings:
             raise ValueError(f"Unknown CUDA arch ({arch}) or GPU not supported")
         else:
             # Handle both single and double-digit architecture versions
-            version = arch.split('+')[0]  # Remove "+PTX" if present
-            major, minor = version.split('.')
+            version_str = arch.split('+')[0]  # Remove "+PTX" if present
+            major, minor = version_str.split('.')
+
             num = f"{major}{minor}"
+
+            ptx_major = major
+            ptx_minor_match = re.match(r"(\d+)", minor)
+            if ptx_minor_match is None:
+                raise ValueError(f"Could not parse minor version for PTX from arch '{arch}'")
+            ptx_minor = ptx_minor_match.group(1)
+            ptx_num = f"{ptx_major}{ptx_minor}"
+
             flags.append(f'-gencode=arch=compute_{num},code=sm_{num}')
             if arch.endswith('+PTX'):
-                flags.append(f'-gencode=arch=compute_{num},code=compute_{num}')
+                flags.append(f'-gencode=arch=compute_{ptx_num},code=compute_{ptx_num}')
 
     return sorted(set(flags))
 

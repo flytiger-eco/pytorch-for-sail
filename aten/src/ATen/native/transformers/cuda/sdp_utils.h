@@ -13,5 +13,8 @@ C10_EXPORT bool is_flash_attention_available();
 C10_EXPORT bool can_use_flash_attention(sdp_params const& params, bool debug);
 C10_EXPORT bool can_use_mem_efficient_attention(sdp_params const& params, bool debug);
 C10_EXPORT bool can_use_cudnn_attention(sdp_params const& params, bool debug);
+#ifdef USE_PPU // PPU modification: FA3 flex flash attention backend eligibility
+C10_EXPORT bool can_use_flex_flash_attention(sdp_params const& params, bool debug);
+#endif
 
 } // namespace sdp

@@ -1001,7 +1001,7 @@ class CompiledOptimizerBitwiseTests(TestCase):
 
     These tests verify that with the following config options:
     - eager_numerics.division_rounding = True
-    - eager_numerics.use_pytorch_libdevice = True
+    - eager_numerics.use_pytorch_libdevice = False
     - emulate_precision_casts = True
 
     The compiled optimizer step produces results that are bitwise identical
@@ -1092,7 +1092,7 @@ def _make_bitwise_test(optim_cls, kernel_count=None, **optim_kwargs):
         {
             "score_fusion_memory_threshold": 1,
             "eager_numerics.division_rounding": True,
-            "eager_numerics.use_pytorch_libdevice": True,
+            "eager_numerics.use_pytorch_libdevice": False,
             "emulate_precision_casts": True,
         }
     )

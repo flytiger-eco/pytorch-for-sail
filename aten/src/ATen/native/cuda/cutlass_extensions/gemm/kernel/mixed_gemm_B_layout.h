@@ -27,6 +27,11 @@ template<typename TypeB, typename Arch, typename Enable = void>
 struct LayoutDetailsB {
 };
 
+#if !defined(USE_PPU)
+// PPU: arch::Sm70 aliases to PPU0010, which also matches the generic
+// (kMinComputeCapability>=75) specializations below, making
+// LayoutDetailsB<uint8_t, PPU0010> ambiguous. Disable the Volta-only
+// specialization under USE_PPU; the Sm80 path uses the >=75 ones.
 // Volta specialiations. Volta will dequantize before STS, so we need a different operator
 template<typename TypeB>
 struct LayoutDetailsB<TypeB, arch::Sm70> {
@@ -35,6 +40,7 @@ struct LayoutDetailsB<TypeB, arch::Sm70> {
     static constexpr int ElementsPerAccess = 8;
     using Operator                         = cutlass::arch::OpMultiplyAdd;
 };
+#endif  // !USE_PPU
 
 // Specializations for Turing+ when B is FP16. These are currently only used for MoE networks.
 // TODO - Switch this to column major for weights since gemms should be more performant.

@@ -36,6 +36,21 @@ const uint32_t grid_size_bound = 4;
 // See: https://docs.nvidia.com/cuda/archive/11.8.0/curand/group__DEVICE.html
 const uint32_t max_generator_offsets_per_curand_call = 4;
 
+size_t get_env_sm_count(const char* var_name, size_t def_value = 0) {
+  try {
+    if (auto* value = std::getenv(var_name)) {
+      int sm_count = std::stoi(value);
+      TORCH_CHECK(sm_count > 0);
+      return sm_count;
+    }
+  } catch (const std::exception& e) {
+    std::ostringstream oss;
+    oss << "Invalid " << var_name << " variable value, " << e.what();
+    TORCH_WARN(oss.str());
+  }
+  return def_value;
+}
+
 // utility function that calculates proper philox_offset
 // for distributions utilizing TensorIterator. For distributions using
 // TensorIterator, we are using a grid-stride loop with each
@@ -52,9 +67,18 @@ std::tuple<uint64_t, dim3, dim3> calc_execution_policy(const int64_t total_eleme
   dim3 dim_block(block_size);
   dim3 grid((numel + block_size - 1) / block_size);
   uint32_t blocks_per_sm = at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor / block_size;
+#ifdef USE_PPU
+  // Default SM count(108) is aligned to A100;
+  // You can align it to other GPUs by configuring environment variables SAIL_RAND_SM_COUNT on PPU.
+  grid.x = std::min(
+      static_cast<uint32_t>(
+          get_env_sm_count("SAIL_RAND_SM_COUNT", 108)) * blocks_per_sm,
+      grid.x);
+#else
   grid.x = std::min(
       static_cast<uint32_t>(at::cuda::getCurrentDeviceProperties()->multiProcessorCount) * blocks_per_sm,
       grid.x);
+#endif
   //number of times random will be generated per thread, to offset philox counter in thc random state
   uint64_t counter_offset = ((numel - 1) / (block_size * grid.x * unroll_factor) + 1) * max_generator_offsets_per_curand_call;
   return std::make_tuple(counter_offset, grid, dim_block);

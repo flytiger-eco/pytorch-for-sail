@@ -1,4 +1,36 @@
 =======================================================================
+PyTorch-for-SAIL (Zhenwu PPU) Attribution
+=======================================================================
+PyTorch-for-SAIL is a derivative work of PyTorch. It adds system-level
+adaptation and performance optimization for Zhenwu PPU hardware on top of
+the upstream community PyTorch project.
+
+-----------------------------------------------------------------------
+PyTorch (upstream)
+-----------------------------------------------------------------------
+Copyright (c) Meta Platforms, Inc. and its affiliates.
+All rights reserved.
+PyTorch is licensed under the BSD 3-Clause "New" or "Revised" License
+(BSD-3-Clause). The complete upstream license text is retained in the
+LICENSE file and in the upstream notices reproduced below.
+
+-----------------------------------------------------------------------
+T-Head SAIL adaptation
+-----------------------------------------------------------------------
+Copyright (c) 2026 T-Head.
+The SAIL adaptation for Zhenwu PPU, including the scaled dot-product
+attention backends, build integration, and compatibility patches added on
+top of PyTorch, is provided by T-Head under the BSD 3-Clause License
+(BSD-3-Clause), consistent with the upstream PyTorch license.
+
+-----------------------------------------------------------------------
+flash-attention
+-----------------------------------------------------------------------
+This project integrates components derived from flash-attention.
+Copyright (c) Tri Dao.
+flash-attention is licensed under the BSD 3-Clause License (BSD-3-Clause).
+
+=======================================================================
 Software under third_party
 =======================================================================
 Software libraries under third_party are provided as github submodule

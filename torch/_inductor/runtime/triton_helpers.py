@@ -40,7 +40,7 @@ def _is_backend_active(name, backend):
     # Triton may fail to detect the GPU in subprocess workers when using
     # ctypes-based driver detection (triton-lang/triton#9578). Fall back
     # to torch's own device checks which are more reliable in these environments.
-    if name == "nvidia":
+    if name == "nvidia" or name == "ppu":
         import torch
 
         return torch.cuda.is_available() and torch.version.hip is None
@@ -54,7 +54,7 @@ def _is_backend_active(name, backend):
 def set_driver_to_gpu():
     driver = triton.runtime.driver
     for name, backend in triton.backends.backends.items():
-        if _is_backend_active(name, backend) and name != "cpu":
+        if _is_backend_active(name, backend) and name != "cpu" and name != "nvidia":
             # After https://github.com/triton-lang/triton/commit/b844d519bc5e86edf00fe6b3c6c2d1badcd509a4,
             # `driver.active` can be of `LazyProxy` type and the sign of this - `_obj` attribute.
             if (

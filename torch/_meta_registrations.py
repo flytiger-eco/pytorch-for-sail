@@ -43,6 +43,7 @@ from torch._refs import _broadcast_shapes, _maybe_broadcast
 from torch.fx.experimental import _config as exp_config
 from torch.nn.functional import ScalingType, SwizzleType
 from torch.utils import _pytree as pytree
+from torch.testing._utils import is_ppu
 
 
 _T = TypeVar("_T")
@@ -5984,7 +5985,11 @@ def meta__scaled_dot_product_flash_attention(
     else:
         seed = torch.empty((2), dtype=torch.uint64, device="meta")
         offset = torch.empty((), dtype=torch.uint64, device="meta")
-
+    # For PPU 1.0 and 1.5, the dtypes of meta seed and offset depend on the return types
+    # defined in PPU flash-attention flash_api.cpp.
+    if is_ppu():
+        seed = torch.empty((2), dtype=torch.int64, device="meta")
+        offset = torch.empty((), dtype=torch.int64, device="meta")
     return (
         attention,
         logsumexp,
@@ -6527,6 +6532,11 @@ def meta__flash_attention_forward(
     else:
         seed = torch.empty((2), dtype=torch.uint64, device="meta")
         offset = torch.empty((), dtype=torch.uint64, device="meta")
+    # For PPU 1.0 and 1.5, the dtypes of meta seed and offset depend on the return types
+    # defined in PPU flash-attention flash_api.cpp.
+    if is_ppu():
+        seed = torch.empty((2), dtype=torch.int64, device="meta")
+        offset = torch.empty((), dtype=torch.int64, device="meta")
     return (
         attention,
         logsumexp,

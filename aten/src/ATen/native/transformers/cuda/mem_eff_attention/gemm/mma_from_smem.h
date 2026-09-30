@@ -42,7 +42,13 @@
 #include <cutlass/epilogue/thread/linear_combination.h>
 #include <cutlass/epilogue/threadblock/default_epilogue_simt.h>
 #include <cutlass/epilogue/threadblock/default_epilogue_tensor_op.h>
+#if !defined(USE_PPU)
+// PPU (SM80+) never instantiates the Volta (SM70) epilogue. DefaultEpilogueVoltaTensorOp
+// is a dead include here (0 references in mem_eff), and the PPU cutlass fork removed the
+// Volta warp sub-headers (fragment_iterator_volta_tensor_op.h ...), so pulling this header
+// causes a preprocessor fatal error. Gate it out on PPU. See docs.
 #include <cutlass/epilogue/threadblock/default_epilogue_volta_tensor_op.h>
+#endif
 #include <cutlass/functional.h>
 #include <cutlass/gemm/gemm.h>
 #include <cutlass/gemm/warp/mma_tensor_op_fragment_iterator.h>
@@ -1626,6 +1632,7 @@ struct B2bGemm<
   }
 };
 
+#if !defined(USE_PPU)
 // Volta Specialization
 // only supported for f16
 template <typename Operator, typename WarpShape_, typename ThreadblockShape_>
@@ -1801,6 +1808,7 @@ struct B2bGemm<
     accumToSmem(shared_storage, accum, lane_id, tile_coords);
   }
 };
+#endif // !defined(USE_PPU): PPU (SM80+) never selects the Volta B2bGemm specialization; fork removed MmaVolta* types
 
 // Simt Specialization
 // for f32 on Sm70-Sm75 and f16/f32 below

@@ -284,6 +284,11 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#if !defined(USE_PPU)
+// PPU: ArchTag Sm70 aliases to PPU0010, whose kMinComputeCapability(80) also
+// satisfies the Turing+ (>=75) specialization above, making these Volta-only
+// specializations ambiguous. Disable them under USE_PPU; the Sm80 path uses
+// the Turing&Ampere specialization.
 // Specialization for Volta A x RowMajor B tensorOp, for 32x32x4 interleaved gemm
 template<
     /// Underlying matrix multiply operator (concept: MmaTensorOp)
@@ -464,6 +469,7 @@ public:
 private:
     ElementScale const* pointer_;
 };
+#endif  // !USE_PPU
 
 ////////////////////////////////////////////////////////////////////////////////
 

@@ -3529,6 +3529,12 @@ def handle_traced_output(
             torch._C._is_autocast_available,
             "is_integer",
         ]
+        # PPU modification: flex flash attention SDPA support.
+        + (
+            [torch._C._get_flex_flash_attention_sdp_enabled]
+            if torch.version.ppu is not None
+            else []
+        )
         + list(supported_const_comparison_op_values.keys())
     ):
         set_example_value(proxy.node, example_value)

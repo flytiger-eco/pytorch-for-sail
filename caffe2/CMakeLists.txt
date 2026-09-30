@@ -559,6 +559,18 @@ if(USE_CUDA OR USE_ROCM)
   append_filelist("libtorch_cuda_core_sources" Caffe2_GPU_HIP_JIT_FUSERS_SRCS)
 endif()
 
+if(USE_PPU)
+  set(PPU_FLASH_ATTENTION_CU_DIR "third_party/flash-attention/csrc/flash_attn/src")
+  set(PPU_OPTION "-O3 -std=c++17 -U__CUDA_NO_HALF_OPERATORS__ -U__CUDA_NO_HALF_CONVERSIONS__ -U__CUDA_NO_HALF2_OPERATORS__ -U__CUDA_NO_BFLOAT16_CONVERSIONS__ -mllvm -ppu-max-vreg-count=255 -mllvm -ppu-sink-matrix-addr=true -mllvm -ppu-max-alloca-byte-size=320 -mllvm -ppu-sink-async-addr=true -mllvm -ppu-sink-load-addr=true -mllvm -ppu-sink-store-addr=true -mllvm -ppu-alloca-half-ldst-simplify=true --expt-relaxed-constexpr --expt-extended-lambda --use_fast_math -DUSE_PPU -DUSE_AIU")
+  # flash_attention sources
+  file(GLOB PPU_FA_KERNELS ${PROJECT_SOURCE_DIR}/${PPU_FLASH_ATTENTION_CU_DIR}/*.cu)
+  # disable hdim224 compilation
+  file(GLOB PPU_HDIM224_KERNELS ${PROJECT_SOURCE_DIR}/${PPU_FLASH_ATTENTION_CU_DIR}/*hdim224*.cu)
+  list(REMOVE_ITEM PPU_FA_KERNELS ${PPU_HDIM224_KERNELS})
+  set_source_files_properties(${PPU_FA_KERNELS} PROPERTIES COMPILE_FLAGS ${PPU_OPTION})
+  set_source_files_properties(${PPU_MEM_EFF_ATTENTION_CUDA_SOURCES} PROPERTIES COMPILE_FLAGS "--use_fast_math")
+  message(STATUS "PPU_MEM_EFF_ATTENTION_CUDA_SOURCES: ${PPU_MEM_EFF_ATTENTION_CUDA_SOURCES}")
+endif()
 
 if(USE_CUDA)
   list(APPEND Caffe2_GPU_CU_SRCS ${Caffe2_GPU_HIP_JIT_FUSERS_SRCS})
@@ -1082,14 +1094,20 @@ elseif(USE_CUDA)
         FLASH_NAMESPACE=pytorch_flash
         UNFUSE_FMA                      # Addressing issue #121558
       )
-    target_sources(torch_cuda PRIVATE $<TARGET_OBJECTS:flash_attention>)
-    target_include_directories(torch_cuda SYSTEM PUBLIC
-      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc>
-      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/include>
-      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/cutlass/include>
-      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src>
-      $<INSTALL_INTERFACE:include>
-    )
+    if(USE_PPU)
+      target_include_directories(torch_cuda PRIVATE
+          ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/
+      )
+    else()
+      target_sources(torch_cuda PRIVATE $<TARGET_OBJECTS:flash_attention>)
+      target_include_directories(torch_cuda SYSTEM PUBLIC
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/cutlass/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src>
+        $<INSTALL_INTERFACE:include>
+      )
+    endif()
   endif()
   if(USE_MEM_EFF_ATTENTION)
     target_compile_definitions(torch_cuda PRIVATE USE_MEM_EFF_ATTENTION)
@@ -2103,4 +2121,11 @@ if(MSVC)
     set_source_files_properties(${tmp_path} PROPERTIES COMPILE_FLAGS "-Xcompiler /Zc:lambda")
   endforeach()
 endif()
+endif()
+
+# PPU modification: out-of-tree flex flash attention SDPA backend
+# shim; see Note [Flex Flash Attention SDPA backend integration] in
+# cmake/flex_flash_attention.cmake. No-op when the submodule is absent.
+if(USE_PPU)
+  include(${PROJECT_SOURCE_DIR}/cmake/flex_flash_attention.cmake)
 endif()

@@ -509,13 +509,7 @@ def get_submodule_folders() -> list[Path]:
     git_modules_file = CWD / ".gitmodules"
     default_modules_path = [
         THIRD_PARTY_DIR / name
-        for name in [
-            "gloo",
-            "cpuinfo",
-            "onnx",
-            "fbgemm",
-            "cutlass",
-        ]
+        for name in ["gloo", "cpuinfo", "onnx", "fbgemm", "cutlass3", "cutlass"]
     ]
     if not git_modules_file.exists():
         return default_modules_path
@@ -1669,13 +1663,230 @@ def print_box(msg: str) -> None:
     print("+" + "-" * (max_width + 4) + "+", file=sys.stderr, flush=True)
 
 
+def apply_patch(patch_file: str, target_root: str) -> None:
+    import re
+
+    if not os.path.isfile(patch_file):
+        raise FileNotFoundError(f"The patch file doesn't exist: {patch_file}")
+    try:
+        subprocess.run(
+            ["patch", "-p1", "-i", patch_file],
+            cwd=target_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        print(f"Apply patch: {patch_file}")
+    except subprocess.CalledProcessError as e:
+        error_output = e.stderr or e.stdout
+        print(f"error_output: {error_output}")
+        if error_output and re.search(
+            "already exists|Reversed|previously applied", error_output, re.IGNORECASE
+        ):
+            print("Patch already applied, skipping.")
+        else:
+            print(f"Failed to apply patch: {e}")
+            sys.exit(1)
+
+
+def _missing_submodule_error(torch_root: str, submodule_path: str) -> FileNotFoundError:
+    return FileNotFoundError(
+        "Required third-party source is missing: "
+        f"{os.path.join(torch_root, submodule_path)}\n"
+        "Please fetch it with git submodule, for example:\n"
+        f"  git submodule update --init --recursive {submodule_path}\n"
+        "Or initialize all required submodules with:\n"
+        "  git submodule update --init --recursive"
+    )
+
+
+def _restore_pristine(target_root: str) -> None:
+    """Reset a cudafy target subtree back to its committed (pristine) state.
+
+    cudafy is not idempotent on an already-converted tree: besides the plain
+    hggc -> cuda text substitution it also *injects* content (SM75/SM80
+    wrappers, arch-map/shim headers, SM->PPU aliases). Re-running it on such a
+    tree would double-inject. To force a clean conversion on every build we
+    discard cudafy's tracked-file edits (git checkout) and drop the untracked
+    files it generated (git clean) for exactly this subtree, so cudafy always
+    sees pristine hggc sources.
+    """
+    try:
+        toplevel = subprocess.run(
+            ["git", "-C", target_root, "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, OSError):
+        # Sources vendored without a git working tree: nothing to reset.
+        print(f"Skip pristine restore for {target_root}: not a git working tree.")
+        return
+
+    pathspec = os.path.relpath(target_root, toplevel)
+    print(f"Restore pristine: {pathspec} in {toplevel}")
+    subprocess.run(["git", "-C", toplevel, "checkout", "--", pathspec], check=True)
+    subprocess.run(["git", "-C", toplevel, "clean", "-fdx", "--", pathspec], check=True)
+
+
+def run_cudafy_once(
+    torch_root: str,
+    command: str,
+    version: str,
+    target_root: str,
+) -> None:
+    cudafy_script = os.path.join(
+        torch_root, "third_party", "cudafy-for-sail", "cudafy.py"
+    )
+    if not os.path.isfile(cudafy_script):
+        raise _missing_submodule_error(torch_root, "third_party/cudafy-for-sail")
+    if not os.path.isdir(target_root):
+        target_arg = os.path.relpath(target_root, torch_root)
+        raise _missing_submodule_error(torch_root, target_arg)
+
+    # Always convert from pristine sources. Reset the target subtree first so a
+    # previous build's conversion can never be re-converted (cudafy is not
+    # idempotent) nor mistaken for up-to-date after a `git submodule update`.
+    _restore_pristine(target_root)
+
+    target_arg = os.path.relpath(target_root, torch_root)
+    cudafy_arg = os.path.relpath(cudafy_script, torch_root)
+    cli_version = (
+        version[1:] if command == "actlize" and version.startswith("v") else version
+    )
+    cmd = ["python3", cudafy_arg, command, f"--version={cli_version}", target_arg]
+    print(f"Run cudafy: {' '.join(cmd)}")
+    subprocess.run(cmd, cwd=torch_root, check=True)
+
+
+def check_path_exists(path: str) -> None:
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"The path doesn't exist: '{path}', please check PPU_SDK environment."
+        )
+
+
+def Init_ppu_build_env() -> None:
+    ppu_nccl_path = "/usr/local/PPU_SDK/CUDA_SDK/include"
+    ppu_nccl_lib = "/usr/local/PPU_SDK/CUDA_SDK/lib64"
+
+    # check PPU_SDK path
+    check_path_exists(ppu_nccl_path)
+    check_path_exists(ppu_nccl_lib)
+
+    # specify where nccl include is installed
+    if os.getenv("NCCL_INCLUDE_DIR") is None:
+        os.environ["NCCL_INCLUDE_DIR"] = ppu_nccl_path
+        print(f"Set NCCL_INCLUDE_DIR to: {ppu_nccl_path}")
+    else:
+        print(f"Using existing NCCL_INCLUDE_DIR: {os.getenv('NCCL_INCLUDE_DIR')}")
+ 
+    # specify where nccl lib is installed
+    if os.getenv("NCCL_LIB_DIR") is None:
+        os.environ["NCCL_LIB_DIR"] = ppu_nccl_lib
+        print(f"Set NCCL_LIB_DIR to: {ppu_nccl_lib}")
+    else:
+        print(f"Using existing NCCL_LIB_DIR: {os.getenv('NCCL_LIB_DIR')}")
+
+    # enable building flash attention for scaled dot product attention
+    if os.getenv("USE_FLASH_ATTENTION") is None:
+        os.environ["USE_FLASH_ATTENTION"] = "True"
+
+    # enable the FA3 flex flash attention backend (third_party/flex-flash-attention)
+    if os.getenv("USE_FLEX_FLASH_ATTENTION") is None:
+        os.environ["USE_FLEX_FLASH_ATTENTION"] = "True"
+
+    # enable building memory efficient attention for scaled dot product attention
+    if os.getenv("USE_MEM_EFF_ATTENTION") is None:
+        os.environ["USE_MEM_EFF_ATTENTION"] = "True"
+
+    # specify which CUDA architectures to build for.
+    # ie `TORCH_CUDA_ARCH_LIST="6.0;7.0"`
+    if os.getenv("TORCH_CUDA_ARCH_LIST") is None:
+        os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0"
+
+    # enable nccl
+    if os.getenv("USE_NCCL") is None:
+        os.environ["USE_NCCL"] = "True"
+
+    # enable use of system-wide nccl
+    if os.getenv("USE_SYSTEM_NCCL") is None:
+        os.environ["USE_SYSTEM_NCCL"] = "1"
+
+    if os.getenv("BUILD_TEST") is None:
+        os.environ["BUILD_TEST"] = "False"
+
+    print("Init ppu build env done ...")
+
+
 def main() -> None:
     if BUILD_LIBTORCH_WHL and BUILD_PYTHON_ONLY:
         raise RuntimeError(
             "Conflict: 'BUILD_LIBTORCH_WHL' and 'BUILD_PYTHON_ONLY' can't both be 1. "
             "Set one to 0 and rerun."
         )
+    on_ppu = os.environ.get("PPU_SDK")
+    if on_ppu:
+        Init_ppu_build_env()
+        torch_root = os.path.dirname(os.path.abspath(__file__))
+        patch_root = os.path.join(torch_root, "third_party")
 
+        use_fa = os.environ.get("USE_FLASH_ATTENTION")
+        if use_fa in ["True", "1", "TRUE"]:
+            fa_root = os.path.join(patch_root, "flash-attention")
+            cutlass_root = os.path.join(patch_root, "cutlass")
+            cutlass_include_root = os.path.join(cutlass_root, "include")
+            if not os.path.exists(fa_root):
+                raise _missing_submodule_error(torch_root, "third_party/flash-attention")
+            if not os.path.exists(cutlass_root):
+                raise _missing_submodule_error(torch_root, "third_party/cutlass")
+
+            cudafy_root = os.path.join(patch_root, "cudafy-for-sail")
+            if not os.path.exists(cudafy_root):
+                raise _missing_submodule_error(torch_root, "third_party/cudafy-for-sail")
+
+            run_cudafy_once(
+                torch_root,
+                "flash-attention",
+                "2.7.2",
+                fa_root,
+            )
+            run_cudafy_once(
+                torch_root,
+                "actlize",
+                "v0.8.0",
+                cutlass_include_root,
+            )
+
+            fa_patch_file = os.path.join(
+                patch_root, "flash_attention_namespace_config.patch"
+            )
+            # PPU cutlass fork lacks cutlass::platform::numeric_limits<half_t/bfloat16_t>;
+            # required by sparse semi-structured kernels (ComputeSparseTile.h).
+            # (CU->PPU alias/device_breakpoint fixes are emitted by cuda_compat_v0.8.0.py.)
+            cutlass_patch_file = os.path.join(
+                patch_root, "cutlass_platform_numeric_limits.patch"
+            )
+
+            apply_patch(fa_patch_file, fa_root)
+            apply_patch(cutlass_patch_file, cutlass_root)
+
+        use_flex_fa = os.environ.get("USE_FLEX_FLASH_ATTENTION")
+        if use_flex_fa in ["True", "1", "TRUE"]:
+            fa_flex_root = os.path.join(patch_root, "flex-flash-attention")
+            actlize_root = os.path.join(fa_flex_root, "csrc", "actlize")
+            actlize_include_root = os.path.join(actlize_root, "include")
+            if not os.path.exists(fa_flex_root):
+                raise _missing_submodule_error(torch_root, "third_party/flex-flash-attention")
+            if not os.path.exists(actlize_include_root):
+                raise _missing_submodule_error(
+                    torch_root, "third_party/flex-flash-attention/csrc/actlize"
+                )
+
+            run_cudafy_once(
+                torch_root, "flex-flash-attention", "2.8.2", fa_flex_root
+            )
+            run_cudafy_once(torch_root, "actlize", "v1.0.0", actlize_include_root)
     install_requires = [
         "filelock",
         "typing-extensions>=4.10.0",

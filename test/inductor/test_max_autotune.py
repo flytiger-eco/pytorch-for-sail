@@ -40,6 +40,7 @@ from torch._inductor.codegen.common import WorkspaceArg
 from torch._inductor.graph import GraphLowering
 from torch._inductor.ir import Buffer, ChoiceCaller, FixedLayout, FlexibleLayout
 from torch._inductor.kernel.mm_plus_mm import aten_mm_plus_mm
+from torch._inductor.runtime.hints import DeviceProperties
 from torch._inductor.runtime.triton_heuristics import CachingAutotuner, pointwise
 from torch._inductor.scheduler import Scheduler
 from torch._inductor.select_algorithm import (
@@ -97,6 +98,7 @@ from torch._inductor.utils import (
 from torch._inductor.virtualized import V
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.testing import FileCheck
+from torch.testing._utils import is_ppu
 from torch.testing._internal.common_utils import skipIfXpu
 from torch.testing._internal.inductor_utils import (
     get_func_call,
@@ -4763,6 +4765,15 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
         finally:
             mm_heuristic.mm_configs = original_mm_configs
 
+    def _get_mock_n_regs_for_blocks(self, blocks: int) -> int:
+        device_props = DeviceProperties.create(torch.device(GPU_TYPE))
+        regs_per_sm = device_props.regs_per_multiprocessor
+        assert regs_per_sm is not None
+        threads_per_block = 4 * (device_props.warp_size or 32)
+        n_regs = regs_per_sm // ((blocks + 1) * threads_per_block) + 1
+        self.assertEqual(regs_per_sm // (n_regs * threads_per_block), blocks)
+        return n_regs
+
     @unittest.skipIf(not has_triton_tma_device(), "Need TMA support in Triton")
     @skipIfXpu(msg="Bad tma config can be covered by XPU TMA")
     @parametrize("use_async_compile", (True, False))
@@ -5016,15 +5027,26 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
         triton_time = 0.1
         epilogue_runtime = triton_time
 
+        # Original n_regs values are calibrated for NVIDIA's 65536 regs/SM.
+        # PPU uses a different register file size, so derive PPU values to keep
+        # the same target occupancy for each branch.
         if test_case == "occupancy_ratio_accept":
             # blocks_unfused=5, blocks_fused=3, ratio=0.6 > 0.5 -> accept
             # aten slightly faster to verify fusion picks triton even when aten wins
-            mock_unfused_n_regs, mock_fused_n_regs = 100, 160
+            if is_ppu():
+                mock_unfused_n_regs = self._get_mock_n_regs_for_blocks(5)
+                mock_fused_n_regs = self._get_mock_n_regs_for_blocks(3)
+            else:
+                mock_unfused_n_regs, mock_fused_n_regs = 100, 160
             aten_time = 0.09
             expect_fusion = True
         elif test_case == "occupancy_ratio_reject":
             # blocks_unfused=8, blocks_fused=2, ratio=0.25 < 0.5 -> reject
-            mock_unfused_n_regs, mock_fused_n_regs = 64, 200
+            if is_ppu():
+                mock_unfused_n_regs = self._get_mock_n_regs_for_blocks(8)
+                mock_fused_n_regs = self._get_mock_n_regs_for_blocks(2)
+            else:
+                mock_unfused_n_regs, mock_fused_n_regs = 64, 200
             aten_time = 0.11
             expect_fusion = False
         else:
@@ -5077,16 +5099,27 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
         """
         triton_time = 0.1
 
+        # Original n_regs values are calibrated for NVIDIA's 65536 regs/SM.
+        # PPU has a larger regs_per_multiprocessor, so derive PPU values to
+        # preserve the intended low-occupancy accept/reject branches.
         if test_case == "memory_bound_accept":
             # blocks_fused=2 > 1, ms2=0.3 > 2*ms1=0.2 -> Branch C accepts
             # aten slightly faster to verify fusion picks triton even when aten wins
-            mock_unfused_n_regs, mock_fused_n_regs = 64, 256
+            if is_ppu():
+                mock_unfused_n_regs = self._get_mock_n_regs_for_blocks(8)
+                mock_fused_n_regs = self._get_mock_n_regs_for_blocks(2)
+            else:
+                mock_unfused_n_regs, mock_fused_n_regs = 64, 256
             aten_time = 0.09
             epilogue_runtime = 0.3
             expect_fusion = True
         elif test_case == "memory_bound_reject_low_occupancy":
             # blocks_fused=1, ms2=0.3 > 2*ms1=0.2 BUT blocks_fused <= 1 -> reject
-            mock_unfused_n_regs, mock_fused_n_regs = 64, 512
+            if is_ppu():
+                mock_unfused_n_regs = self._get_mock_n_regs_for_blocks(8)
+                mock_fused_n_regs = self._get_mock_n_regs_for_blocks(1)
+            else:
+                mock_unfused_n_regs, mock_fused_n_regs = 64, 512
             aten_time = 0.11
             epilogue_runtime = 0.3
             expect_fusion = False

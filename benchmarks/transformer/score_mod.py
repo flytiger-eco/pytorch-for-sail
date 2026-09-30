@@ -154,6 +154,7 @@ class ExperimentConfig:
     cal_bandwidth: bool
     backends: list[str]
     max_autotune: bool
+    skip_flex: bool = False
 
     def __post_init__(self):
         if len(self.shape) != 6:
@@ -170,6 +171,7 @@ class ExperimentConfig:
         d["shape(B,Hq,M,Hkv,N,D)"] = d.pop("shape")
         d.pop("backends", None)
         d.pop("max_autotune", False)
+        d.pop("skip_flex", None)
         return d
 
 
@@ -361,7 +363,9 @@ def run_single_backend_sdpa(
                     fwd_time=float("nan"),
                     bwd_time=float("nan") if config.calculate_bwd_time else None,
                 )
-            if config.attn_type in ["document_mask"]:
+            if out_compile is None:
+                pass  # flex skipped, no reference output to compare against
+            elif config.attn_type in ["document_mask"]:
                 flatten_o_eager = torch.cat(torch.unbind(out_eager.transpose(1, 2)))
                 flatten_o_compile = out_compile.transpose(1, 2).flatten(
                     start_dim=0, end_dim=1
@@ -439,7 +443,7 @@ def run_single_backend_FA(
         else:
             out_FA_updated = out_FA
 
-        if not (
+        if out_compile is not None and not (
             config.attn_type in ["rel", "alibi"]
             and config.dtype in [torch.float16, torch.bfloat16]
         ):
@@ -492,33 +496,37 @@ def run_single_experiment(
     block_mask, mask_kwargs = generate_block_mask(config.attn_type, config.shape)
     kernel_options = get_kernel_options(config.attn_type, config.shape)
 
-    if config.max_autotune:
-        compiled_sdpa = torch.compile(
-            flex_attention, dynamic=dynamic, mode="max-autotune-no-cudagraphs"
-        )
+    if config.skip_flex:
+        out_compile = None
+        forward_compiled_time = float("nan")
     else:
-        compiled_sdpa = torch.compile(flex_attention, dynamic=dynamic)
+        if config.max_autotune:
+            compiled_sdpa = torch.compile(
+                flex_attention, dynamic=dynamic, mode="max-autotune-no-cudagraphs"
+            )
+        else:
+            compiled_sdpa = torch.compile(flex_attention, dynamic=dynamic)
 
-    out_compile = compiled_sdpa(
-        query=query,
-        key=key,
-        value=value,
-        score_mod=score_mod,
-        block_mask=block_mask,
-        enable_gqa=True,
-        kernel_options=kernel_options,
-    )
+        out_compile = compiled_sdpa(
+            query=query,
+            key=key,
+            value=value,
+            score_mod=score_mod,
+            block_mask=block_mask,
+            enable_gqa=True,
+            kernel_options=kernel_options,
+        )
 
-    forward_compiled_time = benchmark_torch_function_in_microseconds(
-        compiled_sdpa,
-        query,
-        key,
-        value,
-        score_mod=score_mod,
-        block_mask=block_mask,
-        enable_gqa=True,
-        kernel_options=kernel_options,
-    )
+        forward_compiled_time = benchmark_torch_function_in_microseconds(
+            compiled_sdpa,
+            query,
+            key,
+            value,
+            score_mod=score_mod,
+            block_mask=block_mask,
+            enable_gqa=True,
+            kernel_options=kernel_options,
+        )
 
     results = {}
     for backend in config.backends:
@@ -548,10 +556,13 @@ def run_single_experiment(
             )
 
     if config.calculate_bwd_time:
-        d_out = torch.randn_like(out_compile)
-        backward_compile_time = benchmark_torch_function_in_microseconds(
-            out_compile.backward, d_out, retain_graph=True
-        )
+        if out_compile is not None:
+            d_out = torch.randn_like(out_compile)
+            backward_compile_time = benchmark_torch_function_in_microseconds(
+                out_compile.backward, d_out, retain_graph=True
+            )
+        else:
+            backward_compile_time = float("nan")
     sparsity = block_mask.sparsity() / 100.0 if block_mask is not None else 0.0
     sparsity = sparsity if config.attn_type != "document_mask" else 0.5
 
@@ -1148,6 +1159,7 @@ def generate_experiment_configs(
     cal_bandwidth: bool,
     backends: list[str],
     max_autotune: bool,
+    skip_flex: bool = False,
 ) -> list[ExperimentConfig]:
     if calculate_bwd and decoding:
         raise AssertionError("Decoding does not support backward")
@@ -1196,6 +1208,7 @@ def generate_experiment_configs(
                 cal_bandwidth=cal_bandwidth,
                 backends=backends,
                 max_autotune=max_autotune,
+                skip_flex=skip_flex,
             )
         )
 
@@ -1429,6 +1442,7 @@ def main(
     mods: list[AttentionType] | None = None,
     backend: list[Backend] | None = None,
     max_autotune: bool = False,
+    skip_flex: bool = False,
     decoding: bool = False,
     kv_size: list[int] | None = None,
     throughput: bool = True,
@@ -1466,6 +1480,7 @@ def main(
         mods: Score modifications: noop, causal, rel, head_bias, alibi, sliding_window, document_mask, prefix_lm, softcap
         backend: Backends for attention computation: math, efficient, cudnn, fav2, fav3, fakv, og-eager
         max_autotune: Turn on max-autotune optimization
+        skip_flex: Skip running/benchmarking flex attention (also skips correctness checks against it)
         decoding: Benchmark decoding mode (query sequence length = 1)
         kv_size: Key/value cache size in MiB (ignores batch size if specified)
         throughput: Calculate kernel memory bandwidth & computational throughput (always True)
@@ -1501,6 +1516,7 @@ def main(
                 throughput,
                 backend,
                 max_autotune,
+                skip_flex,
             )
         ),
         start=1,
@@ -1571,6 +1587,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--max-autotune", action="store_true", help="Turn on max-autotune"
+    )
+    parser.add_argument(
+        "--skip-flex",
+        action="store_true",
+        help="Skip running/benchmarking flex attention (only run backends specified by --backend)",
     )
     parser.add_argument(
         "--decoding",

@@ -43,6 +43,9 @@ try:
 except ImportError:
     _cudart = None
 
+# PPU support - detect PPU environment via PPU_SDK environment variable
+USE_PPU = os.getenv("PPU_SDK") is not None
+
 _initialized = False
 _tls = threading.local()
 _initialization_lock = threading.Lock()
@@ -369,7 +372,6 @@ def _warn_unsupported_code(device_index: int, device_cc: int, code_ccs: list[int
 def _check_capability():
     if torch.version.cuda is None:  # on ROCm we don't want this check
         return
-
     arch_list = get_arch_list()
     if len(arch_list) == 0:
         return

@@ -53,7 +53,12 @@
 #include <cutlass/gemm/warp/mma_tensor_op_policy.h>
 
 #include <cutlass/gemm/warp/mma_tensor_op_tile_iterator.h>
+// PPU: sm80 tile iterator maps to ppu0010
+#if defined(USE_PPU)
+#include <cutlass/gemm/warp/mma_tensor_op_tile_iterator_ppu0010.h>
+#else
 #include <cutlass/gemm/warp/mma_tensor_op_tile_iterator_sm80.h>
+#endif
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 

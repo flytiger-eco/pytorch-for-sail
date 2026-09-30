@@ -198,9 +198,24 @@ bool CUDA_tensor_histogram(
     return false;
   }
 
+  // Zhenwu 810 and 810E report CUDA compatibility version 8.0. For this
+  // shared-memory histogram, the compiler lowers atomic updates through a TSM
+  // CAS patch that allocates additional static TSM per block. Static TSM and
+  // dynamic shared memory share the kernel launch resource budget, so reserve
+  // headroom for the patch in the dynamic shared-memory request.
+  constexpr size_t kDefaultGuardBytes = 8;
+  constexpr size_t kPpuSm80GuardBytes = 1024;
+  auto props = getCurrentDeviceProperties();
+  size_t guardBytes = kDefaultGuardBytes;
+#ifdef USE_PPU
+  if (props->major == 8 && props->minor == 0) {
+    guardBytes = kPpuSm80GuardBytes;
+  }
+#endif
+
   CUDAHistogramMemoryType memType = CUDAHistogramMemoryType::GLOBAL;
-  auto maxSharedMem = getCurrentDeviceProperties()->sharedMemPerBlock;
-  auto sharedMem = nbins * sizeof(output_t) + 8; // 8 guard bytes
+  auto maxSharedMem = props->sharedMemPerBlock;
+  auto sharedMem = nbins * sizeof(output_t) + guardBytes;
   // determine memory type to use in the kernel
   if (sharedMem < maxSharedMem) {
     // Solve equations:

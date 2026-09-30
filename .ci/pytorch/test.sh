@@ -2063,7 +2063,7 @@ test_attention_microbenchmark() {
 
   # Install attention-gym dependency
   echo "Installing attention-gym..."
-  python -m pip install git+https://github.com/meta-pytorch/attention-gym.git@main
+  # python -m pip install git+https://github.com/meta-pytorch/attention-gym.git@main
   pip show triton
 
   cd "${TEST_DIR}"/benchmarks/transformer

@@ -295,6 +295,16 @@ bool Context::userEnabledOverrideableSDP() const {
   return enabled_overrideable;
 }
 
+#ifdef USE_PPU // PPU modification: flex flash attention SDPA flag
+void Context::setSDPUseFlexFlash(bool e) {
+  enabled_flex_flashSDP = e;
+}
+
+bool Context::userEnabledFlexFlashSDP() const {
+  return enabled_flex_flashSDP;
+}
+#endif
+
 bool Context::benchmarkCuDNN() const {
   return benchmark_cudnn;
 }

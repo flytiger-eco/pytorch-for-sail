@@ -235,7 +235,7 @@ _mixed_dtypes_linear(const Tensor& input, const Tensor& weight,
   const auto input_2d = input.reshape({-1, input_sizes.back()});
 
   // Validate layouts of input tensors.
-  TORCH_CHECK(input_2d.layout() == Layout::Strided,
+  TORCH_CHECK(input_2d.layout() == at::Layout::Strided,
               "_mixed_dtypes_linear: Expected input argument to be strided, "
               "but got layout ", input_2d.layout());
   TORCH_CHECK(input_2d.dim() == 2,
@@ -246,7 +246,7 @@ _mixed_dtypes_linear(const Tensor& input, const Tensor& weight,
               "_mixed_dtypes_linear: Invalid strides for input argument: row "
               "stride = ", strides_input[0], ", column stride = ",
               strides_input[1]);
-  TORCH_CHECK(weight.layout() == Layout::Strided,
+  TORCH_CHECK(weight.layout() == at::Layout::Strided,
               "_mixed_dtypes_linear: Expected input argument to be strided, "
               "but got layout ", weight.layout());
   TORCH_CHECK(weight.dim() == 2,

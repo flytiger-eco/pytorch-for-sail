@@ -100,6 +100,7 @@ struct DefaultWarpIteratorAFromSharedMemory<
           kWarpSize>;
 };
 
+#if !defined(USE_PPU)
 // TensorOp - Volta
 template <typename WarpShape, typename RegularWarpIterator, typename Policy>
 struct DefaultWarpIteratorAFromSharedMemory<
@@ -122,6 +123,7 @@ struct DefaultWarpIteratorAFromSharedMemory<
           OpDelta::kRow,
           kWarpSize>;
 };
+#endif // !defined(USE_PPU): PPU never selects the Volta warp iterator; fork removed MmaVolta* types
 
 // Simt
 template <typename WarpShape, typename RegularWarpIterator, typename Policy>

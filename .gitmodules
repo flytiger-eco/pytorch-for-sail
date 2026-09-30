@@ -104,8 +104,9 @@
 	path = third_party/VulkanMemoryAllocator
 	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
 [submodule "third_party/cutlass"]
-	path = third_party/cutlass
-	url = https://github.com/NVIDIA/cutlass.git
+    path = third_party/cutlass
+    url = https://github.com/t-head/actlize.git
+    branch = v0.8.0
 [submodule "third_party/mimalloc"]
 	path = third_party/mimalloc
 	url = https://github.com/microsoft/mimalloc.git
@@ -124,11 +125,25 @@
 	path = third_party/kleidiai
 	url = https://github.com/ARM-software/kleidiai.git
 [submodule "third_party/flash-attention"]
-	path = third_party/flash-attention
-	url = https://github.com/Dao-AILab/flash-attention.git
+    path = third_party/flash-attention
+    url = https://github.com/t-head/flash-attention-for-sail.git
+    branch = v2.7.2
 [submodule "third_party/aiter"]
 	path = third_party/aiter
 	url = https://github.com/ROCm/aiter.git
 [submodule "third_party/mslk"]
 	path = third_party/mslk
 	url = https://github.com/meta-pytorch/MSLK.git
+[submodule "third_party/xformers"]
+    path = third_party/xformers
+    url = https://github.com/flytiger-eco/xformers-for-sail.git
+    branch = v0.0.27_for_pytorch
+[submodule "third_party/cudafy-for-sail"]
+    path = third_party/cudafy-for-sail
+    url = https://github.com/flytiger-eco/cudafy-for-sail.git
+    branch = pytorch
+[submodule "third_party/flex-flash-attention"]
+    ignore = dirty
+    path = third_party/flex-flash-attention
+    url = https://github.com/t-head/flash-attention-for-sail.git
+    branch = flex-flash-attention

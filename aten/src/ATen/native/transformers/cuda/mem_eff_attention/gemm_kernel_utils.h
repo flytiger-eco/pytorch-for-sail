@@ -140,7 +140,13 @@ struct DefaultGemmType<
   using Operator = cutlass::arch::OpMultiplyAdd;
 };
 
+#if !defined(USE_PPU)
 // Specialization for tensorcores with f16 - Volta
+// PPU: arch::Sm70 aliases to PPU0010 (kMinComputeCapability==80), so this full
+// specialization would out-prioritize the Sm75+ partial specialization above and
+// hijack the half_t path to InstructionShape<8,8,4>. The PPU cutlass fork has no
+// Volta 32-thread/float-accum tensorop (arch::Mma<8,8,4, 32, half, ..., float, ...>
+// is undefined), so gate it out; half_t then uses the Sm75+ 16x8x8 path (defined).
 template <>
 struct DefaultGemmType<cutlass::arch::Sm70, cutlass::half_t, void> {
   static constexpr int ThreadK = 32;
@@ -150,6 +156,7 @@ struct DefaultGemmType<cutlass::arch::Sm70, cutlass::half_t, void> {
   using InstructionShape = cutlass::gemm::GemmShape<8, 8, 4>;
   using Operator = cutlass::arch::OpMultiplyAdd;
 };
+#endif  // !defined(USE_PPU)
 
 // Enables to do
 // `auto x = kCondition ? fa(arg) : fb(arg)`

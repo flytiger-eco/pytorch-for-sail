@@ -12,8 +12,13 @@
 
 namespace c10::CachingAllocator {
 
+#ifdef USE_PPU
+// "small" allocations are packed in 8 MiB blocks for PPU
+constexpr size_t kSmallBuffer = 8388608;
+#else
 // "small" allocations are packed in 2 MiB blocks
 constexpr size_t kSmallBuffer = 2097152;
+#endif
 // all sizes are rounded to at least 512 bytes
 constexpr size_t kMinBlockSize = 512;
 // largest "small" allocation is 1 MiB
@@ -334,7 +339,7 @@ class C10_API AcceleratorAllocatorConfig {
   /* The following members are specifically used for the device allocator. */
 
   // "large" allocations may be packed in blocks of this size
-  std::atomic<size_t> large_segment_size_{20971520}; // 20 MB by default
+  std::atomic<size_t> large_segment_size_{33554432}; // 32 MB by default
   // The maximum block size that is allowed to be split.
   std::atomic<size_t> max_split_size_{std::numeric_limits<size_t>::max()};
   // The maximum allowable extra size of a memory block without requiring

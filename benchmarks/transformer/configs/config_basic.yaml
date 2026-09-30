@@ -16,7 +16,8 @@ d: [64, 128]  # head dimensions (limited to 128 for Flash Attention/cuDNN compat
 mods: ["noop", "causal", "rel", "head_bias", "alibi", "sliding_window", "prefix_lm", "softcap"]
 
 # Multiple backends for comparison (SDPA + Flash Attention) - flex is always included internally
-backend: ["efficient", "math", "cudnn", "fav2"]
+backend: ["efficient", "math", "fav2"]
+skip_flex: true  # Skip flex attention benchmarking (set to false to include flex)
 max_autotune: true  # Enable torch.compile with max-autotune for optimal performance
 
 # Decoding and cache settings
