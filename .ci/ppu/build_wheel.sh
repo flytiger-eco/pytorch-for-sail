@@ -16,6 +16,9 @@ if [[ -f "$WHL_STAMP" && "${FORCE_REBUILD:-0}" != "1" ]]; then
 fi
 
 source "$(dirname "$0")/sdk_env.sh"
+# SDK 2.2 起 NCCL/pccl 需单独安装
+export NCCL_INSTALL_DIR="${NCCL_INSTALL_DIR:-$SDK_INSTALL_DIR}"
+source "$(dirname "$0")/nccl_env.sh"
 source "$(dirname "$0")/ccache_env.sh"
 
 cd "$REPO_DIR"
@@ -69,8 +72,8 @@ echo "[build_wheel] TORCH_VERSION=${TORCH_VERSION} MAX_JOBS=${MAX_JOBS} 链接�
 BUILD_START=$(date +%s)
 
 env \
-    NCCL_INCLUDE_DIR="$SDK_INSTALL_DIR/PPU_SDK/CUDA_SDK/include" \
-    NCCL_LIB_DIR="$SDK_INSTALL_DIR/PPU_SDK/CUDA_SDK/lib64" \
+    NCCL_INCLUDE_DIR="${NCCL_HOME}/include" \
+    NCCL_LIB_DIR="${NCCL_HOME}/lib" \
     PYTORCH_VERSION="$TORCH_VERSION" \
     PYTORCH_BUILD_VERSION="$TORCH_VERSION" \
     PYTORCH_BUILD_NUMBER=0 \
