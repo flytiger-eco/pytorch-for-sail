@@ -42,7 +42,7 @@ The project continuously tracks official PyTorch 2.x releases. While maintaining
 
 ## User Guide
 
-To use PyTorch-for-SAIL directly via Docker or install it from PyPI, please refer to the [PyTorch-for-SAIL User Guide](https://www.flytiger-eco.com/docs_center/doc_detail/index.html?projectId=6&documentId=99).
+To use PyTorch-for-SAIL directly via Docker or install it from PyPI, please refer to the [PyTorch-for-SAIL User Guide](https://www.flytiger-eco.com/docs_center/doc_detail/index.html?projectId=6&documentId=2909).
 
 ---
 
@@ -142,6 +142,21 @@ docker run -it --rm \
 # 3. Configure the build environment
 source /usr/local/PPU_SDK/envsetup.sh
 
+# The default configuration applies to artifact version v2.2, which requires
+# the separately provided PCCL NCCL wrapper. Download it from
+# https://www.flytiger-eco.com/download?businessType=NCCL and select a package
+# matching the artifact version, CUDA version, and operating system. Extract it
+# only once per container.
+tar zxf <matching-nccl-wrapper-package>.tar.gz -C /usr/local
+source /usr/local/pccl/envsetup.sh
+export NCCL_INCLUDE_DIR="${NCCL_HOME}/include"
+export NCCL_LIB_DIR="${NCCL_HOME}/lib"
+
+# Artifact version v2.1 provides NCCL in the SDK and does not require the wrapper.
+# Replace the four lines above with the following SDK configuration for v2.1.
+# export NCCL_INCLUDE_DIR="${CUDA_SDK}/include"
+# export NCCL_LIB_DIR="${CUDA_SDK}/lib64"
+
 # Install build dependencies
 pip install -r requirements.txt
 
@@ -151,19 +166,22 @@ pip install -r requirements.txt
 
 # PPU toolchain-specific behavior: 8.0 enables mixed compilation for SM80 and SM89.
 # Under standard CUDA semantics, 8.0 normally denotes SM80 only.
-export TORCH_CUDA_ARCH_LIST="8.0"
-# To build for SM89 only, comment out the line above and uncomment the following line.
-# export TORCH_CUDA_ARCH_LIST="8.9"
+# This example builds for SM89 only.
+export TORCH_CUDA_ARCH_LIST="8.9"
 
-# Compile time: the elementwise operator optimization is compiled by default and is only effective for the 8.9
-# architecture; uncomment the following line if you do not want to compile this optimization.
+# Artifact version v2.2 enables these compile-time options by default:
+# - USE_ELEMENTWISE_OPT: elementwise operator optimization, effective only for 8.9.
+# - USE_FLEX_FLASH_ATTENTION: Flex Flash Attention compilation support.
+# Explicitly disable either feature before the build command if it is not wanted:
 # export USE_ELEMENTWISE_OPT=False
+# export USE_FLEX_FLASH_ATTENTION=False
 # Runtime: the elementwise operator optimization is off by default; set PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT=True
-# at runtime to enable it.
+# at runtime to enable it. Flex Flash Attention is also off by default at runtime;
+# it applies only to M890 and can be enabled before Python starts:
+# export TORCH_FLEX_FLASH_SDPA_ENABLED=1
 
-# 4. Build the wheel package with the configured build backend
-NCCL_INCLUDE_DIR=/usr/local/PPU_SDK/CUDA_SDK/include \
-NCCL_LIB_DIR=/usr/local/PPU_SDK/CUDA_SDK/lib64 \
+# 4. Build the wheel package. NCCL_INCLUDE_DIR and NCCL_LIB_DIR are exported
+# by the selected artifact-version configuration above.
 PYTORCH_VERSION=2.10.0 \
 PYTORCH_BUILD_VERSION=2.10.0 \
 PYTORCH_BUILD_NUMBER=0 \
@@ -174,7 +192,7 @@ USE_DISTRIBUTED=True \
 USE_SYSTEM_NCCL=1 \
 BUILD_CAFFE2=False \
 BUILD_TEST=True \
-python3 -m pip wheel --no-build-isolation --no-deps -w dist .
+python3 setup.py bdist_wheel
 
 # 5. Install the built wheel package and its runtime dependencies
 python3 -m pip install --force-reinstall dist/*.whl
