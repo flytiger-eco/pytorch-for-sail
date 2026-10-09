@@ -205,6 +205,53 @@ def dispatch_to_op_implementations_dict(
     return op_implementations_dict[func](fake_mode, func, *args, **kwargs)
 
 
+# USE_PPU modification: eager flex flash attention returns its RNG state on
+# CPU outside CUDA graph capture, unlike the CUDA output and logsumexp tensors.
+if torch.version.ppu is not None:
+
+    @register_op_impl(aten._scaled_dot_product_flex_flash_attention.default)
+    def flex_flash_attention(
+        fake_mode: FakeTensorMode, func: OpOverload, *args: Any, **kwargs: Any
+    ) -> tuple[FakeTensor, FakeTensor, FakeTensor]:
+        _, new_kwargs = _normalize_function_or_error(
+            func, args=args, kwargs=kwargs, normalize_to_only_use_kwargs=True
+        )
+        query_device = new_kwargs["query"].device
+        with in_kernel_invocation_manager(fake_mode):
+            output, logsumexp, rng_state = func(**new_kwargs)
+
+        converter = fake_mode.fake_tensor_converter
+        return (
+            converter.from_meta_and_device(fake_mode, output, query_device),
+            converter.from_meta_and_device(fake_mode, logsumexp, query_device),
+            converter.from_meta_and_device(fake_mode, rng_state, torch.device("cpu")),
+        )
+
+    @register_op_impl(aten._scaled_dot_product_flex_flash_attention_backward.default)
+    def flex_flash_attention_backward(
+        fake_mode: FakeTensorMode, func: OpOverload, *args: Any, **kwargs: Any
+    ) -> tuple[FakeTensor | None, FakeTensor | None, FakeTensor | None]:
+        _, new_kwargs = _normalize_function_or_error(
+            func, args=args, kwargs=kwargs, normalize_to_only_use_kwargs=True
+        )
+        query_device = new_kwargs["query"].device
+        with in_kernel_invocation_manager(fake_mode):
+            grad_query, grad_key, grad_value = func(**new_kwargs)
+
+        converter = fake_mode.fake_tensor_converter
+
+        def wrap_gradient(gradient: torch.Tensor | None) -> FakeTensor | None:
+            if gradient is None:
+                return None
+            return converter.from_meta_and_device(fake_mode, gradient, query_device)
+
+        return (
+            wrap_gradient(grad_query),
+            wrap_gradient(grad_key),
+            wrap_gradient(grad_value),
+        )
+
+
 @register_op_impl(_is_tensor_constructor)
 @register_op_impl([*_like_tensor_constructors])
 def constructors(

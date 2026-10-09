@@ -44,9 +44,84 @@ PyTorch-for-SAIL 基于社区开源 PyTorch 项目开发，面向真武 PPU 硬�
 
 请参考 PyTorch-for-SAIL 用户指南。
 
-> **Elementwise 算子优化**：编译期默认开启（仅对 8.9 架构有效），如不想编译该优化请设置 `USE_ELEMENTWISE_OPT=False`。运行时默认关闭，设置 `PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT=True` 可开启。
->
-> **Flex Flash Attention 后端**：编译期默认开启，如需关闭请设置 `USE_FLEX_FLASH_ATTENTION=False`。运行时默认关闭，在 M890 机器启动 Python 进程前设置 `TORCH_FLEX_FLASH_SDPA_ENABLED=1` 可开启；该变量不适用于 810E。
+---
+
+## 源码编译
+
+如需从源码编译并安装，请确保在 [PyTorch-for-SAIL Docker 镜像](https://www.flytiger-eco.com/download?businessType=DOCKER)内进行编译。
+
+```bash
+# 1. 下载 PyTorch 源码并初始化子模块
+git clone --recursive https://github.com/flytiger-eco/pytorch-for-sail.git -b v2.12.0
+cd pytorch-for-sail
+
+# 如果 clone 时未使用 --recursive，或子模块拉取不完整，请执行：
+git submodule sync
+git submodule update --init --recursive
+
+# 以下命令需在 PyTorch-for-SAIL Docker 容器内执行
+# 2. 配置编译环境
+source /usr/local/PPU_SDK/envsetup.sh
+
+# 默认配置适用于制品版本 v2.2：需要单独安装 PCCL 提供的 NCCL wrapper。
+# 从 https://www.flytiger-eco.com/download?businessType=NCCL 下载 wrapper 安装包，
+# 并按制品版本、CUDA 版本和操作系统选择匹配的包；每个容器只需解压一次。
+tar zxf <匹配的-nccl-wrapper-安装包>.tar.gz -C /usr/local
+source /usr/local/pccl/envsetup.sh
+export NCCL_INCLUDE_DIR="${NCCL_HOME}/include"
+export NCCL_LIB_DIR="${NCCL_HOME}/lib"
+
+# 制品版本 v2.1：NCCL 随 SDK 提供，不需要安装 wrapper；改用下方 SDK 配置替换上方四行。
+# export NCCL_INCLUDE_DIR="${CUDA_SDK}/include"
+# export NCCL_LIB_DIR="${CUDA_SDK}/lib64"
+
+# 安装编译依赖
+pip install -r requirements.txt
+
+# 可选：取消以下变量的注释，以输出用于排查问题的详细编译日志
+# export CUDA_VERBOSE_BUILD=1      # 打印编译 CUDA 源文件的完整命令行
+# export CMAKE_VERBOSE_MAKEFILE=1  # 打印 CMake 生成的每条编译和链接命令
+
+# PPU 工具链特有行为：8.0a 仅表示 SM80，8.9 仅表示 SM89。
+# 当需要启动 SM80 和 SM89 混合编译时，可以使用如下表达方式：
+export TORCH_CUDA_ARCH_LIST="8.0a;8.9"
+# 如需仅编译 SM89，请注释上一行并取消下一行的注释。
+# export TORCH_CUDA_ARCH_LIST="8.9"
+
+# 3. 可选编译选项
+# 默认会将 elementwise 算子优化和 Flex Flash Attention 后端编译进 wheel 包；
+# 编译后，elementwise 算子优化仅在真武 M890 上默认开启，Flex Flash Attention 在运行时默认关闭；开关方式见第 6 步。
+# 如需在编译时去掉 elementwise 算子优化，请设置以下环境变量；
+# export USE_ELEMENTWISE_OPT=False
+# 如需在编译时去掉 Flex Flash Attention 后端，请设置以下环境变量；
+# export USE_FLEX_FLASH_ATTENTION=False
+
+# 4. 编译生成 wheel 安装包。NCCL_INCLUDE_DIR 和 NCCL_LIB_DIR 已由上方版本配置导出。
+PYTORCH_VERSION=2.12.0 \
+PYTORCH_BUILD_VERSION=2.12.0 \
+PYTORCH_BUILD_NUMBER=0 \
+USE_FLASH_ATTENTION=True \
+USE_MEM_EFF_ATTENTION=True \
+USE_NCCL=True \
+USE_DISTRIBUTED=True \
+USE_SYSTEM_NCCL=1 \
+BUILD_CAFFE2=False \
+BUILD_TEST=True \
+python3 setup.py bdist_wheel
+
+# 5. 安装编译生成的 wheel 包
+pip install dist/*.whl
+
+# 6. 可选运行时开关
+# elementwise 算子优化针对部分特殊访存模式提供性能加速，仅在真武 M890 机器上生效并默认开启。
+# 如需在真武 M890 机器上关闭该优化，须在启动 Python 进程前设置以下环境变量；
+# 在 Python 中 import torch 之后再设置不会生效。
+# export PYTORCH_DISABLE_PPU_ELEMENTWISE_OPT=1
+# Flex Flash Attention 为实验特性，默认关闭，仅在真武 M890 机器上生效；
+# 如需开启，须在启动 Python 进程前设置以下环境变量。
+# 编译时已关闭的功能，设置对应变量也不会生效。
+# export PYTORCH_ENABLE_PPU_FLEX_FLASH_ATTENTION=1
+```
 
 ---
 
