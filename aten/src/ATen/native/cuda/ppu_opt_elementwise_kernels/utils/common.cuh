@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <initializer_list>
+#include <type_traits>
 
 // NOTE: no `namespace at::native` wrapper here. Every includer of this file
 // lives in the dispatch chain, which CUDALoops.cuh includes from inside its
@@ -63,4 +64,31 @@ static inline bool is_vector_access_aligned(
     std::initializer_list<int64_t> higher_dim_strides = {}) {
   return is_vector_access_aligned(
       ptr, vector_isa_access_bytes<scalar_t, vt>(), higher_dim_strides);
+}
+
+// Vectorized load of vt contiguous T elements from an already-offset byte
+// pointer (the caller guarantees sizeof(T) * vt alignment, exactly as for a
+// plain aligned_vector dereference). Mirrors upstream MemoryAccess.cuh
+// load_vector<vec_size, bool>: a bool tensor may hold non-canonical bytes
+// (2..255, e.g. produced by view(torch.bool) / from_blob / uint8 reinterpret),
+// and dereferencing such a byte as `bool` is UB that propagates the raw byte
+// into casts and arithmetic (x.int() == 200). So bool is loaded as a uint8_t
+// vector of the same width and each element is normalized with bool(raw),
+// matching c10::load<bool> used by the legacy loops. Every other T keeps the
+// original single aligned_vector dereference, i.e. identical generated code.
+template <typename T, int vt>
+__device__ __forceinline__ at::native::memory::aligned_vector<T, vt>
+ppu_load_vector(const char* ptr) {
+  if constexpr (std::is_same_v<T, bool>) {
+    using raw_vec_t = at::native::memory::aligned_vector<uint8_t, vt>;
+    const raw_vec_t raw = *reinterpret_cast<const raw_vec_t*>(ptr);
+    at::native::memory::aligned_vector<bool, vt> ret;
+#pragma unroll
+    for (int i = 0; i < vt; i++) {
+      ret.val[i] = static_cast<bool>(raw.val[i]);
+    }
+    return ret;
+  } else {
+    return *reinterpret_cast<const at::native::memory::aligned_vector<T, vt>*>(ptr);
+  }
 }
