@@ -52,7 +52,7 @@ while (($#)); do
   esac
 done
 unset FLEX_FLASH_ATTENTION_SO_PATH
-export TORCH_FLEX_FLASH_SDPA_ENABLED=1
+export PYTORCH_ENABLE_PPU_FLEX_FLASH_ATTENTION=1
 CMD=("$PYTHON" "$HERE/bench_attention.py" --config "$CONFIG" --backends flexflash
      --dtypes fp32,bf16,fp16 --device "$DEVICE" --mode performance --check-accuracy --skip-timing
      --timeout "$TIMEOUT" --label flexflash_correctness_check)

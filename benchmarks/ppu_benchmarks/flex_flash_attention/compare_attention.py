@@ -336,9 +336,9 @@ def build_h200_comparisons(baseline, candidate, tie_pct=3.0):
     available = {r["variant"] for r in candidate["records"]}
     variants = [v for v in ("flexflash", "flex") if v in available]
     if not variants:
-        raise ValueError("M890 results contain neither flexflash nor flex")
+        raise ValueError("Zhenwu M890 results contain neither flexflash nor flex")
     for variant in variants:
-        validate_device_result(candidate, variant, "M890")
+        validate_device_result(candidate, variant, "890")
     return [compare(baseline, candidate, "flex", variant, metric, timer, tie_pct)
             for variant in variants for metric in METRICS for timer in TIMERS]
 
@@ -358,9 +358,9 @@ def markdown_report(results, baseline, candidate, baseline_path, candidate_path)
 
     lines = ["# Attention Cross-Device Performance Comparison", "", "## 1. Comparison Methodology", "",
              f"- H200 baseline JSON: `{cell(baseline_path)}`",
-             f"- M890 candidate JSON: `{cell(candidate_path)}`",
-             "- The baseline is H200 FlexAttention; the candidate is the corresponding M890 backend.",
-             "- speedup = H200 latency / M890 latency; values greater than 1 mean M890 is faster.",
+             f"- Zhenwu M890 candidate JSON: `{cell(candidate_path)}`",
+             "- The baseline is H200 FlexAttention; the candidate is the corresponding Zhenwu M890 backend.",
+             "- speedup = H200 latency / Zhenwu M890 latency; values greater than 1 mean Zhenwu M890 is faster.",
              "- Collect exactly 6 samples per case and direction, sort by latency, discard the fastest 2 and slowest 2, and average the middle 2 before computing ratios (equivalent to the six-sample median).",
              "- Retain all raw samples, medians, untrimmed means, and discarded values; overall speedup is the equally weighted geometric mean across cases.",
              "- Report three directions and two timers separately; summing case latencies does not measure end-to-end training gains.",
@@ -374,7 +374,8 @@ def markdown_report(results, baseline, candidate, baseline_path, candidate_path)
         lines.append("")
 
     variants = sorted({r["candidate"]["variant"] for r in results})
-    for label, doc, selected in (("H200", baseline, ["flex"]), ("M890", candidate, variants)):
+    for label, expected_device, doc, selected in (("H200", "H200", baseline, ["flex"]),
+                                                  ("Zhenwu M890", "890", candidate, variants)):
         lines.extend([f"### {label}", "", f"- run_id: `{cell(doc.get('run_id'))}`; label: `{cell(doc.get('label'))}`",
                       f"- Collection completed: {doc.get('completed') is True}; sampling configuration: `{cell(canonical_json(doc.get('config', {})))}`"])
         for variant in selected:
@@ -382,7 +383,7 @@ def markdown_report(results, baseline, candidate, baseline_path, candidate_path)
             envs = [r.get("environment") or {} for record in records.values() for r in record.get("rounds", [])]
             settings = sorted({(str(e.get("torch")), str(e.get("triton")), str(e.get("driver_version")))
                                for e in envs if e})
-            devices = validate_device_result(doc, variant, label)
+            devices = validate_device_result(doc, variant, expected_device)
             lines.extend([f"- {variant} actual devices (name, UUID): `{cell(devices)}`",
                           f"- {variant} software versions (torch, triton, driver): `{cell(settings)}`",
                           f"- {variant} case statuses: `{cell(dict(Counter(r['status'] for r in records.values())))}`"])
@@ -393,7 +394,7 @@ def markdown_report(results, baseline, candidate, baseline_path, candidate_path)
         lines.append("")
 
     lines.extend(["## 3. Overall Performance", ""])
-    table(["M890 backend", "Direction", "Timer", "Valid/union cases", "Geometric mean speedup", "Median speedup", "p10 / p90", "Faster/tie/slower"],
+    table(["Zhenwu M890 backend", "Direction", "Timer", "Valid/union cases", "Geometric mean speedup", "Median speedup", "p10 / p90", "Faster/tie/slower"],
           [(r["candidate"]["variant"], r["metric"], r["timer"],
             f"{r['summary']['paired_count']}/{r['coverage']['union_cases']}",
             number(r["summary"].get("geomean_speedup")), number(r["summary"].get("median_speedup")),
@@ -405,7 +406,7 @@ def markdown_report(results, baseline, candidate, baseline_path, candidate_path)
     for result in results:
         if result["metric"] != "fwd_bwd":
             continue
-        lines.extend([f"### M890 {result['candidate']['variant']} / {result['timer']}", ""])
+        lines.extend([f"### Zhenwu M890 {result['candidate']['variant']} / {result['timer']}", ""])
         for field in ("dtype", "mask", "d", "layout"):
             table([field, "Valid cases", "Geometric mean speedup", "Faster/tie/slower"],
                   [(key, group["paired_count"], number(group["geomean_speedup"]),
@@ -416,14 +417,14 @@ def markdown_report(results, baseline, candidate, baseline_path, candidate_path)
     for result in results:
         if (result["metric"], result["timer"]) != ("fwd_bwd", "cuda_event"):
             continue
-        for title, predicate, reverse in (("M890 faster", lambda p: p["latency_change_pct"] < -result["tie_pct"], True),
-                                           ("M890 slower", lambda p: p["latency_change_pct"] > result["tie_pct"], False)):
+        for title, predicate, reverse in (("Zhenwu M890 faster", lambda p: p["latency_change_pct"] < -result["tie_pct"], True),
+                                           ("Zhenwu M890 slower", lambda p: p["latency_change_pct"] > result["tie_pct"], False)):
             selected = sorted(filter(predicate, result["pairs"]), key=lambda p: p["speedup"], reverse=reverse)[:5]
             lines.extend([f"### {result['candidate']['variant']}: {title}, up to 5 cases", ""])
             if not selected:
                 lines.extend(["No valid cases meet the threshold.", ""])
                 continue
-            table(["case_id", "dtype / mask", "B,Hq,Hkv,Sq,Sk,D", "layout", "H200 ms", "M890 ms", "Speedup", "H200/M890 CV"],
+            table(["case_id", "dtype / mask", "B,Hq,Hkv,Sq,Sk,D", "layout", "H200 ms", "Zhenwu M890 ms", "Speedup", "H200/Zhenwu M890 CV"],
                   [(p["case_id"][:16], f"{p['case']['dtype']} / {p['case']['mask']}",
                     ",".join(str(p["case"][k]) for k in ("b", "hq", "hkv", "sq", "sk", "d")), p["case"]["layout"],
                     number(p["baseline_ms"]), number(p["candidate_ms"]), number(p["speedup"]),
@@ -431,12 +432,12 @@ def markdown_report(results, baseline, candidate, baseline_path, candidate_path)
 
     lines.extend(["## 6. Coverage and Exclusion Reasons", "",
                   "Failed or unsupported cases, input hash mismatches, and protocol mismatches are excluded from speedup calculations; exclusion does not imply a performance regression.", ""])
-    table(["M890 backend", "Direction", "Timer", "Exclusion reasons and status counts"],
+    table(["Zhenwu M890 backend", "Direction", "Timer", "Exclusion reasons and status counts"],
           [(r["candidate"]["variant"], r["metric"], r["timer"],
             canonical_json({k: v for k, v in r["coverage"].items()
                             if k not in ("union_cases", "common_cases", "baseline_cases", "candidate_cases", "paired")}))
            for r in results])
-    for label, doc in (("H200", baseline), ("M890", candidate)):
+    for label, doc in (("H200", baseline), ("Zhenwu M890", candidate)):
         errors = Counter()
         for record in doc["records"]:
             if record["variant"] not in (["flex"] if label == "H200" else variants):
@@ -457,20 +458,20 @@ def markdown_report(results, baseline, candidate, baseline_path, candidate_path)
         n = result["summary"]["paired_count"]
         variant = result["candidate"]["variant"]
         if n:
-            lines.append(f"- M890 {variant}: across {n}/{result['coverage']['union_cases']} valid cases, "
-                         f"the geometric mean H200/M890 latency ratio is {result['summary']['geomean_speedup']:.4f}. "
+            lines.append(f"- Zhenwu M890 {variant}: across {n}/{result['coverage']['union_cases']} valid cases, "
+                         f"the geometric mean H200/Zhenwu M890 latency ratio is {result['summary']['geomean_speedup']:.4f}. "
                          "This conclusion applies only to cases supported by both sides and timed successfully.")
         else:
-            lines.append(f"- M890 {variant}: no valid pairs; no performance conclusion can be drawn.")
+            lines.append(f"- Zhenwu M890 {variant}: no valid pairs; no performance conclusion can be drawn.")
     if not baseline.get("completed") or not candidate.get("completed"):
         lines.append("- Warning: at least one collection is incomplete; this report does not cover the full matrix.")
     for key in ("rounds", "samples_per_round", "warmup", "target_ms"):
         a, b = baseline.get("config", {}).get(key), candidate.get("config", {}).get(key)
         if a != b:
-            lines.append(f"- Warning: {key} mismatch, H200={a}, M890={b}; rerun with identical sampling settings before drawing formal conclusions.")
+            lines.append(f"- Warning: {key} mismatch, H200={a}, Zhenwu M890={b}; rerun with identical sampling settings before drawing formal conclusions.")
     if any(r["excluded"] for r in results):
         lines.append("- Excluded cases exist; speedups on the valid subset do not imply that every case is faster.")
-    for label, doc in (("H200", baseline), ("M890", candidate)):
+    for label, doc in (("H200", baseline), ("Zhenwu M890", candidate)):
         statuses = Counter(accuracy_status(r, required=doc.get("config", {}).get("check_accuracy", False))
                            for r in doc["records"])
         lines.append(f"- {label} numerical accuracy statuses: `{cell(dict(statuses))}`. "
@@ -520,7 +521,7 @@ def validate_golden(document, cases=None, protocol=None):
         raise ValueError("Golden timing protocol does not match the current method")
     if cases is not None and set(records) != {fingerprint(c) for c in cases}:
         raise ValueError("Golden case list differs from the current configuration; comparing only the common subset is not allowed")
-    validate_device_result(document, "flexflash", "M890")
+    validate_device_result(document, "flexflash", "890")
     for case_id, record in records.items():
         if record.get("status") != "ok" or record.get("expected_rounds") != 1:
             raise ValueError(f"Incomplete or failed golden case: {case_id}")
@@ -556,7 +557,7 @@ def check_golden(baseline, candidate, require_accuracy=False):
             issues.append("Current collection has incomplete backend coverage or case counts")
         if not candidate.get("run_id") or candidate.get("run_id") == baseline.get("run_id"):
             issues.append("Use results from an independent current run; comparing golden data against itself is not allowed")
-        validate_device_result(candidate, "flexflash", "M890")
+        validate_device_result(candidate, "flexflash", "890")
         for key in ("rounds", "samples_per_round", "warmup", "target_ms", "protocol"):
             if config.get(key) is None or config.get(key) != baseline.get("config", {}).get(key):
                 issues.append(f"Current sampling setting differs from golden: {key}")
@@ -677,7 +678,7 @@ def main():
     parser.add_argument("--require-accuracy", action="store_true", help="Require complete output/gradient accuracy checks in the golden candidate")
     parser.add_argument("--threshold-pct", type=float, default=1.0, help="Repeatability threshold; default: 1%")
     report_mode.add_argument("--h200-report", action="store_true",
-                        help="baseline=H200, candidate=M890; all directions/timers; output must be a new report directory")
+                        help="baseline=H200, candidate=Zhenwu M890; all directions/timers; output must be a new report directory")
     parser.add_argument("--metric", choices=METRICS, default="fwd_bwd")
     parser.add_argument("--timer", choices=TIMERS, default="cuda_event")
     parser.add_argument("--tie-pct", type=float, default=3.0)
