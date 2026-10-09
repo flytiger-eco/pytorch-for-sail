@@ -153,10 +153,6 @@ export NCCL_LIB_DIR="${NCCL_HOME}/lib"
 # export NCCL_INCLUDE_DIR="${CUDA_SDK}/include"
 # export NCCL_LIB_DIR="${CUDA_SDK}/lib64"
 
-# 在编译前确认头文件和动态库均存在。
-test -f "${NCCL_INCLUDE_DIR}/nccl.h"
-test -f "${NCCL_LIB_DIR}/libnccl.so"
-
 # 安装编译依赖
 pip install -r requirements.txt
 

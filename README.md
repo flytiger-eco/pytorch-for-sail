@@ -157,10 +157,6 @@ export NCCL_LIB_DIR="${NCCL_HOME}/lib"
 # export NCCL_INCLUDE_DIR="${CUDA_SDK}/include"
 # export NCCL_LIB_DIR="${CUDA_SDK}/lib64"
 
-# Confirm that both the header and shared library are available before building.
-test -f "${NCCL_INCLUDE_DIR}/nccl.h"
-test -f "${NCCL_LIB_DIR}/libnccl.so"
-
 # Install build dependencies
 pip install -r requirements.txt
 
