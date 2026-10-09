@@ -66,6 +66,18 @@ git submodule update --init --recursive
 # 2. 配置编译环境
 source /usr/local/PPU_SDK/envsetup.sh
 
+# 默认配置适用于制品版本 v2.2：需要单独安装 PCCL 提供的 NCCL wrapper。
+# 从 https://www.flytiger-eco.com/download?businessType=NCCL 下载 wrapper 安装包，
+# 并按制品版本、CUDA 版本和操作系统选择匹配的包；每个容器只需解压一次。
+tar zxf <匹配的-nccl-wrapper-安装包>.tar.gz -C /usr/local
+source /usr/local/pccl/envsetup.sh
+export NCCL_INCLUDE_DIR="${NCCL_HOME}/include"
+export NCCL_LIB_DIR="${NCCL_HOME}/lib"
+
+# 制品版本 v2.1：NCCL 随 SDK 提供，不需要安装 wrapper；改用下方 SDK 配置替换上方四行。
+# export NCCL_INCLUDE_DIR="${CUDA_SDK}/include"
+# export NCCL_LIB_DIR="${CUDA_SDK}/lib64"
+
 # 安装编译依赖
 pip install -r requirements.txt
 
@@ -73,26 +85,24 @@ pip install -r requirements.txt
 # export CUDA_VERBOSE_BUILD=1      # 打印编译 CUDA 源文件的完整命令行
 # export CMAKE_VERBOSE_MAKEFILE=1  # 打印 CMake 生成的每条编译和链接命令
 
-# PPU 工具链特有行为：8.0 会启用 SM80 和 SM89 混合编译。
-# 在标准 CUDA 语义中，8.0 通常仅表示 SM80。
-export TORCH_CUDA_ARCH_LIST="8.0"
+# PPU 工具链特有行为：8.0a 仅表示 SM80，8.9 仅表示 SM89。
+# 当需要启动 SM80 和 SM89 混合编译时，可以使用如下表达方式：
+export TORCH_CUDA_ARCH_LIST="8.0a;8.9"
 # 如需仅编译 SM89，请注释上一行并取消下一行的注释。
 # export TORCH_CUDA_ARCH_LIST="8.9"
 
-# 3. 编译生成 wheel 安装包
 # 编译期：elementwise 算子优化默认编译，该优化仅对 8.9 架构有效；如不想编译该优化，请取消下一行的注释。
+# 制品版本 v2.2 默认开启以下编译选项：
+# - USE_ELEMENTWISE_OPT：elementwise 算子优化，仅对 8.9 架构有效。
+# - USE_FLEX_FLASH_ATTENTION：Flex Flash Attention 编译支持。
+# 如不希望编译任一功能，请在执行下方构建命令前显式关闭：
 # export USE_ELEMENTWISE_OPT=False
+# export USE_FLEX_FLASH_ATTENTION=False
 # 运行时：elementwise 算子优化默认关闭，请在运行时设置 PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT=True 开启优化。
-
-# 编译选项 USE_FLEX_FLASH_ATTENTION 默认开启；如需关闭，请在下方 wheel
-# 编译命令中设置 USE_FLEX_FLASH_ATTENTION=False。
-# 运行时，在启动 Python 进程前执行以下命令；未设置时该后端默认关闭。
-# Flex Flash Attention 后端仅适用于 890P 机器，在 810E 机器上设置该变量不会生效：
+# Flex Flash Attention 后端也默认关闭；仅适用于 890P，在启动 Python 进程前设置：
 # export TORCH_FLEX_FLASH_SDPA_ENABLED=1
 
-# 4. 使用配置的构建后端编译生成 wheel 安装包
-NCCL_INCLUDE_DIR=/usr/local/PPU_SDK/CUDA_SDK/include \
-NCCL_LIB_DIR=/usr/local/PPU_SDK/CUDA_SDK/lib64 \
+# 3. 编译生成 wheel 安装包。NCCL_INCLUDE_DIR 和 NCCL_LIB_DIR 已由上方版本配置导出。
 PYTORCH_VERSION=2.13.0 \
 PYTORCH_BUILD_VERSION=2.13.0 \
 PYTORCH_BUILD_NUMBER=0 \
