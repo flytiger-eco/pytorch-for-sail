@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_SDK_URL="https://pkg.flytiger-eco.com/artifactory/generic-local/CUDA_SDK/v2.1.1/PPU_SDK_cuda-13.0.0-ubuntu2404-2.1.1-a5c56e.tar.gz"
+DEFAULT_SDK_URL="https://pkg.flytiger-eco.com/artifactory/generic-local/CUDA_SDK/v2.2.0/PPU_SDK_cuda-13.0.0-ubuntu2404-2.2.0-663c22.tar.gz"
 SDK_URL="${SDK_URL:-$DEFAULT_SDK_URL}"
 SDK_INSTALL_DIR="${SDK_INSTALL_DIR:-/usr/local}"
 ENVSETUP="$SDK_INSTALL_DIR/PPU_SDK/envsetup.sh"

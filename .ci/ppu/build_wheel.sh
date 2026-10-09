@@ -16,6 +16,8 @@ if [[ -f "$WHL_STAMP" && "${FORCE_REBUILD:-0}" != "1" ]]; then
 fi
 
 source "$(dirname "$0")/sdk_env.sh"
+# PPU SDK 2.2 起 NCCL 不再随镜像内置，需单独安装
+source "$(dirname "$0")/nccl_env.sh"
 source "$(dirname "$0")/ccache_env.sh"
 
 cd "$REPO_DIR"
@@ -59,18 +61,20 @@ if [[ "${MEM_GB:-0}" -gt 0 ]]; then
 fi
 export MAX_JOBS
 PPU_LINK_JOBS="${PPU_LINK_JOBS:-2}"
-export CMAKE_JOB_POOLS="compile=${MAX_JOBS};link=${PPU_LINK_JOBS}"
-export CMAKE_JOB_POOL_COMPILE=compile
+export CMAKE_JOB_POOLS="link=${PPU_LINK_JOBS}"
 export CMAKE_JOB_POOL_LINK=link
 
 TORCH_VERSION=$(sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/' version.txt)
 echo "[build_wheel] TORCH_VERSION=${TORCH_VERSION} MAX_JOBS=${MAX_JOBS} 链接并发=${PPU_LINK_JOBS} 内存=${MEM_GB}GB"
 
+echo "[build_wheel] 每次编译前清理旧 build 目录"
+rm -rf "$REPO_DIR/build"
+
 BUILD_START=$(date +%s)
 
 env \
-    NCCL_INCLUDE_DIR="$SDK_INSTALL_DIR/PPU_SDK/CUDA_SDK/include" \
-    NCCL_LIB_DIR="$SDK_INSTALL_DIR/PPU_SDK/CUDA_SDK/lib64" \
+    NCCL_INCLUDE_DIR="${NCCL_HOME}/include" \
+    NCCL_LIB_DIR="${NCCL_HOME}/lib" \
     PYTORCH_VERSION="$TORCH_VERSION" \
     PYTORCH_BUILD_VERSION="$TORCH_VERSION" \
     PYTORCH_BUILD_NUMBER=0 \

@@ -25,6 +25,7 @@ echo "[model-perf] 源码目录: $(pwd)"
 echo "[model-perf] 配置: BENCH_CONFIG=${BENCH_CONFIG} 分片=${SHARD_NUMBER}/${NUM_TEST_SHARDS}"
 
 source .ci/ppu/sdk_env.sh
+source .ci/ppu/nccl_env.sh
 bash .ci/ppu/install_wheel.sh
 bash .ci/ppu/install_triton.sh
 

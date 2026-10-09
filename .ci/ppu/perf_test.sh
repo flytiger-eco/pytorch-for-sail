@@ -7,6 +7,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 echo "[perf] 源码目录: $(pwd)"
 source .ci/ppu/sdk_env.sh
+source .ci/ppu/nccl_env.sh
 bash .ci/ppu/install_wheel.sh
 bash .ci/ppu/install_triton.sh
 

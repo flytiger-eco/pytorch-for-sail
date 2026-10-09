@@ -21,6 +21,7 @@ cd "$REPO_ROOT"
 echo "[full-ut] 源码目录: $(pwd)"
 echo "[full-ut] 分片=${SHARD_NUMBER}/${NUM_TEST_SHARDS}（单卡 pod）"
 source .ci/ppu/sdk_env.sh
+source .ci/ppu/nccl_env.sh
 bash .ci/ppu/install_wheel.sh
 
 bash .ci/ppu/install_triton.sh
