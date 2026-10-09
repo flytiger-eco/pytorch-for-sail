@@ -4,6 +4,7 @@ set -euo pipefail
 export SDK_INSTALL_DIR="${SDK_INSTALL_DIR:-/usr/local}"
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source .ci/ppu/sdk_env.sh
+source .ci/ppu/nccl_env.sh
 bash .ci/ppu/install_wheel.sh
 bash .ci/ppu/install_triton.sh
 
