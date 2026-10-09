@@ -15,13 +15,13 @@ permissions:
   actions: read
 
 env:
-  IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
+  IMAGE: pkg.flytiger-eco.com/docker_release/ppu:sdk2.2.0-cuda13.0-ubuntu24-py312-20261001
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   SOURCE_DIR: /workspace/source
   NODE_SELECTOR: "board-type=ZW-M890P"
   PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
-  TRITON_VERSION: "3.6.0"
+  TRITON_VERSION: "3.7.0"
   WHEEL_DIR_REL: .ci/ppu/wheelhouse
 
 jobs:

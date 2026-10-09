@@ -36,13 +36,13 @@ permissions:
   actions: read
 
 env:
-  IMAGE: pkg.flytiger-eco.com/docker_release/ppu:v2.1.1-cuda13.0-ubuntu24-py312
+  IMAGE: pkg.flytiger-eco.com/docker_release/ppu:sdk2.2.0-cuda13.0-ubuntu24-py312-20261001
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   SOURCE_DIR: /workspace/source
   NODE_SELECTOR: "board-type=OAM-810E"
   PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
-  TRITON_VERSION: "3.6.0"
+  TRITON_VERSION: "3.7.0"
   WHEEL_DIR_REL: .ci/ppu/wheelhouse
 
 jobs:
@@ -107,8 +107,6 @@ jobs:
         env:
           WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
         run: |
-          # v4 是边下边解压的，中途断掉可能留下一个截断的 whl；不清掉的话重试后
-          # 「校验 whl」可能数到一个坏包，等到 pod 里 pip install 才炸（那时已占着 PPU 卡）。
           rm -rf "${WHEEL_DIR}"
           sleep 30
 
