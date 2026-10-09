@@ -1,3 +1,4 @@
+#include "../../utils/common.cuh"
 
 // arity-2 with one broadcast input: data1 is always the contiguous operand and
 // data2 always the broadcast one, `swap_tensor` tells which of them is the
@@ -33,19 +34,30 @@ __global__ void elementwise_kernel_1_2_broadcast_in2_dim0(
   if (remaining < block_work) {
     const cont_t* in = reinterpret_cast<const cont_t*>(data1) + base;
     res_t* out = reinterpret_cast<res_t*>(data0) + base;
-    int idx = static_cast<int>(threadIdx.x);
+    // Tail block: issue every predicated load first, then compute + store.
+    // Interleaving load/store per element lets the (possibly aliasing) store
+    // serialize the next load, which made the tail block slower than legacy
+    // (R2 fix_bool_bug quick_analysis/b2: eq N=1000 4.8us vs legacy 4.0us,
+    // loads-first 2.6us). c10::load normalizes Bool bytes to 0/1.
+    cont_t args[tws];
 #pragma unroll
     for (int i = 0; i < tws; i++) {
+      const int idx = static_cast<int>(threadIdx.x) + i * nt;
       if (idx < remaining) {
-        const cont_t ld_1 = c10::load(in + idx);
+        args[i] = c10::load(in + idx);
+      }
+    }
+#pragma unroll
+    for (int i = 0; i < tws; i++) {
+      const int idx = static_cast<int>(threadIdx.x) + i * nt;
+      if (idx < remaining) {
         // if constexpr, not a plain if: for functors whose two arguments have
         // different types the discarded call must not even be instantiated.
         if constexpr (swap_tensor) {
-          out[idx] = f(ld_2, ld_1);
+          out[idx] = f(ld_2, args[i]);
         } else {
-          out[idx] = f(ld_1, ld_2);
+          out[idx] = f(args[i], ld_2);
         }
-        idx += nt;
       }
     }
   } else {
@@ -61,7 +73,9 @@ __global__ void elementwise_kernel_1_2_broadcast_in2_dim0(
     cont_t args[tws];
 #pragma unroll
     for (int j = 0; j < loop_size; j++) {
-      const LoadT v = in[threadIdx.x + j * nt];
+      // ppu_load_vector normalizes bool bytes to 0/1 (see utils/common.cuh).
+      const LoadT v = ppu_load_vector<cont_t, vt>(
+          reinterpret_cast<const char*>(in + threadIdx.x + j * nt));
 #pragma unroll
       for (int k = 0; k < vt; k++) {
         args[vt * j + k] = v.val[k];
