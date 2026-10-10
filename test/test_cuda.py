@@ -6010,15 +6010,32 @@ class TestMemPool(TestCase):
             # (1 MB) that got packed into the existing 2 MB buffer
             self.assertEqual(len(pool.snapshot()), 1)
 
-            out_2 = torch.randn(nelem_1mb, device="cuda")
+            if hasattr(torch.version, "ppu"):
+                # PPU uses an 8 MB minimum segment. Allocate enough additional
+                # 1 MB tensors to exceed the first segment's capacity.
+                segment_size = pool.snapshot()[0]["total_size"]
+                allocation_size = nelem_1mb * torch.empty(
+                    (), dtype=torch.float32
+                ).element_size()
+                additional_allocations = (
+                    (segment_size - 2 * allocation_size) // allocation_size + 1
+                )
+                pool_outputs = [
+                    torch.randn(nelem_1mb, device="cuda")
+                    for _ in range(additional_allocations)
+                ]
+            else:
+                out_2 = torch.randn(nelem_1mb, device="cuda")
+                pool_outputs = [out_2]
 
             # pool now should have 2 segments since the CUDACachingAllocator had
-            # to make a new 2 MB buffer to accommodate out_2
+            # to make a new buffer to accommodate the additional allocation(s)
             self.assertEqual(len(pool.snapshot()), 2)
 
         self.assertEqual(len(pool.snapshot()), 2)
 
-        del out_0, out_1, out_2
+        del out_0, out_1
+        del pool_outputs
 
         # pool's destructor calls emptyCache()
         del pool
