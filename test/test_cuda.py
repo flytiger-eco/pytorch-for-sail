@@ -4642,6 +4642,16 @@ class TestCudaMallocAsync(TestCase):
                 "expandable_segments:True,max_split_size_mb:40"
             )
             b = alloc(40)
+            if hasattr(torch.version, "ppu"):
+                # PPU maps expandable large segments in 32 MB pages, so a 40 MB
+                # allocation reserves a 64 MB segment. Allow one more 40 MB
+                # allocation based on the actual reserved size.
+                total_allowed = torch.cuda.memory_reserved() + 40 * mb
+                fraction_allowed = total_allowed / all_memory
+                self.assertEqual(
+                    int(round(fraction_allowed * all_memory)), total_allowed
+                )
+                torch.cuda.memory.set_per_process_memory_fraction(fraction_allowed)
             torch.cuda.memory._set_allocator_settings(
                 "expandable_segments:False,max_split_size_mb:40"
             )
