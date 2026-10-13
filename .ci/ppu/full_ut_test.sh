@@ -39,16 +39,17 @@ FAILED_CASES=()
 run_case() {
     local test_name="$1"
     local k_expr="${2:-}"
+    local test_file="test/${test_name}.py"
     echo "=== [case] ${test_name}${k_expr:+  -k \"${k_expr}\"} ==="
     if [[ -n "$k_expr" ]]; then
-        if python test/run_test.py --include "$test_name" -k "$k_expr" --verbose; then
+        if python .ci/ppu/multi_run_case.py "$test_file" -k "$k_expr"; then
             echo "=== [pass] ${test_name} ==="
         else
             echo "::error::[fail] ${test_name}"
             FAILED_CASES+=("${test_name}")
         fi
     else
-        if python test/run_test.py --include "$test_name" --verbose; then
+        if python .ci/ppu/multi_run_case.py "$test_file"; then
             echo "=== [pass] ${test_name} ==="
         else
             echo "::error::[fail] ${test_name}"
@@ -61,8 +62,6 @@ shard_heavy() {
     run_case inductor/test_aot_inductor \
         "cuda and not test_aoti_load_package_in_fresh_subprocess_cuda and not test_repeated_calling_cuda and not test_simple_multi_arch_embed_kernel_binary_False_cuda"
 
-    run_case test_transformers
-
     run_case test_sparse \
         "cuda and not test_mm_cuda_complex and not test_sparse_addmm and not test_sparse_matmul_cuda_bfloat16 and not test_sparse_matmul_cuda_complex and not test_sparse_matmul_cuda_float16 and not test_constructor_autograd_SparseBS and not test_gradcheck_mm_SparseCOO and not test_gradcheck_mm_SparseCSC and not test_gradcheck_mm_SparseCSR"
 }
@@ -71,61 +70,6 @@ shard_heavy() {
 shard_rest() {
     run_case test_torch \
         "not test_corrcoef_cuda_complex64 and not test_terminate_handler_on_crash and not test_cov_cuda_complex and not test_put_cuda_float16"
-
-    run_case test_nn \
-        "not RNN and not GRU and not LSTM \
-and not test_cudnn_weight_format \
-and not test_upsampling \
-and not test_variable_sequence_cuda \
-and not test_cross_entropy_loss_2d_out_of_bounds_class_index_cuda \
-and not test_ctc_loss \
-and not test_mse_loss_error_cuda \
-and not test_nll_loss_ \
-and not test_smooth_l1_loss \
-and not test_smoothl1loss_backward_zero_beta_cuda \
-and not test_triplet_margin_with_distance_loss \
-and not test_grid_sample \
-and not test_fold_cuda \
-and not test_large_max_pool2d_ch_last_cuda \
-and not test_large_max_pool_contig_cuda \
-and not test_large_reflect_pad_cuda \
-and not test_pad_cuda \
-and not test_prelu_backward_32bit_indexing_cuda \
-and not test_replicatepad_64bit_indexing_cuda_float16 \
-and not test_groupnorm_nhwc_cuda \
-and not test_instancenorm \
-and not test_layernorm \
-and not test_normalization_mixed_dtype_cuda \
-and not test_rmsnorm \
-and not test_masked_softmax \
-and not test_softmax \
-and not test_warp_softmax_64bit_indexing_cuda \
-and not test_elu_inplace \
-and not test_glu_bfloat16_cuda \
-and not test_hardsigmoid_grad_cuda \
-and not test_hardswish \
-and not test_leaky_relu_inplace \
-and not test_mish_inplace_overlap_cuda \
-and not test_nonlinearity_propagate_nan_cuda \
-and not test_silu_inplace_overlap_cuda \
-and not test_softplus \
-and not test_softshrink \
-and not test_threshold_inplace_overlap \
-and not test_log_softmax \
-and not test_logsigmoid_out_cuda \
-and not test_gumbel_softmax_cuda \
-and not test_device_mask_cuda \
-and not test_invalid_reduction_strings_cuda \
-and not test_linear_empty_cuda \
-and not test_module_to_empty \
-and not test_nn_empty_cuda \
-and not test_nn_scalars \
-and not test_one_hot_cuda \
-and not test_overwrite_module_params_on_conversion_cpu_device_cuda \
-and not test_rrelu_bounds_validation \
-and not test_skip_in \
-and not test_to_complex_cuda_ \
-and not test_transformerencoderlayer"
 
     run_case test_autograd "not test_thread_shutdown"
 

@@ -51,15 +51,43 @@ and not test_triton_template_generated_code_caching \
 and not test_triton_template_generated_code_caching_bmm \
 and not test_triton_template_generated_code_caching_mm_plus_mm"
 
-python test/run_test.py \
-    --include \
-        test_matmul_cuda \
-        test_scaled_matmul_cuda \
-        nn/attention/test_open_registry \
-        inductor/test_flex_flash \
-        inductor/test_nv_universal_gemm \
-        inductor/test_max_autotune \
-    -k "$K_SKIP_CASES" \
-    --verbose
+PASSED_CASES=()
+FAILED_CASES=()
+run_case() {
+    local test_name="$1"
+    echo "=== [case] ${test_name} ==="
+    if python test/run_test.py \
+        --include "${test_name}" \
+        -k "$K_SKIP_CASES" \
+        --verbose; then
+        echo "=== [pass] ${test_name} ==="
+        PASSED_CASES+=("${test_name}")
+    else
+        echo "::error::[fail] ${test_name}"
+        FAILED_CASES+=("${test_name}")
+    fi
+}
 
-echo "[smoke] 完成"
+run_case test_matmul_cuda
+run_case test_scaled_matmul_cuda
+run_case nn/attention/test_open_registry
+run_case inductor/test_flex_flash
+run_case inductor/test_nv_universal_gemm
+run_case inductor/test_max_autotune
+
+total=$(( ${#PASSED_CASES[@]} + ${#FAILED_CASES[@]} ))
+echo "=== 冒烟测试汇总（共 ${total} 个文件：通过 ${#PASSED_CASES[@]}，失败 ${#FAILED_CASES[@]}）==="
+if [ "${#PASSED_CASES[@]}" -ne 0 ]; then
+    for case_label in "${PASSED_CASES[@]}"; do
+        echo "  [pass] ${case_label}"
+    done
+fi
+if [ "${#FAILED_CASES[@]}" -ne 0 ]; then
+    for case_label in "${FAILED_CASES[@]}"; do
+        echo "  [fail] ${case_label}"
+    done
+    echo "::error::[smoke] ${#FAILED_CASES[@]} 个测试文件失败，详见上方各 [case] 段落的日志"
+    exit 1
+fi
+
+echo "[smoke] 完成，全部通过"
