@@ -199,7 +199,7 @@ bool CUDA_tensor_histogram(
     return false;
   }
 
-  // Zhenwu 810 and 810E report CUDA compatibility version 8.0. For this
+  // Zhenwu 810 and Zhenwu 810E report CUDA compatibility version 8.0. For this
   // shared-memory histogram, the compiler lowers atomic updates through a TSM
   // CAS patch that allocates additional static TSM per block. Static TSM and
   // dynamic shared memory share the kernel launch resource budget, so reserve

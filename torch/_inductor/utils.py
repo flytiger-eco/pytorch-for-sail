@@ -1949,7 +1949,7 @@ def is_big_gpu(index_or_device: int | torch.device = 0) -> bool:
     min_sms = 16 if device.type == "xpu" else 68  # 3080
     if torch.version.ppu and torch.cuda.is_available():
         compute_cap = torch.cuda.get_device_capability()
-        # 810E, sm80
+        # Zhenwu 810E, sm80
         if compute_cap == (8, 0):
             min_sms = 64
     avail_sms = prop.multi_processor_count
