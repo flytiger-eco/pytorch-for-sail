@@ -512,6 +512,12 @@ int64_t _fused_sdp_choice_meta(
   return static_cast<int64_t>(sdp::SDPBackend::math);
 }
 namespace {
+inline bool should_print_sdpa_params() {
+  static const bool enabled =
+      std::getenv("PPU_SDPA_PRINT_PARAMS") != nullptr;
+  return enabled;
+}
+
 inline std::string print_tensor_info(const Tensor& t, std::string msg)
 {
     std::vector<int64_t> shape(t.sizes().begin(), t.sizes().end());
@@ -554,36 +560,27 @@ inline void print_sdpa_params(
     double dropout_p,
     bool is_causal,
     std::optional<double> scale) {
+  if (!should_print_sdpa_params()) return;
   // print sdpa params
-  char *pEnv_perf = std::getenv("PPU_SDPA_PRINT_PARAMS");
-  if (pEnv_perf) {
-      std::string sdpa_params = "SDPA params: ";
-      // std::cout << "SDPA params: ";
-      if (!query_.is_nested())
-          sdpa_params += print_tensor_info(query_, "Q:");
-      else
-          // std::cout << "Q is nested tensor. " << std::endl;
-          sdpa_params += "Q is nested tensor. ";
-      if (!key.is_nested())
-          sdpa_params += print_tensor_info(key, "K:");
-      else
-          // std::cout << "K is nested tensor. " << std::endl;
-          sdpa_params += "K is nested tensor. ";
-      if (!value.is_nested())
-          sdpa_params += print_tensor_info(value, "V:");
-      else
-          // std::cout << "V is nested tensor. " << std::endl;
-          sdpa_params += "V is nested tensor. ";
-      if (attn_mask_.has_value())
-          sdpa_params += print_tensor_info(attn_mask_.value(), "attn_mask:");
-      else
-          // std::cout << "attn_mask:0";
-          sdpa_params += "attn_mask:0";
-      sdpa_params += ", dropout:" + std::to_string(dropout_p) + ", is_causal:" + std::to_string(is_causal) + ", scale:" + std::to_string(scale.has_value());
-      // std::cout << ", dropout:" << dropout_p << ", is_causal:" << is_causal << ", scale:" << scale.has_value() << std::endl;
-      std::cout << sdpa_params << std::endl;
-
-  }
+  std::string sdpa_params = "SDPA params: ";
+  if (!query_.is_nested())
+      sdpa_params += print_tensor_info(query_, "Q:");
+  else
+      sdpa_params += "Q is nested tensor. ";
+  if (!key.is_nested())
+      sdpa_params += print_tensor_info(key, "K:");
+  else
+      sdpa_params += "K is nested tensor. ";
+  if (!value.is_nested())
+      sdpa_params += print_tensor_info(value, "V:");
+  else
+      sdpa_params += "V is nested tensor. ";
+  if (attn_mask_.has_value())
+      sdpa_params += print_tensor_info(attn_mask_.value(), "attn_mask:");
+  else
+      sdpa_params += "attn_mask:0";
+  sdpa_params += ", dropout:" + std::to_string(dropout_p) + ", is_causal:" + std::to_string(is_causal) + ", scale:" + std::to_string(scale.has_value());
+  std::cout << sdpa_params << std::endl;
 }
 inline void validate_sdpa_input(
     const Tensor& query_,
@@ -835,7 +832,7 @@ Tensor scaled_dot_product_attention(
 #endif
   switch (backend) {
     case SDPBackend::cudnn_attention: {
-      if (std::getenv("PPU_SDPA_PRINT_PARAMS"))
+      if (should_print_sdpa_params())
         std::cout << "SDPA backend: cudnn_attention" << std::endl;
       bool compute_logsumexp = should_compute_logsumexp(query_, key, value);
       auto out_lse_softmax = at::_scaled_dot_product_cudnn_attention(
@@ -843,7 +840,7 @@ Tensor scaled_dot_product_attention(
       return std::get<0>(out_lse_softmax);
     }
     case SDPBackend::flash_attention: {
-      if (std::getenv("PPU_SDPA_PRINT_PARAMS"))
+      if (should_print_sdpa_params())
         std::cout << "SDPA backend: flash_attention" << std::endl;
       if(query_device_type == DeviceType::CUDA ||
          query_device_type == DeviceType::XPU) {
@@ -863,7 +860,7 @@ Tensor scaled_dot_product_attention(
           query_, key, value, dropout_p, is_causal, attn_mask, scale));
     }
     case SDPBackend::efficient_attention: {
-      if (std::getenv("PPU_SDPA_PRINT_PARAMS"))
+      if (should_print_sdpa_params())
         std::cout << "SDPA backend: efficient_attention" << std::endl;
       bool compute_logsumexp = should_compute_logsumexp(query_, key, value);
       if (attn_mask.has_value()) {
@@ -880,7 +877,7 @@ Tensor scaled_dot_product_attention(
     }
 #ifdef USE_PPU // PPU modification
     case SDPBackend::flex_flash_attention: {
-      if (std::getenv("PPU_SDPA_PRINT_PARAMS"))
+      if (should_print_sdpa_params())
         std::cout << "SDPA backend: flex_flash_attention" << std::endl;
       auto out_lse_rng = at::_scaled_dot_product_flex_flash_attention(
           query_, key, value, attn_mask, dropout_p, is_causal, scale);
@@ -1223,21 +1220,83 @@ _scaled_dot_product_flex_flash_attention_backward_cuda(
 #endif
 }
 
-// The flex flash attention kernels run on BSHD views and sdpa_fwd/bwd hand back
-// `transpose(1, 2)` views of those BSHD results.  Meta tensors must
-// advertise exactly those (non-contiguous) strides, otherwise Inductor's
-// post-op stride check rejects the compiled graph.
-static std::vector<int64_t> flex_flash_sdpa_bshd_strides(
-    const at::Tensor& like) {
-  // Indexes size(1..3) for the BSHD (batch, heads, seqlen, head_dim) layout.
-  // can_use_flex_flash_attention() already rejects non-4-D q/k/v, but these
-  // meta ops can be reached directly (torch.ops / Inductor lowering), so fail
-  // with a clear contract error instead of an out-of-range size() access.
-  TORCH_CHECK(like.dim() == 4,
-              "flex_flash_sdpa_bshd_strides: expected a 4-D (batch, heads, "
-              "seqlen, head_dim) tensor, got ", like.dim(), "-D");
-  const auto H = like.size(1), S = like.size(2), D = like.size(3);
-  return {S * H * D, D, H * D, 1};
+// The flex flash attention kernels run on BSHD tensors whose storage width is
+// rounded to a supported kernel bucket.  The returned tensors are narrowed to
+// the requested head dimension and transposed back to BHSD, so their strides
+// retain the rounded storage width.  Keep these buckets in sync with
+// round_up_headdim_arb{,_f32,_f32_bwd} in flex_flash_attention_api.cpp.
+static int64_t flex_flash_sdpa_padded_head_dim(
+    const at::Tensor& query,
+    const at::Tensor& value,
+    bool backward) {
+  TORCH_CHECK(
+      query.dim() == 4 && value.dim() == 4,
+      "flex_flash_sdpa_padded_head_dim: expected 4-D query and value tensors");
+  const auto query_head_dim = query.sym_size(3).maybe_as_int();
+  const auto value_head_dim = value.sym_size(3).maybe_as_int();
+  TORCH_CHECK(
+      query_head_dim.has_value() && value_head_dim.has_value(),
+      "flex flash attention requires statically known head dimensions");
+  const int64_t head_dim = std::max(*query_head_dim, *value_head_dim);
+  TORCH_CHECK(
+      head_dim > 0 && head_dim <= 256,
+      "flex flash attention supports head dimensions in (0, 256], got ",
+      head_dim);
+  if (query.scalar_type() == at::kFloat) {
+    if (!backward && head_dim <= 16) {
+      return 16;
+    }
+    if (head_dim <= 32) {
+      return 32;
+    }
+  } else {
+    TORCH_CHECK(
+        query.scalar_type() == at::kHalf ||
+            query.scalar_type() == at::kBFloat16,
+        "flex flash attention only supports fp16, bf16 and fp32");
+  }
+  if (head_dim <= 64) {
+    return 64;
+  }
+  if (head_dim <= 96) {
+    return 96;
+  }
+  if (head_dim <= 128) {
+    return 128;
+  }
+  if (head_dim <= 192) {
+    return 192;
+  }
+  return 256;
+}
+
+static std::vector<c10::SymInt> flex_flash_sdpa_bshd_strides(
+    const at::Tensor& like,
+    int64_t padded_head_dim) {
+  TORCH_CHECK(
+      like.dim() == 4,
+      "flex_flash_sdpa_bshd_strides: expected a 4-D (batch, heads, "
+      "seqlen, head_dim) tensor, got ",
+      like.dim(),
+      "-D");
+  const auto heads = like.sym_size(1);
+  const auto seqlen = like.sym_size(2);
+  const c10::SymInt storage_width(padded_head_dim);
+  return {
+      seqlen * heads * storage_width,
+      storage_width,
+      heads * storage_width,
+      c10::SymInt(1)};
+}
+
+static at::Tensor flex_flash_sdpa_meta_tensor(
+    const at::Tensor& like,
+    c10::SymIntArrayRef sizes,
+    int64_t padded_head_dim) {
+  return at::Tensor(at::detail::empty_strided_symint_meta(
+      sizes,
+      flex_flash_sdpa_bshd_strides(like, padded_head_dim),
+      like.options()));
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor>
@@ -1252,11 +1311,20 @@ _scaled_dot_product_flex_flash_attention_meta(
   TORCH_CHECK(dropout_p >= 0.0 && dropout_p < 1.0,
               "_scaled_dot_product_flex_flash_attention: dropout_p must be in [0, 1), got ",
               dropout_p);
-  auto out = at::Tensor(at::detail::empty_strided_meta(
-      query.sizes(), flex_flash_sdpa_bshd_strides(query), query.options()));
-  auto lse = at::Tensor(at::detail::empty_meta(
-      {query.size(0), query.size(1), query.size(2)},
-      query.options().dtype(at::kFloat)));
+  const auto padded_head_dim =
+      flex_flash_sdpa_padded_head_dim(query, value, false);
+  auto out_sizes = query.sym_sizes().vec();
+  out_sizes[3] = value.sym_size(3);
+  auto out = flex_flash_sdpa_meta_tensor(query, out_sizes, padded_head_dim);
+  const std::vector<c10::SymInt> lse_sizes = {
+      query.sym_size(0), query.sym_size(1), query.sym_size(2)};
+  auto lse = at::Tensor(at::detail::empty_symint_meta(
+      lse_sizes,
+      at::kFloat,
+      query.layout(),
+      c10::Device(c10::kMeta),
+      std::nullopt,
+      std::nullopt));
   auto rng = at::Tensor(at::detail::empty_meta({2}, at::kLong));
   return {out, lse, rng};
 }
@@ -1278,15 +1346,23 @@ _scaled_dot_product_flex_flash_attention_backward_meta(
   TORCH_CHECK(dropout_p >= 0.0 && dropout_p < 1.0,
               "_scaled_dot_product_flex_flash_attention_backward: dropout_p must be in [0, 1), got ",
               dropout_p);
-  TORCH_CHECK(grad_out.sizes() == query.sizes(),
+  TORCH_CHECK(grad_out.sym_sizes().equals(out.sym_sizes()),
               "_scaled_dot_product_flex_flash_attention_backward: grad_out shape mismatch");
+  const auto padded_head_dim =
+      flex_flash_sdpa_padded_head_dim(query, value, true);
   at::Tensor grad_q, grad_k, grad_v;
-  if (grad_input_mask[0]) grad_q = at::Tensor(at::detail::empty_strided_meta(
-      query.sizes(), flex_flash_sdpa_bshd_strides(query), query.options()));
-  if (grad_input_mask[1]) grad_k = at::Tensor(at::detail::empty_strided_meta(
-      key.sizes(), flex_flash_sdpa_bshd_strides(key), key.options()));
-  if (grad_input_mask[2]) grad_v = at::Tensor(at::detail::empty_strided_meta(
-      value.sizes(), flex_flash_sdpa_bshd_strides(value), value.options()));
+  if (grad_input_mask[0]) {
+    grad_q = flex_flash_sdpa_meta_tensor(
+        query, query.sym_sizes(), padded_head_dim);
+  }
+  if (grad_input_mask[1]) {
+    grad_k = flex_flash_sdpa_meta_tensor(
+        key, key.sym_sizes(), padded_head_dim);
+  }
+  if (grad_input_mask[2]) {
+    grad_v = flex_flash_sdpa_meta_tensor(
+        value, value.sym_sizes(), padded_head_dim);
+  }
   return {grad_q, grad_k, grad_v};
 }
 #endif // USE_PPU (FA3 flex flash attention SDPA impls, end)

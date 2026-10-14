@@ -129,7 +129,8 @@ __global__ void elementwise_kernel_3_2_broadcast_in2_dim1_narrow_x(
   if (threadIdx.y == 0 && z < size2) {
 #pragma unroll
     for (int i = 0; i < vt; ++i)
-      in2[z_lane][x_lane * vt + i] = *reinterpret_cast<const arg1_t*>(data2 + z * stride22 + (x_lane * vt + i) * stride02);
+      // c10::load normalizes a Bool mask to 0/1 (same as legacy loops).
+      in2[z_lane][x_lane * vt + i] = c10::load(reinterpret_cast<const arg1_t*>(data2 + z * stride22 + (x_lane * vt + i) * stride02));
   }
   __syncthreads();
   const int64_t y = static_cast<int64_t>(blockIdx.y) * 8 + threadIdx.y;
