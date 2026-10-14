@@ -3,7 +3,7 @@
 
 Both backends use their default compute settings. flexflash runs only through SDPA; Flex runs independently.
 Examples:
-  TORCH_FLEX_FLASH_SDPA_ENABLED=1 python bench_attention.py --preset smoke --backends flexflash,flex --output run.json
+  PYTORCH_ENABLE_PPU_FLEX_FLASH_ATTENTION=1 python bench_attention.py --preset smoke --backends flexflash,flex --output run.json
   python bench_attention.py --preset standard --export-cases cases.json --dry-run
   python bench_attention.py --config cases.json --backends flex --output h200.json
   python compare_attention.py --baseline run.json --candidate h200.json \
@@ -251,7 +251,7 @@ def setup_backend(torch, c, variant, tensors, device):
         if not hasattr(SDPBackend, "FLEX_FLASH_ATTENTION"):
             raise Unsupported("The current torch build does not include the SDPA flexflash backend")
         if torch.cuda.get_device_capability(device) != (8, 9):
-            raise Unsupported("flexflash currently supports only M890; use --backends flex on H200")
+            raise Unsupported("flexflash currently supports only Zhenwu M890; use --backends flex on H200")
         mask = benchmark_dense_mask(c["mask"], c["sq"], c["sk"], c["mask_params"], device)
         def forward():
             with sdpa_kernel([SDPBackend.FLEX_FLASH_ATTENTION]):
@@ -477,7 +477,7 @@ def execute_worker(args):
             if not hasattr(torch.nn.attention.SDPBackend, "FLEX_FLASH_ATTENTION"):
                 raise Unsupported("The current torch build does not include the SDPA flexflash backend")
             if torch.cuda.get_device_capability(args.device) != (8, 9):
-                raise Unsupported("flexflash currently supports only M890; use --backends flex on H200")
+                raise Unsupported("flexflash currently supports only Zhenwu M890; use --backends flex on H200")
         tensors, hashes = make_inputs(torch, c, device)
         from benchmark_masks import benchmark_mask_mod
         mod = benchmark_mask_mod(c["mask"], c["sq"], c["sk"], c["mask_params"])

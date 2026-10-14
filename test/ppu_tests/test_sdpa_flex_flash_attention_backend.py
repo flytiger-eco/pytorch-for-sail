@@ -17,6 +17,7 @@
 #   R. inference/no_grad modes      S. cache-eviction soak
 #   T. training-loop integration    U. double backward
 #   V. long-sequence numerics       W. env-var kill switch
+#   X. DTensor placement strategies
 #
 # Oracle for can_use: under sdpa_kernel([SDPBackend.FLEX_FLASH_ATTENTION])
 # exactly one backend is enabled, so
@@ -34,9 +35,10 @@
 import os
 import subprocess
 import sys
+import tempfile
 
 # Enable this backend before importing torch; env-switch probes override their own subprocess environments.
-os.environ["TORCH_FLEX_FLASH_SDPA_ENABLED"] = "1"
+os.environ["PYTORCH_ENABLE_PPU_FLEX_FLASH_ATTENTION"] = "1"
 
 import pytest
 import torch
@@ -817,6 +819,29 @@ class TestTorchCompile:
         comp2.backward(g)
         for ge, gc in zip(grads_eager, (q.grad, k.grad, v.grad)):
             torch.testing.assert_close(gc, ge, **TOL[BF16])
+
+    def test_compile_head_dim_v_neq_head_dim_fwd_bwd(self):
+        def fn(q, k, v):
+            return F.scaled_dot_product_attention(q, k, v)
+
+        eager_inputs = _mk(2, 4, 4, 128, 128, 64, dv=80)
+        compiled_inputs = tuple(
+            tensor.detach().clone().requires_grad_(True)
+            for tensor in eager_inputs
+        )
+        with flex_only():
+            expected = fn(*eager_inputs)
+            compiled_fn = torch.compile(fn, fullgraph=True)
+            actual = compiled_fn(*compiled_inputs)
+        assert actual.shape == (2, 4, 128, 80)
+        torch.testing.assert_close(actual, expected, **TOL[BF16])
+
+        grad_out = torch.randn_like(expected)
+        expected.backward(grad_out)
+        actual.backward(grad_out)
+        for eager_input, compiled_input in zip(eager_inputs, compiled_inputs):
+            torch.testing.assert_close(
+                compiled_input.grad, eager_input.grad, **TOL[BF16])
 
     def test_compile_attention_block_training(self):
         # Module-level compile: real graph structure (projections -> SDPA ->
@@ -2220,7 +2245,7 @@ class TestLongSequence:
 
 
 # --------------------------------------------------------------------------
-# W. Runtime env-var kill switch (TORCH_FLEX_FLASH_SDPA_ENABLED)
+# W. Runtime env-var kill switch (PYTORCH_ENABLE_PPU_FLEX_FLASH_ATTENTION)
 # --------------------------------------------------------------------------
 _ENV_KILL_PROBE = r"""
 import torch
@@ -2252,16 +2277,16 @@ with sdpa_kernel([SDPBackend.MATH]):
 
 
 class TestEnvKillSwitch:
-    # TORCH_FLEX_FLASH_SDPA_ENABLED is latched by a static const inside
+    # PYTORCH_ENABLE_PPU_FLEX_FLASH_ATTENTION is latched by a static const inside
     # can_use_flex_flash_attention (the first SDPA call wins), so
     # every scenario must run in a fresh interpreter.
 
     def _probe(self, value):
         env = dict(os.environ)
         if value is None:
-            env.pop("TORCH_FLEX_FLASH_SDPA_ENABLED", None)
+            env.pop("PYTORCH_ENABLE_PPU_FLEX_FLASH_ATTENTION", None)
         else:
-            env["TORCH_FLEX_FLASH_SDPA_ENABLED"] = value
+            env["PYTORCH_ENABLE_PPU_FLEX_FLASH_ATTENTION"] = value
         proc = subprocess.run(
             [sys.executable, "-c", _ENV_KILL_PROBE],
             capture_output=True, text=True, env=env, timeout=600)
@@ -2292,6 +2317,90 @@ class TestEnvKillSwitch:
             assert "FLEX_REJECT" in out, out
 
 
+# --------------------------------------------------------------------------
+# X. Flex Flash Attention DTensor placement strategies
+# --------------------------------------------------------------------------
+def _dtensor_flex_flash_worker(rank, world_size, device_ids, init_file):
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import DeviceMesh
+    from torch.distributed.tensor import Replicate, Shard, distribute_tensor
+
+    device = device_ids[rank]
+    torch.cuda.set_device(device)
+    dist.init_process_group(
+        "nccl", init_method=f"file://{init_file}", rank=rank,
+        world_size=world_size)
+    try:
+        mesh = DeviceMesh("cuda", list(range(world_size)))
+        placements = [(Replicate(),), (Shard(0),), (Shard(1),)]
+        for with_mask in (False, True):
+            for input_placements in placements:
+                torch.manual_seed(20261013)
+                shape = (4, 4, 128, 64)
+                query = torch.randn(shape, device=f"cuda:{device}",
+                                    dtype=torch.bfloat16, requires_grad=True)
+                key = torch.randn(shape, device=f"cuda:{device}",
+                                  dtype=torch.bfloat16, requires_grad=True)
+                value = torch.randn(shape, device=f"cuda:{device}",
+                                    dtype=torch.bfloat16, requires_grad=True)
+                mask = torch.ones(128, 128, device=f"cuda:{device}",
+                                  dtype=torch.bool).tril() if with_mask else None
+
+                dist_query = distribute_tensor(
+                    query.detach().clone().requires_grad_(True), mesh,
+                    input_placements)
+                dist_key = distribute_tensor(
+                    key.detach().clone().requires_grad_(True), mesh,
+                    input_placements)
+                dist_value = distribute_tensor(
+                    value.detach().clone().requires_grad_(True), mesh,
+                    input_placements)
+                dist_mask = (distribute_tensor(mask, mesh, (Replicate(),))
+                             if mask is not None else None)
+
+                with flex_only():
+                    expected = F.scaled_dot_product_attention(
+                        query, key, value, attn_mask=mask)
+                    actual = F.scaled_dot_product_attention(
+                        dist_query, dist_key, dist_value, attn_mask=dist_mask)
+                assert actual.placements == input_placements
+                torch.testing.assert_close(
+                    actual.full_tensor(), expected, **TOL[BF16])
+
+                expected.sum().backward()
+                actual.sum().backward()
+                for dist_input, eager_input in (
+                    (dist_query, query), (dist_key, key),
+                    (dist_value, value)
+                ):
+                    assert dist_input.grad.placements == input_placements
+                    torch.testing.assert_close(
+                        dist_input.grad.full_tensor(), eager_input.grad,
+                        **TOL[BF16])
+    finally:
+        dist.destroy_process_group()
+
+
+class TestDTensorFlexFlashAttention:
+    def test_replicated_batch_and_head_sharding_with_optional_mask(self):
+        if getattr(torch.version, "ppu", None) is None:
+            pytest.skip("requires a PPU build")
+        m890_devices = tuple(
+            i for i in range(torch.cuda.device_count())
+            if torch.cuda.get_device_capability(i) == (8, 9))
+        if len(m890_devices) < 2:
+            pytest.skip("requires at least two M890 devices")
+        import torch.multiprocessing as mp
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            init_file = os.path.join(tmp_dir, "dtensor_init")
+            mp.spawn(
+                _dtensor_flex_flash_worker,
+                args=(2, m890_devices[:2], init_file),
+                nprocs=2,
+                join=True,
+            )
+
+
 if __name__ == "__main__":
-    import sys
     sys.exit(pytest.main([__file__, "-v"]))
