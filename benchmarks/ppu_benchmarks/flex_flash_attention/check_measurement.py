@@ -329,7 +329,7 @@ m890["records"].append(deepcopy(m890["records"][0]))
 m890["records"][1]["variant"] = "flexflash"
 for record in m890["records"]:
     for result in record["rounds"]:
-        result["environment"]["device"]["name"] = "SYNTHETIC M890"
+        result["environment"]["device"]["name"] = "SYNTHETIC Zhenwu M890"
 comparisons = comparison.build_h200_comparisons(h200, m890)
 assert len(comparisons) == 12
 assert all(r["summary"]["geomean_speedup"] == 2.0 for r in comparisons)
@@ -412,7 +412,7 @@ for record in golden["records"]:
     record["protocol"] = bench.PROTOCOL
     for result in record["rounds"]:
         result["protocol"] = bench.PROTOCOL
-        result["environment"]["device"]["name"] = "SYNTHETIC M890"
+        result["environment"]["device"]["name"] = "SYNTHETIC Zhenwu M890"
         for phase in result["metrics"].values():
             for sample in phase["samples"]:
                 for timer in comparison.TIMERS:
@@ -597,7 +597,7 @@ with tempfile.TemporaryDirectory(prefix="attention-accuracy-runner-") as directo
 
 here = Path(__file__).resolve().parent
 probe = (here / "run_performance.sh").read_text().split('"$PYTHON" - "$DEVICE" <<\'PY\'\n', 1)[1].split("\nPY", 1)[0]
-for device_name in ("SYNTHETIC M890", "SYNTHETIC H200", "SYNTHETIC OTHER"):
+for device_name in ("SYNTHETIC Zhenwu M890", "SYNTHETIC H200", "SYNTHETIC OTHER"):
     with patch.object(sys, "argv", ["-", "1"]), \
          patch.object(torch.cuda, "get_device_name", return_value=device_name) as query_device, \
          patch("builtins.print") as printed:
@@ -613,7 +613,7 @@ with tempfile.TemporaryDirectory(prefix="attention-golden-") as directory:
     for name in ("bench_attention.py", "compare_attention.py", "benchmark_masks.py", "run_performance.sh"):
         shutil.copyfile(here / name, entry / name)
     comparison.write_json(entry / "configs/standard_cases.json", {"schema_version": 1, "cases": [golden["records"][0]["case"]]})
-    golden_file = root / "training_framework_golden_files/torch/torch_2_10_0/arbitray_flash_atention/M890/arbitray_flash_attention_golden.json"
+    golden_file = root / "training_framework_golden_files/torch/torch_2_10_0/flex_flash_attention/M890/flex_flash_attention_golden.json"
     fixture = root / "current.json"
     comparison.write_json(fixture, golden_candidate(1.0))
     fake_python = root / "fake_python"
@@ -621,13 +621,13 @@ with tempfile.TemporaryDirectory(prefix="attention-golden-") as directory:
 args = sys.argv[1:]
 if args[0].endswith("bench_attention.py") and "--dry-run" not in args:
     assert "--check-accuracy" in args
-    assert os.environ["TORCH_FLEX_FLASH_SDPA_ENABLED"] == "1"
+    assert os.environ["PYTORCH_ENABLE_PPU_FLEX_FLASH_ATTENTION"] == "1"
     with open(os.environ["CALL_LOG"], "a") as stream:
         stream.write("collect\\n")
     shutil.copyfile(os.environ["CURRENT_FIXTURE"], args[args.index("--output") + 1])
     sys.exit(int(os.environ.get("COLLECT_CODE", "0")))
 if args[0] == "-" and len(args) == 2:
-    print("SYNTHETIC M890")
+    print("SYNTHETIC Zhenwu M890")
     sys.exit(0)
 os.execv(sys.executable, [sys.executable, *args])
 ''')

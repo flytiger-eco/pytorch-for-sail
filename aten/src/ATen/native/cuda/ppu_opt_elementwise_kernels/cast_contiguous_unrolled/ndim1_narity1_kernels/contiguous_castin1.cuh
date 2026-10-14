@@ -11,8 +11,9 @@
 // vt = max(vt_src, vt_dst) = lcm elements: the source side issues vt/vt_src
 // aligned_vector<src_t> loads and the destination side vt/vt_dst
 // aligned_vector<dst_t> stores, keeping both sides in-bounds and
-// index-aligned. {Long,Bool} with numel % 4 == 0 reads 4 x 1B and writes
-// 2 x 8B, {Float,Long} reads 2 x 8B and writes 4 x 4B, etc.
+// index-aligned. {Long,Bool} starts at vt_src=4 (see the launcher: capped at
+// 32B of dst per thread) and with numel % 4 == 0 reads 4 x 1B and writes
+// 2 x (2 x 8B), {Float,Long} reads 2 x 8B and writes 4 x 4B, etc.
 // tag p_e_ppu_1_1_cast_v.
 //
 // NOTE: no `namespace at::native` wrapper here. This file is included from
@@ -42,7 +43,8 @@ __global__ void unrolled_elementwise_kernel_1_1_contiguous_castin1(
   dst_t vals[vt];
 #pragma unroll
   for (int j = 0; j < n_src; j++) {
-    const vec_src in = *reinterpret_cast<const vec_src*>(
+    // ppu_load_vector normalizes bool bytes to 0/1 (see utils/common.cuh).
+    const vec_src in = ppu_load_vector<src_t, vt_src>(
         data1 + (x + j * vt_src) * static_cast<int64_t>(sizeof(src_t)));
 #pragma unroll
     for (int i = 0; i < vt_src; i++) {
@@ -107,7 +109,18 @@ static inline bool launch_unrolled_elementwise_kernel_1_1_contiguous_castin1(
   if constexpr (!std::is_same_v<f_res_t, dst_t>) {
     return false;
   } else {
-    return try_launch_vt_scan<per_op_vector_width<src_t>(), per_op_vector_width<dst_t>(),
+    // Starting source width: the per-16B width, except when a thread would
+    // then write more than 64B of dst (1B src -> 8B dst, i.e. Long<-Bool:
+    // 16 x 8B = 128B per thread, 4 x 16B uncoalesced stores). Measured on
+    // PPU (R2 fix_bool_bug quick_analysis/b2): vs=16 loses to legacy from
+    // 1M elements up (0.58x at >=4M), vs=4 (4 x 1B load, 2 x 16B store,
+    // 32B/thread) beats both legacy and vs=16 at every size 256..64M.
+    // Every other pair in the dispatch table stays at <= 64B/thread.
+    constexpr int vs_full = per_op_vector_width<src_t>();
+    constexpr int vs0 =
+        (vs_full * static_cast<int>(sizeof(dst_t)) > 64) ? 32 / static_cast<int>(sizeof(dst_t)) : vs_full;
+    static_assert(vs0 >= 1 && (vs0 & (vs0 - 1)) == 0, "vs0 must be a power of two");
+    return try_launch_vt_scan<vs0, per_op_vector_width<dst_t>(),
                               dst_t, src_t, func_t>(f, data, numel);
   }
 }

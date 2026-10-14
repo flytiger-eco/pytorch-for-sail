@@ -14,5 +14,14 @@ constexpr auto elems_per_thread();
 template <typename func_t>
 constexpr auto calc_io_size();
 
+// Every PPU elementwise kernel lives in ppu_elementwise_opt: registration.cpp
+// recognizes them by this namespace and keeps them out of the runtime registry
+// while disabled.
+namespace ppu_elementwise_opt {
 #include "dispatch.cuh"
+} // namespace ppu_elementwise_opt
+
+using ppu_elementwise_opt::try_launch_ppu_cast_contiguous_unrolled_kernel;
+using ppu_elementwise_opt::try_launch_ppu_cast_elementwise_kernel;
+using ppu_elementwise_opt::try_launch_ppu_nocast_elementwise_kernel;
 } // namespace at::native
