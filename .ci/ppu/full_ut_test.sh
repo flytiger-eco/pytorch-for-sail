@@ -64,6 +64,9 @@ shard_heavy() {
 
     run_case test_sparse \
         "cuda and not test_mm_cuda_complex and not test_sparse_addmm and not test_sparse_matmul_cuda_bfloat16 and not test_sparse_matmul_cuda_complex and not test_sparse_matmul_cuda_float16 and not test_constructor_autograd_SparseBS and not test_gradcheck_mm_SparseCOO and not test_gradcheck_mm_SparseCSC and not test_gradcheck_mm_SparseCSR"
+
+    run_case test_transformers "cuda"
+
 }
 
 # shard 2：其余全部文件
@@ -72,6 +75,8 @@ shard_rest() {
         "not test_corrcoef_cuda_complex64 and not test_terminate_handler_on_crash and not test_cov_cuda_complex and not test_put_cuda_float16"
 
     run_case test_autograd "not test_thread_shutdown"
+
+    run_case test_nn "cuda"
 
     run_case test_binary_ufuncs "TestBinaryUfuncsCUDA"
 
