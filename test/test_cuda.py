@@ -4642,6 +4642,16 @@ class TestCudaMallocAsync(TestCase):
                 "expandable_segments:True,max_split_size_mb:40"
             )
             b = alloc(40)
+            if hasattr(torch.version, "ppu"):
+                # PPU maps expandable large segments in 32 MB pages, so a 40 MB
+                # allocation reserves a 64 MB segment. Allow one more 40 MB
+                # allocation based on the actual reserved size.
+                total_allowed = torch.cuda.memory_reserved() + 40 * mb
+                fraction_allowed = total_allowed / all_memory
+                self.assertEqual(
+                    int(round(fraction_allowed * all_memory)), total_allowed
+                )
+                torch.cuda.memory.set_per_process_memory_fraction(fraction_allowed)
             torch.cuda.memory._set_allocator_settings(
                 "expandable_segments:False,max_split_size_mb:40"
             )
@@ -6010,15 +6020,32 @@ class TestMemPool(TestCase):
             # (1 MB) that got packed into the existing 2 MB buffer
             self.assertEqual(len(pool.snapshot()), 1)
 
-            out_2 = torch.randn(nelem_1mb, device="cuda")
+            if hasattr(torch.version, "ppu"):
+                # PPU uses an 8 MB minimum segment. Allocate enough additional
+                # 1 MB tensors to exceed the first segment's capacity.
+                segment_size = pool.snapshot()[0]["total_size"]
+                allocation_size = nelem_1mb * torch.empty(
+                    (), dtype=torch.float32
+                ).element_size()
+                additional_allocations = (
+                    (segment_size - 2 * allocation_size) // allocation_size + 1
+                )
+                pool_outputs = [
+                    torch.randn(nelem_1mb, device="cuda")
+                    for _ in range(additional_allocations)
+                ]
+            else:
+                out_2 = torch.randn(nelem_1mb, device="cuda")
+                pool_outputs = [out_2]
 
             # pool now should have 2 segments since the CUDACachingAllocator had
-            # to make a new 2 MB buffer to accommodate out_2
+            # to make a new buffer to accommodate the additional allocation(s)
             self.assertEqual(len(pool.snapshot()), 2)
 
         self.assertEqual(len(pool.snapshot()), 2)
 
-        del out_0, out_1, out_2
+        del out_0, out_1
+        del pool_outputs
 
         # pool's destructor calls emptyCache()
         del pool
