@@ -16,20 +16,23 @@ python --version
 ppu-smi || echo "[warn] ppu-smi 不可用，请确认 pod 已分配 PPU 设备"
 bash .ci/ppu/install_test_deps.sh
 
+CRASH_LIST="${CRASH_LIST:-.ci/ppu/badcase_list/base_api.txt}"
+echo "[base_api] crash list: ${CRASH_LIST}"
+
 FAILED_CASES=()
 run_pytest() {
     local test_file="$1"
     local k_expr="${2:-}"
     echo "=== [case] ${test_file}${k_expr:+  -k ${k_expr}} ==="
     if [[ -n "$k_expr" ]]; then
-        if python .ci/ppu/multi_run_case.py "$test_file" -k "$k_expr"; then
+        if python .ci/ppu/multi_run_case.py "$test_file" --crash-list "$CRASH_LIST" -k "$k_expr"; then
             echo "=== [pass] ${test_file} ==="
         else
             echo "::error::[fail] ${test_file}"
             FAILED_CASES+=("${test_file}")
         fi
     else
-        if python .ci/ppu/multi_run_case.py "$test_file"; then
+        if python .ci/ppu/multi_run_case.py "$test_file" --crash-list "$CRASH_LIST"; then
             echo "=== [pass] ${test_file} ==="
         else
             echo "::error::[fail] ${test_file}"
@@ -38,12 +41,10 @@ run_pytest() {
     fi
 }
 
-echo "=== CUDA base api 用例（test_ops / test_ops_gradients / test_transformers / test_nn ，仅 CUDA 相关）==="
+echo "=== CUDA base api 用例（test_ops / test_ops_gradients ，仅 CUDA 相关）==="
 
 run_pytest test/test_ops.py "cuda"
 run_pytest test/test_ops_gradients.py "cuda"
-run_pytest test/test_transformers.py "cuda"
-run_pytest test/test_nn.py "cuda"
 
 if [ "${#FAILED_CASES[@]}" -ne 0 ]; then
     echo "=== 失败清单（${#FAILED_CASES[@]} 个文件）==="

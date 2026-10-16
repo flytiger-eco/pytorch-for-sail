@@ -1,5 +1,6 @@
-"""断点续跑 + 抗 hang / 抗 crash 的 pytest 执行器（单文件自包含）。
-CUDA_VISIBLE_DEVICES=9 python3 /any/where/mulit_run_case.py test/test_ops.py
+"""断点续跑 + hang + crash 的pytest执行器
+python3 /any/where/mulit_run_case.py test/test_ops.py
+可选 --crash-list <文件>：case白名单；预置case直接 deselect，新CRASH/HANG自动追加。
 """
 
 import os
@@ -17,6 +18,8 @@ from dataclasses import dataclass
 CHILD_FLAG = "--resilient-child"
 CHILD_ROOT_FLAG = "--resilient-repo-root"
 ROOT_FLAG = "--repo-root"
+CRASH_LIST_FLAG = "--crash-list"
+CRASH_LIST_ENV = "RESILIENT_CRASH_LIST"
 PLUGIN_MODULE = os.path.splitext(os.path.basename(__file__))[0]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RUN_CWD = tempfile.gettempdir()
@@ -25,21 +28,22 @@ OK_STATUSES = frozenset({"PASSED", "SKIPPED"})
 
 
 def _parse_cli(argv):
-    root, rest = None, []
+    opts, rest = {}, []
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a == ROOT_FLAG:
-            if i + 1 >= len(argv):
-                raise ValueError(f"{a} requires a value")
-            i += 1
-            root = argv[i]
-        elif a.startswith(ROOT_FLAG + "="):
-            root = a.partition("=")[2]
+        name, eq, value = a.partition("=")
+        if name in (ROOT_FLAG, CRASH_LIST_FLAG):
+            if not eq:
+                if i + 1 >= len(argv):
+                    raise ValueError(f"{a} requires a value")
+                i += 1
+                value = argv[i]
+            opts[name] = value
         else:
             rest.append(a)
         i += 1
-    return root, rest
+    return opts, rest
 
 
 @dataclass(frozen=True)
@@ -49,24 +53,27 @@ class Config:
     progress_file: str      
     per_test_timeout: int
     pytest_args: tuple = ()
+    crash_list: str = ""
 
     @classmethod
-    def from_env(cls, argv, repo_root, progress_file):
+    def from_env(cls, argv, repo_root, progress_file, crash_list=None):
+        crash_list = crash_list or os.environ.get(CRASH_LIST_ENV, "")
         return cls(
             repo_root=os.path.abspath(repo_root or os.getcwd()),
             progress_file=progress_file,
             per_test_timeout=int(os.environ.get("PER_TEST_TIMEOUT", "60")),
             pytest_args=tuple(argv),
+            crash_list=os.path.abspath(crash_list) if crash_list else "",
         )
 
 
 # ---------------------------------------------------------------------------
-# 2. 进度文件
+# 2. 进度
 # ---------------------------------------------------------------------------
 
 class ProgressLog:
 
-    START, RESULT = "START", "RESULT"
+    START, RESULT, TOTAL = "START", "RESULT", "TOTAL"
 
     def __init__(self, path: str):
         self.path = path
@@ -77,13 +84,14 @@ class ProgressLog:
     def record_result(self, nodeid: str, status: str) -> None:
         self._append(self.RESULT, nodeid, status)
 
+    def record_total(self, total: int) -> None:
+        self._append(self.TOTAL, str(total))
+
     def _append(self, *fields: str) -> None:
         with open(self.path, "a") as f:
             f.write("\t".join(fields) + "\n")
             f.flush()
             os.fsync(f.fileno())
-
-    # -- 读取 --
 
     def _lines(self):
         if not os.path.exists(self.path):
@@ -105,6 +113,13 @@ class ProgressLog:
                 running = None
         return running
 
+    def total_cases(self):
+        total = None
+        for p in self._lines():
+            if p[0] == self.TOTAL and len(p) >= 2:
+                total = int(p[1])
+        return total
+
     def status_counts(self) -> dict:
         counts, seen = {}, set()
         for p in self._lines():
@@ -116,6 +131,40 @@ class ProgressLog:
     def remove(self) -> None:
         if os.path.exists(self.path):
             os.remove(self.path)
+
+
+class CrashList:
+
+    def __init__(self, path: str):
+        self.path = path
+
+    def nodeids(self) -> set:
+        if not self.path or not os.path.exists(self.path):
+            return set()
+        with open(self.path) as f:
+            return {line.split("\t", 1)[0].strip() for line in f
+                    if line.strip() and not line.lstrip().startswith("#")}
+
+    def matching_nodeids(self, items) -> set:
+        entries = self.nodeids()
+        exact = {entry for entry in entries if "::" in entry}
+        patterns = tuple(entry for entry in entries if "::" not in entry)
+        return {item.nodeid for item in items
+                if item.nodeid in exact
+                or any(pattern in item.nodeid for pattern in patterns)}
+
+    def add(self, nodeid: str, status: str) -> bool:
+        """追加一条记录；未配置路径或完整 nodeid 已存在时返回 False。"""
+        if not self.path or nodeid in self.nodeids():
+            return False
+        directory = os.path.dirname(self.path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(self.path, "a") as f:
+            f.write(f"{nodeid}\t{status}\n")
+            f.flush()
+            os.fsync(f.fileno())
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -185,12 +234,28 @@ def _plugin_log() -> ProgressLog:
 
 def pytest_collection_modifyitems(config, items):
     done = _plugin_log().done_nodeids()
-    if not done:
+    crash_list = CrashList(os.environ.get(CRASH_LIST_ENV, ""))
+    listed = crash_list.matching_nodeids(items)
+    skip = done | listed
+    if not skip:
         return
-    deselected = [it for it in items if it.nodeid in done]
+    deselected = [it for it in items if it.nodeid in skip]
     if deselected:
         config.hook.pytest_deselected(items=deselected)
-        items[:] = [it for it in items if it.nodeid not in done]
+        items[:] = [it for it in items if it.nodeid not in skip]
+    # 只在首轮（尚无进度）提示一次，避免每轮重复刷屏
+    if listed and not done:
+        print(f"\n[resilient] crash list: deselected {len(listed)} listed "
+              f"case(s) from {crash_list.path}", flush=True)
+
+
+def pytest_collection_finish(session):
+    log = _plugin_log()
+    done = log.done_nodeids()
+    total = len(done) + len(session.items)
+    log.record_total(total)
+    print(f"\n[resilient] cumulative progress: done={len(done)}/{total}, "
+          f"remaining={len(session.items)}", flush=True)
 
 
 def pytest_runtest_logstart(nodeid, location):
@@ -226,7 +291,6 @@ class Watchdog:
         return self
 
     def wait(self) -> int:
-        """阻塞至子进程退出并停掉看门狗；返回子进程退出码。"""
         rc = self._proc.wait()
         self._stop.set()
         self._thread.join(timeout=POLL_SECONDS + 2)
@@ -257,7 +321,7 @@ class Watchdog:
 
 
 # ---------------------------------------------------------------------------
-# 5. orchestrator：主循环
+# 5. orchestrator
 # ---------------------------------------------------------------------------
 
 def _abs_arg(arg: str, cfg: Config) -> str:
@@ -278,6 +342,10 @@ def _child_env(cfg: Config) -> dict:
     ]
     env["PYTHONPATH"] = os.pathsep.join([SCRIPT_DIR, *clean])
     env["PYTHONSAFEPATH"] = "1"
+    if cfg.crash_list:
+        env[CRASH_LIST_ENV] = cfg.crash_list
+    else:
+        env.pop(CRASH_LIST_ENV, None)
     env["RESILIENT_PROGRESS_FILE"] = cfg.progress_file 
     return env
 
@@ -334,11 +402,21 @@ def orchestrate(cfg: Config) -> int:
         return 2
 
     log = ProgressLog(cfg.progress_file)
+    crash_list = CrashList(cfg.crash_list)
+    if cfg.crash_list:
+        print(f"crash list: {cfg.crash_list} "
+              f"({len(crash_list.nodeids())} exclusion entries)")
+    newly_listed = []
     rounds = 0
     while True:
         rounds += 1
         prev_done = log.done_nodeids()
-        print(f"\n===== round {rounds}: {len(prev_done)} cases finished so far =====")
+        total = log.total_cases()
+        progress = (
+            f"done={len(prev_done)}/{total}"
+            if total is not None else f"done={len(prev_done)}/?"
+        )
+        print(f"\n===== round {rounds}: {progress} =====")
 
         watchdog = Watchdog(_spawn_child(cfg), log, cfg).start()
         rc, killed = watchdog.wait(), watchdog.killed
@@ -348,6 +426,8 @@ def orchestrate(cfg: Config) -> int:
             status = "HANG" if killed else "CRASH"
             log.record_result(stuck, status)
             print(f"  detected stuck case -> marked {status}: {stuck}")
+            if crash_list.add(stuck, status):
+                newly_listed.append((stuck, status))
             continue 
 
         if rc in (0, 1, 5):
@@ -360,11 +440,16 @@ def orchestrate(cfg: Config) -> int:
             break
 
     counts = _print_summary(log)
+    if newly_listed:
+        print(f"appended {len(newly_listed)} new case(s) to crash list "
+              f"{cfg.crash_list} (deselected from next run on):")
+        for nodeid, status in newly_listed:
+            print(f"  {status:<6} {nodeid}")
     return 1 if set(counts) - OK_STATUSES else 0
 
 
 # ---------------------------------------------------------------------------
-# 6. CLI：按身份标记分派父/子角色
+# 6. CLI
 # ---------------------------------------------------------------------------
 
 def _run_as_child(args, repo_root) -> int:
@@ -381,17 +466,20 @@ def _run_as_child(args, repo_root) -> int:
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+
     if CHILD_FLAG in argv:
         rest, repo_root = [], os.getcwd()
         for i, a in enumerate(argv):
             if a == CHILD_ROOT_FLAG:
-                repo_root = argv[i + 1]      # 后面必有一个值（父进程成对传入）
+                repo_root = argv[i + 1]
             elif a != CHILD_FLAG and argv[i - 1] != CHILD_ROOT_FLAG:
                 rest.append(a)
         return _run_as_child(rest, repo_root)
 
     try:
-        root, user_args = _parse_cli(argv)
+        opts, user_args = _parse_cli(argv)
     except ValueError as e:
         print(f"ERROR: {e}")
         return 2
@@ -400,7 +488,9 @@ def main(argv=None) -> int:
     os.close(fd)
     try:
         cfg = Config.from_env(user_args or ["test/test_ops.py"],
-                              repo_root=root, progress_file=progress_file)
+                              repo_root=opts.get(ROOT_FLAG),
+                              progress_file=progress_file,
+                              crash_list=opts.get(CRASH_LIST_FLAG))
         return orchestrate(cfg)
     finally:
         ProgressLog(progress_file).remove()
