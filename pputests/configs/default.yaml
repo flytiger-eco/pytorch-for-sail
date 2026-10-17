@@ -1,0 +1,15 @@
+# Global defaults for the PPU operator accuracy framework.
+# Every key maps 1:1 onto a field of core.runner.Config; CLI flags override.
+dtypes: [bf16, fp32]     # FP16 is opt-in: add fp16 here or pass --dtypes fp16
+level: smoke             # smoke | full
+seed: 0                  # int, or the string "random"
+device: cuda             # the PPU is surfaced as a cuda-class device
+directions: [fwd, bwd]
+report_formats: [markdown, csv, json, junit]
+out_dir: reports
+allow_cpu_fallback: false  # true -> run ppufn on CPU (golden-vs-golden self-check)
+secondary_check: true      # cross-check vs CPU same-dtype golden
+dump_on_fail: true
+topk: 8
+include_empty: true
+include_large: true

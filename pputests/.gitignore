@@ -1,0 +1,6 @@
+# Generated artifacts (DoD: reports/ is gitignored).
+reports/
+**/dumps/
+*.pt
+.pytest_cache/
+__pycache__/

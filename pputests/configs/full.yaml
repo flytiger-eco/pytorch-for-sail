@@ -1,0 +1,10 @@
+# Nightly full regression: the whole Shape x Pattern x dtype x fwd/bwd matrix.
+# Run in parallel with pytest -n (see README) to keep wall-clock reasonable.
+level: full
+dtypes: [bf16, fp32]
+directions: [fwd, bwd]
+include_large: true
+include_empty: true
+secondary_check: true
+report_formats: [markdown, csv, json, junit]
+out_dir: reports

@@ -1,0 +1,9 @@
+# CI fast-gate: ~5 representative cases per op per dtype, no large shapes.
+# Target wall-clock < 2 min (see DoD #9).
+level: smoke
+dtypes: [bf16, fp32]
+directions: [fwd, bwd]
+include_large: false
+include_empty: true
+report_formats: [markdown, csv, junit]
+out_dir: reports

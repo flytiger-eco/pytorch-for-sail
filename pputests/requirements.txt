@@ -1,0 +1,8 @@
+# Runtime deps for the PPU accuracy framework.
+# torch itself comes from the PyTorch-for-SAIL wheel installed in the container.
+pyyaml>=5.1
+pytest>=7.0
+# optional: parallel full-mode runs (pytest -n)
+pytest-xdist>=3.0
+# optional: strict ULP metric uses numpy (already a torch dep)
+numpy>=1.21
