@@ -1,0 +1,16 @@
+# Cross-dtype comparison: skip the fp64 golden entirely and compare the PPU
+# output of two dtypes head-to-head. The more precise dtype is the reference.
+# Run with:  python run.py --config configs/crossdtype.yaml --ops softmax
+cross_dtype: true
+dtypes: [bf16, fp32]     # exactly two; low=bf16 (out), high=fp32 (ref)
+level: smoke             # smoke | full
+directions: [fwd, bwd]
+seed: 0
+device: cuda             # the PPU is surfaced as a cuda-class device
+secondary_check: false   # not applicable in cross-dtype mode
+report_formats: [markdown, csv, json, junit]
+out_dir: reports-crossdtype
+dump_on_fail: true
+topk: 8
+include_empty: true
+include_large: true

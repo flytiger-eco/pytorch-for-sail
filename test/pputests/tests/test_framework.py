@@ -18,7 +18,7 @@ from core import inputgen  # noqa: E402
 from core.dump import dump_case, repro_command  # noqa: E402
 from core.opspec import BackwardMode, OpSpec, get_spec  # noqa: E402
 from core.runner import Case, Config, enumerate_cases, execute_case  # noqa: E402
-from core.tolerance import FP32  # noqa: E402
+from core.tolerance import BF16, FP32  # noqa: E402
 
 
 def _case(spec_name="identity", *, shape=(0,), view=None, grad_pattern=None):
@@ -187,3 +187,90 @@ def test_ci_rejects_missing_accelerator():
     with open(ci_path) as fh:
         script = fh.read()
     assert "sys.exit(0 if available and count > 0 else 1)" in script
+
+
+# --------------------------------------------------------------------------
+# cross-dtype mode (PPU bf16 vs PPU fp32, no fp64 golden)
+# --------------------------------------------------------------------------
+def _cross_spec():
+    return OpSpec(
+        name="crossidentity",
+        category="framework_test",
+        dtypes=[BF16, FP32],
+        shapes=[inputgen.ShapeCase("regular", (8,))],
+        patterns=[inputgen.FULL(2.0)],   # exactly representable in bf16
+        params=[{}],
+        reffn=lambda x: x,
+        ppufn=lambda x: x,
+        has_backward=BackwardMode.REQUIRED,
+        grad_patterns=[inputgen.FULL(1.0)],
+    )
+
+
+def _cross_case(direction="fwd", grad_pattern=None):
+    return Case(
+        case_id=f"crossidentity__bf16-vs-fp32__regular__full2__p0_noparam__{direction}",
+        spec_name="crossidentity",
+        dtype=BF16,
+        shape_case=inputgen.ShapeCase("regular", (8,)),
+        pattern=inputgen.FULL(2.0),
+        params={},
+        direction=direction,
+        seed=7,
+        grad_pattern=grad_pattern,
+        dtype_ref=FP32,
+    )
+
+
+def test_cross_dtype_pairs_one_case_per_combo():
+    spec = get_spec("relu")
+    cfg = Config(
+        dtypes=["bf16", "fp32"], level="smoke",
+        directions=["fwd"], cross_dtype=True,
+    )
+    cases = enumerate_cases([spec], cfg)
+    assert cases
+    for c in cases:
+        # low precision is the value under test, high precision is the ref
+        assert c.dtype is BF16 and c.dtype_ref is FP32
+        assert c.dtype_label == "bf16-vs-fp32"
+        assert "bf16-vs-fp32" in c.case_id
+    ids = [c.case_id for c in cases]
+    assert len(ids) == len(set(ids))  # paired, not doubled per dtype
+
+
+def test_cross_dtype_requires_exactly_two_dtypes():
+    spec = get_spec("relu")
+    cfg = Config(
+        dtypes=["bf16", "fp16", "fp32"], level="smoke",
+        directions=["fwd"], cross_dtype=True,
+    )
+    with pytest.raises(ValueError):
+        enumerate_cases([spec], cfg)
+
+
+def test_cross_dtype_forward_and_backward_execute_without_golden():
+    spec = _cross_spec()
+    cfg = Config(secondary_check=False, dump_on_fail=False, cross_dtype=True)
+
+    fwd = execute_case(_cross_case("fwd"), spec, torch.device("cpu"), cfg)
+    assert fwd.error is None
+    assert any(sub["label"] == "out" for sub in fwd.sub)
+    assert fwd.passed  # 2.0 is exact in bf16 -> identical to fp32
+
+    bwd = execute_case(
+        _cross_case("bwd", grad_pattern=inputgen.FULL(1.0)),
+        spec, torch.device("cpu"), cfg,
+    )
+    assert bwd.error is None
+    assert any(sub["label"] == "grad0" for sub in bwd.sub)
+    assert bwd.passed
+
+
+def test_cross_dtype_repro_command_carries_mode_and_both_dtypes():
+    cmd = repro_command(
+        _cross_case("fwd"), Config(cross_dtype=True, secondary_check=False)
+    )
+    assert "--cross-dtype" in cmd
+    assert "--dtypes bf16,fp32" in cmd
+    assert f"--case-id {_cross_case('fwd').case_id}" in cmd

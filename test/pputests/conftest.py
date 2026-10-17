@@ -54,6 +54,9 @@ def pytest_addoption(parser):
                 help="run ppufn on CPU when no PPU is present (self-check)")
     g.addoption("--ppu-no-dump", action="store_true", default=False,
                 help="disable failure dumps")
+    g.addoption("--ppu-cross-dtype", action="store_true", default=False,
+                help="skip the fp64 golden and compare two PPU dtypes "
+                     "head-to-head (requires exactly two --ppu-dtypes)")
 
 
 def _cfg_from_pytest(pytestconfig) -> Config:
@@ -75,6 +78,8 @@ def _cfg_from_pytest(pytestconfig) -> Config:
         cfg.allow_cpu_fallback = True
     if o.ppu_no_dump:
         cfg.dump_on_fail = False
+    if o.ppu_cross_dtype:
+        cfg.cross_dtype = True
     return cfg
 
 

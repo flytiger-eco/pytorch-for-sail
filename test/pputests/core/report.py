@@ -191,7 +191,7 @@ def _write_junit(
     ]
     for r in results:
         c = r.case
-        cls = f"{c.spec_name}.{c.dtype_name}"
+        cls = f"{c.spec_name}.{c.dtype_label}"
         name = c.case_id
         lines.append(
             f'    <testcase classname="{_esc(cls)}" name="{_esc(name)}" '
@@ -255,6 +255,11 @@ def _write_markdown(
         f"- 汇总: total={tot['total']} PASS={tot['pass']} "
         f"FAIL={tot['fail']} SKIP={tot['skip']}"
     )
+    if any(r.case.dtype_ref is not None for r in results):
+        lines.append(
+            "- 模式: 跨 dtype 对比 (无 fp64 golden)。`ppu=` 为低精度 PPU 结果，"
+            "`ref=` 为高精度 PPU 结果；相对误差 = |低精度 − 高精度| / |高精度|。"
+        )
     lines.append("")
 
     # ---- pivot: op x dtype x direction ----------------------------------
@@ -267,7 +272,7 @@ def _write_markdown(
 
     cells: Dict[tuple, List[CaseResult]] = {}
     for r in results:
-        key = (r.case.spec_name, r.case.dtype_name, r.case.direction)
+        key = (r.case.spec_name, r.case.dtype_label, r.case.direction)
         cells.setdefault(key, []).append(r)
 
     for key in sorted(cells):

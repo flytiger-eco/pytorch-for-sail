@@ -52,6 +52,29 @@ def dtype_name(dtype: torch.dtype) -> str:
     return _DTYPE_TO_NAME.get(dtype, str(dtype).replace("torch.", ""))
 
 
+# Mantissa width ordering, used by cross-dtype mode to decide which of two
+# dtypes is the higher-precision reference (bf16 < fp16 < fp32 < fp64).
+_PRECISION_RANK: Dict[torch.dtype, int] = {
+    BF16: 0,
+    FP16: 1,
+    FP32: 2,
+    FP64: 3,
+}
+
+
+def precision_rank(dtype: torch.dtype) -> int:
+    """Monotonic precision order for a dtype (higher == more precise).
+
+    Unknown dtypes sort below all known ones so ``sorted`` stays total.
+    """
+    return _PRECISION_RANK.get(dtype, -1)
+
+
+def order_by_precision(dtypes) -> list:
+    """Return ``dtypes`` sorted from lowest to highest precision."""
+    return sorted(set(dtypes), key=precision_rank)
+
+
 def parse_dtype(token: str) -> torch.dtype:
     """Resolve a single dtype token (``bf16``/``fp32``/``fp16``/...)."""
     key = token.strip().lower()

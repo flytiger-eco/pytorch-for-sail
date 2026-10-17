@@ -92,7 +92,7 @@ pytest pputests/tests/test_ops.py --ppu-allow-cpu-fallback
 
 pytest 常用选项：`--ppu-config/--ppu-level/--ppu-dtypes/--ppu-ops/--ppu-category/`
 `--ppu-direction/--ppu-backward-only/--ppu-device/--ppu-seed/--ppu-out/--ppu-report/`
-`--ppu-allow-cpu-fallback/--ppu-no-dump`。
+`--ppu-allow-cpu-fallback/--ppu-no-dump/--ppu-cross-dtype`。
 
 ### 2.3 级别与规模
 
@@ -130,7 +130,8 @@ pputests/
 ├── configs/
 │   ├── default.yaml         全局默认
 │   ├── smoke.yaml
-│   └── full.yaml
+│   ├── full.yaml
+│   └── crossdtype.yaml      跨 dtype (bf16 vs fp32) 直接对比模式
 ├── tests/
 │   └── test_ops.py          参数化驱动
 └── reports/                 产物（已 gitignore）
@@ -280,6 +281,31 @@ PY
   生成，golden 消费**同一批输入**上采到 fp64（对 bf16/fp16/fp32 无损），保证对比同源。
 - **次基准（交叉校验）**：PyTorch CPU **同 dtype** 原生实现，用于区分“PPU 实现问题”与
   “低精度固有误差”。结果记录在 `results.json` 的 `sub` 中（`out_vs_secondary_cpu`），**不参与**门禁。
+
+### 8.1 跨 dtype 直接对比模式（`--cross-dtype`）
+
+当只想看 **PPU 上低精度 vs 高精度**（如 bf16 相对 fp32 漂移多少）、而**不引入 fp64 golden** 时，
+用 `--cross-dtype`。此模式下：
+
+- 必须且只能给**两个** dtype（`--dtypes bf16,fp32`）；精度高的自动作为参考（`ref`），精度低的作为被测（`out`）。
+- 同一逻辑输入**先在参考 dtype（fp32）按 seed 生成，再舍入到低 dtype（bf16）**，两次 PPU 前向/反向分别执行后逐元素对比。
+- 判定阈值按**低精度 dtype** 解析（bf16 用 bf16 阈值），因为衡量的正是低精度相对高精度的偏差。
+- 相对误差 = `|低精度 − 高精度| / |高精度|`；报告里 `ppu=` 为低精度结果、`ref=` 为高精度结果，`case_id` 带 `bf16-vs-fp32` 标签。
+
+```bash
+# 只看 softmax 在 PPU 上 bf16 与 fp32 的前反向差异
+python run.py --ops softmax --cross-dtype --dtypes bf16,fp32 --level full
+
+# 或用现成配置（输出到 reports-crossdtype/）
+python run.py --config configs/crossdtype.yaml --ops softmax
+
+# 无 PPU 时也可自检（两次都在 CPU 跑）
+python run.py --all --cross-dtype --dtypes bf16,fp32 --level smoke --allow-cpu-fallback
+```
+
+失败 dump 的 `case.pt` 在此模式含：`inputs_low/inputs_high`、`ppu_out_low/ppu_out_high`、`diff`，
+反向另含 `grad_output_low/high`、`ppu_grads_low/high`；`meta.json` 带 `compare_mode=cross-dtype`。
+复现命令会自动附带 `--cross-dtype` 与两个 dtype。
 
 ---
 

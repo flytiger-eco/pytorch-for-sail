@@ -7,6 +7,7 @@ Examples::
     python run.py --category activation --backward-only
     python run.py --all --report markdown,junit --out reports/
     python run.py --all --level smoke --allow-cpu-fallback   # no PPU needed
+    python run.py --ops softmax --cross-dtype --dtypes bf16,fp32   # bf16 vs fp32 on PPU
     python run.py --list                                     # show registered ops
 
 Exit code is non-zero when any case FAILs (skips do not fail the run), so the
@@ -71,6 +72,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-dump", action="store_true", help="disable failure dumps")
     p.add_argument("--no-secondary", action="store_true",
                    help="disable the CPU same-dtype cross-check")
+    p.add_argument("--cross-dtype", action="store_true",
+                   help="skip the fp64 golden and compare two PPU dtypes "
+                        "head-to-head (requires exactly two --dtypes; the more "
+                        "precise one is the reference)")
     p.add_argument("-n", "--jobs", type=int, default=1,
                    help="parallel worker threads for case execution (full mode)")
     p.add_argument("--list", action="store_true", help="list registered ops & exit")
@@ -105,6 +110,8 @@ def cfg_from_args(args: argparse.Namespace) -> Config:
         cfg.dump_on_fail = False
     if args.no_secondary:
         cfg.secondary_check = False
+    if args.cross_dtype:
+        cfg.cross_dtype = True
     return cfg
 
 
@@ -131,12 +138,23 @@ def main(argv=None) -> int:
     if args.case_seed is not None and not args.case_id:
         print("[ppu-accuracy] --case-seed requires --case-id", file=sys.stderr)
         return 2
+    if cfg.cross_dtype:
+        try:
+            n_dt = len(set(parse_dtypes(cfg.dtypes)))
+        except ValueError as exc:
+            print(f"[ppu-accuracy] {exc}", file=sys.stderr)
+            return 2
+        if n_dt != 2:
+            print("[ppu-accuracy] --cross-dtype requires exactly two --dtypes, "
+                  "e.g. --dtypes bf16,fp32", file=sys.stderr)
+            return 2
     device = runner.resolve_device(cfg.device, cfg.allow_cpu_fallback)
 
     if not args.quiet:
         avail = runner.device_available(device)
+        mode = "cross-dtype" if cfg.cross_dtype else "golden"
         print(f"[ppu-accuracy] device={device} available={avail} "
-              f"level={cfg.level} dtypes={cfg.dtypes}")
+              f"level={cfg.level} mode={mode} dtypes={cfg.dtypes}")
         if not avail:
             print("[ppu-accuracy] PPU unavailable; all cases will be SKIPPED. "
                   "Use --allow-cpu-fallback for a golden self-check.")

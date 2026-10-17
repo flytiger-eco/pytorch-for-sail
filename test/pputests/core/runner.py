@@ -32,6 +32,7 @@ from .reference import golden_backward, golden_forward, to_fp64_inputs
 from .tolerance import (
     Tolerance,
     dtype_name,
+    order_by_precision,
     parse_dtypes,
     resolve_tolerance,
 )
@@ -59,6 +60,10 @@ class Config:
     out_dir: str = "reports"
     allow_cpu_fallback: bool = False     # run ppufn on cpu (framework self-check)
     secondary_check: bool = True         # cross-check vs cpu same-dtype golden
+    # cross-dtype mode: skip the fp64 golden entirely and compare the PPU output
+    # of two dtypes head-to-head (lower-precision vs higher-precision). Exactly
+    # two ``dtypes`` must be given; the more precise one is the reference.
+    cross_dtype: bool = False
     dump_on_fail: bool = True
     topk: int = 8
     include_empty: bool = True
@@ -139,9 +144,19 @@ class Case:
     direction: str            # "fwd" | "bwd"
     seed: int
     grad_pattern: Optional[Pattern] = None
+    # Set only in cross-dtype mode: ``dtype`` is the low-precision output under
+    # test and ``dtype_ref`` is the high-precision PPU reference (no fp64 golden).
+    dtype_ref: Optional[torch.dtype] = None
 
     @property
     def dtype_name(self) -> str:
+        return dtype_name(self.dtype)
+
+    @property
+    def dtype_label(self) -> str:
+        """Human/report label: ``fp32`` normally, ``bf16-vs-fp32`` in cross mode."""
+        if self.dtype_ref is not None:
+            return f"{dtype_name(self.dtype)}-vs-{dtype_name(self.dtype_ref)}"
         return dtype_name(self.dtype)
 
 
@@ -219,6 +234,18 @@ def enumerate_cases(
     if backward_only:
         dirs = {"bwd"}
 
+    # In cross-dtype mode the two dtypes are paired into ONE case each (the
+    # lower-precision one is the output under test, the higher is the ref).
+    cross_pair = None
+    if getattr(cfg, "cross_dtype", False):
+        ordered = order_by_precision(dtypes)
+        if len(ordered) != 2:
+            raise ValueError(
+                "cross-dtype mode requires exactly two dtypes, "
+                f"e.g. --dtypes bf16,fp32 (got {[dtype_name(d) for d in ordered]})"
+            )
+        cross_pair = (ordered[0], ordered[1])
+
     cases: List[Case] = []
     for spec in specs:
         if ops_filter and spec.name not in ops_filter:
@@ -226,9 +253,16 @@ def enumerate_cases(
         if category_filter and spec.category != category_filter:
             continue
 
-        spec_dtypes = [d for d in dtypes if d in spec.dtypes] or []
-        # FP16 is opt-in: only run it if explicitly requested via dtypes_filter
-        for dtype in spec_dtypes:
+        if cross_pair is not None:
+            lo, hi = cross_pair
+            # both dtypes must be declared by the op for a cross comparison
+            entries = [(lo, hi)] if (lo in spec.dtypes and hi in spec.dtypes) else []
+        else:
+            spec_dtypes = [d for d in dtypes if d in spec.dtypes] or []
+            # FP16 is opt-in: only run it if explicitly requested via dtypes_filter
+            entries = [(d, None) for d in spec_dtypes]
+
+        for dtype, dtype_ref in entries:
             combos = (
                 _smoke_subset(spec)
                 if cfg.level == "smoke"
@@ -253,8 +287,13 @@ def enumerate_cases(
                             if grad_pattern is not None
                             else ""
                         )
+                        dt_tag = (
+                            f"{dtype_name(dtype)}-vs-{dtype_name(dtype_ref)}"
+                            if dtype_ref is not None
+                            else dtype_name(dtype)
+                        )
                         cid = (
-                            f"{spec.name}__{dtype_name(dtype)}__{shape_case.name}"
+                            f"{spec.name}__{dt_tag}__{shape_case.name}"
                             f"__{pattern.label}__p{pi}_{tag}__{direction}{grad_tag}"
                         )
                         cases.append(
@@ -268,6 +307,7 @@ def enumerate_cases(
                                 direction=direction,
                                 seed=_stable_seed(base_seed, cid),
                                 grad_pattern=grad_pattern,
+                                dtype_ref=dtype_ref,
                             )
                         )
     return cases
@@ -327,6 +367,7 @@ class CaseResult:
             "op": c.spec_name,
             "category": self.category,
             "dtype": c.dtype_name,
+            "dtype_ref": dtype_name(c.dtype_ref) if c.dtype_ref is not None else "",
             "direction": c.direction,
             "grad_pattern": c.grad_pattern.label if c.grad_pattern else "",
             "shape": tuple(c.shape_case.shape),
@@ -429,6 +470,12 @@ def execute_case(
 
 
 def _run_case_body(case, spec, device, cfg, tol, result):
+    # cross-dtype mode: compare two PPU runs (low vs high precision) directly,
+    # with no fp64 golden involved.
+    if case.dtype_ref is not None:
+        _run_cross_dtype_body(case, spec, device, cfg, tol, result)
+        return
+
     call_params = spec.call_params(case.params)
     shapes = spec.input_shapes(case.shape_case, case.params)
     views = spec.input_views(case.shape_case, case.params)
@@ -508,6 +555,102 @@ def _run_case_body(case, spec, device, cfg, tol, result):
         cmp_g = compare(
             pg, gg, tol, dtype=case.dtype,
             check_stride=False, empty_is_pass=spec.empty_is_pass, topk=cfg.topk,
+        )
+        result.sub.append(_comparison_to_sub(f"grad{i}", cmp_g))
+        if not cmp_g.passed:
+            bwd_ok = False
+
+    result.passed = bool(cmp_out.passed and bwd_ok)
+    result.reasons.extend(cmp_out.reasons)
+    for s in result.sub:
+        if s["label"].startswith("grad") and s.get("reasons"):
+            result.reasons.extend(f"[{s['label']}] {r}" for r in s["reasons"])
+
+
+def _run_cross_dtype_body(case, spec, device, cfg, tol, result):
+    """Compare the PPU output of two dtypes head-to-head (no fp64 golden).
+
+    ``case.dtype`` is the lower-precision run (the value under test, mapped to
+    ``out``) and ``case.dtype_ref`` is the higher-precision run (mapped to
+    ``ref``), so the reported relative error reads as "how far does the low
+    dtype drift from the high dtype".  Both runs consume the *same logical
+    input*: it is generated once in the reference dtype (seeded) and rounded
+    down to the low dtype.  ``tol`` is resolved against the low dtype, which is
+    the natural budget for that precision.
+    """
+    call_params = spec.call_params(case.params)
+    shapes = spec.input_shapes(case.shape_case, case.params)
+    views = spec.input_views(case.shape_case, case.params)
+    patterns = spec.input_patterns(case.pattern, case.params)
+
+    want_grad = case.direction == "bwd"
+    lo_dtype = case.dtype
+    hi_dtype = case.dtype_ref
+
+    # Build the input once in the high dtype, then round down so both PPU runs
+    # see identical logical values (only the compute precision differs).
+    gen = torch.Generator(device="cpu").manual_seed(case.seed)
+    inputs_hi_plain = inputgen.build_inputs(
+        patterns, shapes, views, hi_dtype, device, gen
+    )
+    inputs_lo_plain = [t.to(lo_dtype) for t in inputs_hi_plain]
+
+    if want_grad:
+        # detach() keeps leaf semantics and preserves non-contiguous strides.
+        inputs_hi = [t.detach().requires_grad_(True) for t in inputs_hi_plain]
+        inputs_lo = [t.detach().requires_grad_(True) for t in inputs_lo_plain]
+    else:
+        inputs_hi = inputs_hi_plain
+        inputs_lo = inputs_lo_plain
+
+    # ---------------- forward ----------------
+    out_hi = spec.ppufn(*inputs_hi, **call_params)
+    if isinstance(out_hi, (tuple, list)):
+        out_hi = out_hi[0]
+    out_lo = spec.ppufn(*inputs_lo, **call_params)
+    if isinstance(out_lo, (tuple, list)):
+        out_lo = out_lo[0]
+
+    cmp_out = compare(
+        out_lo, out_hi, tol, dtype=lo_dtype,
+        check_dtype=False, check_stride=False,
+        empty_is_pass=spec.empty_is_pass, topk=cfg.topk,
+    )
+    result.sub.append(_comparison_to_sub("out", cmp_out))
+
+    if case.direction == "fwd":
+        result.passed = cmp_out.passed
+        result.reasons.extend(cmp_out.reasons)
+        return
+
+    # ---------------- backward ----------------
+    grad_pattern = case.grad_pattern or inputgen.NORMAL
+    ggen = torch.Generator(device="cpu").manual_seed(case.seed + 1)
+    grad_out_hi = inputgen.grad_output_for(
+        tuple(out_hi.shape), hi_dtype, device, ggen, grad_pattern
+    )
+    grad_out_lo = grad_out_hi.to(lo_dtype)
+
+    out_hi.backward(grad_out_hi)
+    out_lo.backward(grad_out_lo)
+    grads_hi = [t.grad for t in inputs_hi]
+    grads_lo = [t.grad for t in inputs_lo]
+
+    bwd_ok = True
+    for i, (gl, gh) in enumerate(zip(grads_lo, grads_hi)):
+        if gl is None or gh is None:
+            result.sub.append(
+                _comparison_to_sub(
+                    f"grad{i}",
+                    Comparison(passed=False, hard_reasons=[f"grad{i} is None"]),
+                )
+            )
+            bwd_ok = False
+            continue
+        cmp_g = compare(
+            gl, gh, tol, dtype=lo_dtype,
+            check_dtype=False, check_stride=False,
+            empty_is_pass=spec.empty_is_pass, topk=cfg.topk,
         )
         result.sub.append(_comparison_to_sub(f"grad{i}", cmp_g))
         if not cmp_g.passed:
