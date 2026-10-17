@@ -51,7 +51,74 @@ PyTorch-for-SAIL 基于社区开源 PyTorch 项目开发，面向真武 PPU 硬�
 
 ## 源码编译
 
-如需从源码编译并安装，请确保在 [PyTorch-for-SAIL Docker 镜像](https://www.flytiger-eco.com/download?businessType=DOCKER)内进行编译。
+如需从源码编译并安装，可选择以下两种基于 Docker 的工作流。
+
+### 方式一：使用 `Dockerfile.ubuntu-ppu` 构建
+
+[`Dockerfile.ubuntu-ppu`](Dockerfile.ubuntu-ppu) 会在 Flytiger PPU SDK 镜像中将源码编译为 wheel。它复用官方流水线所使用的 [`.ci/ppu/`](.ci/ppu) 下的 CI 脚本，因此 PPU SDK 与 v2.2 的 PCCL NCCL wrapper 都会被自动解析。Docker 构建上下文必须是仓库根目录，并且必须包含已初始化的 PPU 子模块（`cutlass`、`flash-attention`、`xformers`、`cudafy-for-sail`、`flex-flash-attention`，以及嵌套的 `flex-flash-attention/csrc/actlize`）。
+
+```bash
+# Docker 发送构建上下文前，先初始化子模块。
+git submodule sync
+git submodule update --init --recursive
+
+# 构建运行时镜像。该过程还会编译 wheel、安装它，并在源码目录之外验证
+# torch 可导入且已编译 CUDA 支持。
+docker buildx build --load --progress=plain \
+  --target runtime \
+  -t pytorch-for-sail:ubuntu-ppu \
+  -f Dockerfile.ubuntu-ppu .
+```
+
+默认 `BASE_IMAGE` 已固定为 CI 使用的 PPU SDK 2.2.0 镜像。可通过 `--build-arg BASE_IMAGE=<image>` 替换基础镜像，但替换后的镜像必须提供相同的 SDK 路径和工具链布局。也可通过 `--build-arg` 覆盖编译选项，例如：
+
+```bash
+docker buildx build --load \
+  --build-arg MAX_JOBS=16 \
+  --build-arg TORCH_CUDA_ARCH_LIST=8.9 \
+  --target runtime \
+  -t pytorch-for-sail:ubuntu-ppu-sm89 \
+  -f Dockerfile.ubuntu-ppu .
+```
+
+支持的构建参数：`BASE_IMAGE`、`TORCH_CUDA_ARCH_LIST`（默认 `8.0a;8.9`，即 SM80+SM89 混合编译）、`MAX_JOBS`（默认 `0`，按 CPU 核数与内存自动推导）、`PPU_LINK_JOBS`、`PPU_MEM_PER_JOB_GB`、`SDK_INSTALL_DIR`、`PIP_INDEX_URL`。
+
+以 Shell 启动构建完成的镜像：
+
+```bash
+docker run -it --rm --entrypoint /bin/bash pytorch-for-sail:ubuntu-ppu
+```
+
+运行时镜像默认从 `/workspace` 启动；源码检出仍位于 `/workspace/pytorch-for-sail`，这可确保常规 Python 导入优先使用已安装 wheel，而不是源码树。需要使用加速设备的工作负载，应按宿主机环境要求添加设备映射。
+
+镜像构建完成后，可独立执行以下冒烟验证：
+
+```bash
+docker run -t --rm --entrypoint /bin/bash pytorch-for-sail:ubuntu-ppu -lc '
+  set -euo pipefail
+  source /usr/local/PPU_SDK/envsetup.sh
+  cd /tmp
+  python3 -c "import torch; print(torch.__version__); assert torch.cuda._is_compiled(), \"torch was built without CUDA support\""
+'
+```
+
+如需仅导出生成的 wheel 而不加载运行时镜像，可使用 `artifact` target：
+
+```bash
+rm -rf wheels
+docker buildx build --progress=plain \
+  --target artifact \
+  --output type=local,dest=./wheels \
+  -f Dockerfile.ubuntu-ppu .
+```
+
+### 方式二：下载 Flytiger PPU Docker 镜像后自行编译
+
+从 [Flytiger 下载页面](https://www.flytiger-eco.com/download?businessType=DOCKER) 下载兼容的 PPU Docker 镜像，并将 `FLYTIGER_PPU_IMAGE` 设置为本地镜像名称或 tag。该方式保留宿主机源码检出，并在容器内完成编译。若下载内容为镜像归档文件，先执行导入：
+
+```bash
+docker load -i <downloaded-image-archive.tar>
+```
 
 ```bash
 # 1. 下载 PyTorch 源码并初始化子模块
@@ -62,8 +129,17 @@ cd pytorch-for-sail
 git submodule sync
 git submodule update --init --recursive
 
+# 2. 挂载源码并启动下载的 PPU 镜像。
+# 将占位符替换为上一步获取的本地镜像名称或 tag。
+export FLYTIGER_PPU_IMAGE=<downloaded-flytiger-ppu-image>
+docker run -it --rm \
+  -v "$(pwd):/workspace/pytorch-for-sail" \
+  -w /workspace/pytorch-for-sail \
+  --entrypoint /bin/bash \
+  "${FLYTIGER_PPU_IMAGE}"
+
 # 以下命令需在 PyTorch-for-SAIL Docker 容器内执行
-# 2. 配置编译环境
+# 3. 配置编译环境
 source /usr/local/PPU_SDK/envsetup.sh
 
 # 默认配置适用于制品版本 v2.2：需要单独安装 PCCL 提供的 NCCL wrapper。
@@ -102,7 +178,7 @@ export TORCH_CUDA_ARCH_LIST="8.0a;8.9"
 # Flex Flash Attention 后端也默认关闭；仅适用于 890P，在启动 Python 进程前设置：
 # export TORCH_FLEX_FLASH_SDPA_ENABLED=1
 
-# 3. 编译生成 wheel 安装包。NCCL_INCLUDE_DIR 和 NCCL_LIB_DIR 已由上方版本配置导出。
+# 4. 编译生成 wheel 安装包。NCCL_INCLUDE_DIR 和 NCCL_LIB_DIR 已由上方版本配置导出。
 PYTORCH_VERSION=2.13.0 \
 PYTORCH_BUILD_VERSION=2.13.0 \
 PYTORCH_BUILD_NUMBER=0 \
@@ -115,7 +191,7 @@ BUILD_CAFFE2=False \
 BUILD_TEST=True \
 python3 setup.py bdist_wheel
 
-# 4. 安装编译生成的 wheel 包
+# 5. 安装编译生成的 wheel 包
 pip install dist/*.whl
 ```
 
