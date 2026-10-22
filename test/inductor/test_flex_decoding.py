@@ -841,6 +841,7 @@ class TestFlexDecoding(InductorTestCase):
     @common_utils.parametrize("dtype", test_dtypes)
     @common_utils.parametrize("score_mod", test_score_mods)
     @common_utils.parametrize("BLOCK_SIZE", test_block_size)
+    @with_tf32_off
     def test_builtin_score_mods_different_block_size(
         self,
         device,
