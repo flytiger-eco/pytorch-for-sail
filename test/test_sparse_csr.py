@@ -2,6 +2,17 @@
 # ruff: noqa: F841
 
 import torch
+import os
+
+# PPU uses native FP32 Tensor Cores by default. The Triton bsr_scatter_mm kernel
+# and the dense reference matmul then accumulate FP32 differently, breaking the
+# float32 variants (e.g. test_triton_bsr_scatter_mm blocksize 64). Route the FP32
+# path onto CUDA (non-Tensor-Core) cores so both sides stay consistent. This must
+# be set before any device query or test execution so the backend observes the
+# override on first use.
+if torch.version.ppu:
+    os.environ["PPU_FP32_TENSOR_OVERRIDE"] = "0"
+
 import random
 import io
 import itertools
