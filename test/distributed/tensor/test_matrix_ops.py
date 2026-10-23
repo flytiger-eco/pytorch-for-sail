@@ -6,6 +6,17 @@ import unittest
 from typing import cast, Optional
 
 import torch
+import os
+
+# PPU uses native FP32 Tensor Cores by default. test_dtensor_mm compares the
+# DTensor result (full_tensor()) against a CPU FP32 reference with a tight
+# atol=1.5e-5/rtol=1e-6, which the Tensor-Core accumulation drift exceeds.
+# Route the FP32 path onto CUDA (non-Tensor-Core) cores. This is set at module
+# top level (not in setUp) so the spawned rank subprocesses re-import this module
+# and inherit the override before any device query or GEMM execution.
+if torch.version.ppu:
+    os.environ["PPU_FP32_TENSOR_OVERRIDE"] = "0"
+
 import torch.nn.functional as F
 from torch.distributed import init_device_mesh
 from torch.distributed.tensor import (
