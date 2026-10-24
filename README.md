@@ -93,8 +93,8 @@ export TORCH_CUDA_ARCH_LIST="8.0a;8.9"
 
 # 3. Optional build options
 # By default, the elementwise operator optimization and the Flex Flash Attention backend are
-# compiled into the wheel. Once compiled in, the elementwise optimization is enabled by default
-# only on Zhenwu M890, while Flex Flash Attention is disabled by default; see step 6 for runtime switches.
+# compiled into the wheel. Both features are disabled by default at runtime and can be enabled
+# only on Zhenwu M890; see step 6 for runtime switches.
 # To exclude the elementwise operator optimization from the build, set the following environment
 # variable. Once excluded, it cannot be enabled at runtime:
 # export USE_ELEMENTWISE_OPT=False
@@ -121,11 +121,11 @@ pip install dist/*.whl
 
 # 6. Optional runtime switches
 # The elementwise operator optimization accelerates selected special memory access patterns.
-# It is enabled by default on Zhenwu M890 machines and always disabled on Zhenwu 810E machines,
+# It is disabled by default on Zhenwu M890 machines and always disabled on Zhenwu 810E machines,
 # where it cannot be enabled through the environment variable.
-# To disable it on Zhenwu M890, set the following variable before starting the Python process;
+# To enable it on Zhenwu M890, set the following variable before starting the Python process;
 # setting it after `import torch` has no effect.
-# export PYTORCH_DISABLE_PPU_ELEMENTWISE_OPT=1
+# export PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT=1
 # Flex Flash Attention is experimental, disabled by default, and available only on Zhenwu M890.
 # To enable it, set the following variable before starting the Python process.
 # Setting a variable has no effect if the feature was disabled at build time.

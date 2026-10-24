@@ -5,7 +5,7 @@
 // lengthens the runtime's per-launch lookup. The PPU kernels add tens of
 // thousands of instantiations, so torch_cuda is linked with
 // --wrap=__cudaRegisterFunction and they are dropped here unless every visible
-// device is a Zhenwu M890 and PYTORCH_DISABLE_PPU_ELEMENTWISE_OPT is not "1".
+// device is a Zhenwu M890 and PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT is "1".
 // elementwise_ppu_enabled() follows the same decision, so a dropped kernel is
 // never launched.
 
@@ -19,8 +19,8 @@ namespace at::native {
 bool elementwise_ppu_kernels_registered() {
   static const bool registered = []() {
     const char* value =
-        std::getenv("PYTORCH_DISABLE_PPU_ELEMENTWISE_OPT");
-    if (value != nullptr && std::strcmp(value, "1") == 0) {
+        std::getenv("PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT");
+    if (value == nullptr || std::strcmp(value, "1") != 0) {
       return false;
     }
 

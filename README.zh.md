@@ -90,7 +90,7 @@ export TORCH_CUDA_ARCH_LIST="8.0a;8.9"
 
 # 3. 可选编译选项
 # 默认会将 elementwise 算子优化和 Flex Flash Attention 后端编译进 wheel 包；
-# 编译后，elementwise 算子优化仅在真武 M890 上默认开启，Flex Flash Attention 在运行时默认关闭；开关方式见第 6 步。
+# 两项功能在运行时均默认关闭，仅可在真武 M890 上开启；开关方式见第 6 步。
 # 如需在编译时去掉 elementwise 算子优化，请设置以下环境变量；
 # export USE_ELEMENTWISE_OPT=False
 # 如需在编译时去掉 Flex Flash Attention 后端，请设置以下环境变量；
@@ -113,10 +113,11 @@ python3 setup.py bdist_wheel
 pip install dist/*.whl
 
 # 6. 可选运行时开关
-# elementwise 算子优化针对部分特殊访存模式提供性能加速，仅在真武 M890 机器上生效并默认开启。
-# 如需在真武 M890 机器上关闭该优化，须在启动 Python 进程前设置以下环境变量；
+# elementwise 算子优化针对部分特殊访存模式提供性能加速，仅在真武 M890 机器上生效并默认关闭。
+# 真武 810E 机器上始终关闭，无法通过环境变量开启。
+# 如需在真武 M890 机器上开启该优化，须在启动 Python 进程前设置以下环境变量；
 # 在 Python 中 import torch 之后再设置不会生效。
-# export PYTORCH_DISABLE_PPU_ELEMENTWISE_OPT=1
+# export PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT=1
 # Flex Flash Attention 为实验特性，默认关闭，仅在真武 M890 机器上生效；
 # 如需开启，须在启动 Python 进程前设置以下环境变量。
 # 编译时已关闭的功能，设置对应变量也不会生效。

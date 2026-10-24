@@ -74,8 +74,8 @@ inline int64_t ppu_grid_cap(int axis) {
 }
 
 // Whether PPU elementwise kernels were registered when torch_cuda was loaded.
-// registration.cpp enables them by default only when every visible device is a
-// Zhenwu M890; PYTORCH_DISABLE_PPU_ELEMENTWISE_OPT="1" disables them.
+// registration.cpp enables them only when every visible device is a Zhenwu M890
+// and PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT="1" was set before loading torch_cuda.
 bool elementwise_ppu_kernels_registered();
 
 // Follow the load-time registration decision rather than re-reading the
