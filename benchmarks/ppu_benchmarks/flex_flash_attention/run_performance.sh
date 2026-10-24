@@ -38,7 +38,7 @@ Tolerances (atol/rtol): fp32=0.01/0.02, bf16=0.02/0.02, fp16=0.005/0.01.
 References are batch/query-chunked without sampling; accuracy errors and elapsed_ms are stored in performance.json.
 Accuracy adds runtime outside performance samples; existing timing-only golden files remain compatible.
 Fixed golden path (relative to the PyTorch repository root):
-../training_framework_golden_files/torch/torch_2_10_0/arbitray_flash_atention/M890/arbitray_flash_attention_golden.json
+../training_framework_golden_files/torch/torch_2_10_0/flex_flash_attention/M890/flex_flash_attention_golden.json
 No network downloads; missing or incompatible golden data fails immediately. The format matches bench_attention.py raw JSON.
 Compare fwd/bwd/fwd_bwd x cuda_event/wall; fail if any golden_ms/current_ms < 0.95.
 Exactly 5% lower performance or any speedup does not fail; failed, missing, or incomparable cases do fail.
@@ -75,7 +75,7 @@ while (($#)); do
   esac
 done
 unset FLEX_FLASH_ATTENTION_SO_PATH
-export TORCH_FLEX_FLASH_SDPA_ENABLED=1
+export PYTORCH_ENABLE_PPU_FLEX_FLASH_ATTENTION=1
 CMD=("$PYTHON" "$HERE/bench_attention.py" --config "$CONFIG" --backends flexflash
      --dtypes fp32,bf16,fp16 --device "$DEVICE" --mode performance --check-accuracy
      --warmup "$WARMUP" --rounds "$ROUNDS" --samples "$SAMPLES"

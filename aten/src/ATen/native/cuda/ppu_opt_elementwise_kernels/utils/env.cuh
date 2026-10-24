@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
-#include <map>
-#include <mutex>
 #include <string>
 
 #include <cuda_runtime_api.h>
@@ -12,51 +10,50 @@
 namespace at::native {
 
 struct PPUDeviceCapabilities {
+  bool available{false};
   bool is_m890{false};
   std::array<int64_t, 3> max_grid_size{0, 0, 0};
 };
 
-// Cache only devices that have actually been selected by the caller.  This
-// avoids probing unrelated cards in heterogeneous multi-device processes.
-static inline const PPUDeviceCapabilities* current_ppu_device_capabilities() {
-  int device = 0;
-  if (cudaGetDevice(&device) != cudaSuccess) {
-    return nullptr;
-  }
+// Query the device selected on first use once per process. Elementwise dispatch
+// assumes the usual one-process-per-device execution model and does not support
+// switching to a different device model after this cache has been initialized.
+inline const PPUDeviceCapabilities& current_ppu_device_capabilities() {
+  static const PPUDeviceCapabilities capabilities = []() {
+    PPUDeviceCapabilities result;
+    int device = 0;
+    if (cudaGetDevice(&device) != cudaSuccess) {
+      return result;
+    }
 
-  static std::mutex cache_mutex;
-  static std::map<int, PPUDeviceCapabilities> cache;
-  std::lock_guard<std::mutex> lock(cache_mutex);
-  const auto found = cache.find(device);
-  if (found != cache.end()) {
-    return &found->second;
-  }
+    cudaDeviceProp prop{};
+    if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) {
+      return result;
+    }
 
-  cudaDeviceProp prop{};
-  if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) {
-    return nullptr;
-  }
-  PPUDeviceCapabilities capabilities;
-  capabilities.is_m890 = (prop.major == 8 && prop.minor == 9);
-  for (int axis = 0; axis < 3; ++axis) {
-    capabilities.max_grid_size[axis] = prop.maxGridSize[axis];
-  }
-  return &cache.emplace(device, capabilities).first->second;
+    result.available = true;
+    result.is_m890 = (prop.major == 8 && prop.minor == 9);
+    for (int axis = 0; axis < 3; ++axis) {
+      result.max_grid_size[axis] = prop.maxGridSize[axis];
+    }
+    return result;
+  }();
+  return capabilities;
 }
 
-static inline bool is_m890_device() {
-  const PPUDeviceCapabilities* capabilities = current_ppu_device_capabilities();
-  return capabilities != nullptr && capabilities->is_m890;
+inline bool is_m890_device() {
+  const auto& capabilities = current_ppu_device_capabilities();
+  return capabilities.available && capabilities.is_m890;
 }
 
 // Returns zero when the current device cannot be queried; callers treat that
 // as an ineligible launch rather than constructing an unchecked dim3 value.
-static inline int64_t ppu_max_grid_size(int axis) {
-  const PPUDeviceCapabilities* capabilities = current_ppu_device_capabilities();
-  if (capabilities == nullptr || axis < 0 || axis >= 3) {
+inline int64_t ppu_max_grid_size(int axis) {
+  const auto& capabilities = current_ppu_device_capabilities();
+  if (!capabilities.available || axis < 0 || axis >= 3) {
     return 0;
   }
-  return capabilities->max_grid_size[axis];
+  return capabilities.max_grid_size[axis];
 }
 
 // Empirical sweet cap on host-side grid block counts (2^16 - 1). 65535 is
@@ -72,20 +69,20 @@ static inline int64_t ppu_max_grid_size(int axis) {
 // bounds out at each gate instead - std::min<int64_t>(ppu_max_grid_size(
 // axis), PPU_GRID_SWEET_CAP) - so the hardware limit and the performance
 // sweet spot stay distinguishable per site.
-static inline int64_t ppu_grid_cap(int axis) {
+inline int64_t ppu_grid_cap(int axis) {
   return std::min<int64_t>(ppu_max_grid_size(axis), PPU_GRID_SWEET_CAP);
 }
 
-// Enable the ppu noncontiguous-specialized kernel path (off by default):
-// unless PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT is set to a non-zero, non-False
-// value, noncontiguous calls fall through to the legacy path. The environment
-// switch is process-wide and cached independently from the current device.
-static inline bool elementwise_ppu_enabled() {
-  static const bool env_enabled = []() {
-    const char* v = std::getenv("PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT");
-    return v != nullptr && v[0] != '0' && v[0] != 'F' && v[0] != 'f';
-  }();
-  return env_enabled && is_m890_device();
+// Whether PPU elementwise kernels were registered when torch_cuda was loaded.
+// registration.cpp enables them only when every visible device is a Zhenwu M890
+// and PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT="1" was set before loading torch_cuda.
+bool elementwise_ppu_kernels_registered();
+
+// Follow the load-time registration decision rather than re-reading the
+// environment or querying the device from the hot path. A dropped kernel must
+// never be launched.
+inline bool elementwise_ppu_enabled() {
+  return elementwise_ppu_kernels_registered();
 }
 
 static inline const std::string& local_rank() {
