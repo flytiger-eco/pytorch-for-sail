@@ -169,16 +169,16 @@ pip install -r requirements.txt
 # This example builds for SM89 only.
 export TORCH_CUDA_ARCH_LIST="8.9"
 
-# Artifact version v2.2 enables these compile-time options by default:
-# - USE_ELEMENTWISE_OPT: elementwise operator optimization, effective only for 8.9.
-# - USE_FLEX_FLASH_ATTENTION: Flex Flash Attention compilation support.
-# Explicitly disable either feature before the build command if it is not wanted:
+# 3. Optional build options
+# By default, the elementwise operator optimization and the Flex Flash Attention backend are
+# compiled into the wheel. Both features are disabled by default at runtime and can be enabled
+# only on Zhenwu M890; see step 6 for runtime switches.
+# To exclude the elementwise operator optimization from the build, set the following environment
+# variable. Once excluded, it cannot be enabled at runtime:
 # export USE_ELEMENTWISE_OPT=False
+# To exclude the Flex Flash Attention backend from the build, set the following environment
+# variable. Once excluded, it cannot be enabled at runtime:
 # export USE_FLEX_FLASH_ATTENTION=False
-# Runtime: the elementwise operator optimization is off by default; set PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT=True
-# at runtime to enable it. Flex Flash Attention is also off by default at runtime;
-# it applies only to 890P and can be enabled before Python starts:
-# export TORCH_FLEX_FLASH_SDPA_ENABLED=1
 
 # 4. Build the wheel package. NCCL_INCLUDE_DIR and NCCL_LIB_DIR are exported
 # by the selected artifact-version configuration above.
@@ -194,8 +194,20 @@ BUILD_CAFFE2=False \
 BUILD_TEST=True \
 python3 setup.py bdist_wheel
 
-# 5. Install the built wheel package and its runtime dependencies
-python3 -m pip install --force-reinstall dist/*.whl
+# 5. Install the built wheel package
+pip install dist/*.whl
+
+# 6. Optional runtime switches
+# The elementwise operator optimization accelerates selected special memory access patterns.
+# It is disabled by default on Zhenwu M890 machines and always disabled on Zhenwu 810E machines,
+# where it cannot be enabled through the environment variable.
+# To enable it on Zhenwu M890, set the following variable before starting the Python process;
+# setting it after `import torch` has no effect.
+# export PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT=1
+# Flex Flash Attention is experimental, disabled by default, and available only on Zhenwu M890.
+# To enable it, set the following variable before starting the Python process.
+# Setting a variable has no effect if the feature was disabled at build time.
+# export PYTORCH_ENABLE_PPU_FLEX_FLASH_ATTENTION=1
 ```
 
 ---

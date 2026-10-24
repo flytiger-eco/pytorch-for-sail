@@ -655,6 +655,115 @@ def scaled_dot_product_flash_attention_backward_strategy(
     )
 
 
+# PPU modification: flex flash attention DTensor strategies.
+if torch.version.ppu is not None:
+
+    def _scaled_dot_product_flex_flash_attention_base_strategies(
+        op_schema: OpSchema,
+    ) -> list[PlacementList]:
+        has_attn_mask = len(op_schema.args_schema) > 3 and isinstance(
+            op_schema.args_schema[3], OpStrategy
+        )
+
+        all_replicate: PlacementList = [Replicate()] * (6 + has_attn_mask)
+
+        heads_sharding: PlacementList = [
+            Shard(1),  # output
+            Shard(1),  # logsumexp
+            Replicate(),  # rng_state
+            Shard(1),  # query
+            Shard(1),  # key
+            Shard(1),  # value
+        ]
+        batch_sharding: PlacementList = [
+            Shard(0),  # output
+            Shard(0),  # logsumexp
+            Replicate(),  # rng_state
+            Shard(0),  # query
+            Shard(0),  # key
+            Shard(0),  # value
+        ]
+        if has_attn_mask:
+            # SDPA only routes a shared 2-D or singleton-batch/head mask to
+            # this backend, so it remains replicated for both strategies.
+            heads_sharding.append(Replicate())
+            batch_sharding.append(Replicate())
+
+        return [all_replicate, heads_sharding, batch_sharding]
+
+
+    @register_op_strategy(
+        aten._scaled_dot_product_flex_flash_attention.default,
+        schema_info=RuntimeSchemaInfo(3),
+    )
+    def scaled_dot_product_flex_flash_attention_strategy(
+        op_schema: OpSchema,
+    ) -> OpStrategy:
+        mesh = op_schema.get_mesh_from_args()
+        return expand_to_full_mesh_op_strategy(
+            mesh,
+            op_schema,
+            _scaled_dot_product_flex_flash_attention_base_strategies(op_schema),
+            input_index=3,
+        )
+
+
+    def _scaled_dot_product_flex_flash_attention_backward_base_strategies(
+        op_schema: OpSchema,
+    ) -> list[PlacementList]:
+        has_attn_mask = len(op_schema.args_schema) > 4 and isinstance(
+            op_schema.args_schema[4], OpStrategy
+        )
+        num_tensor_inputs = 7 + has_attn_mask
+
+        all_replicate: PlacementList = [Replicate()] * (3 + num_tensor_inputs)
+
+        heads_inputs: PlacementList = [
+            Shard(1),  # grad_out
+            Shard(1),  # query
+            Shard(1),  # key
+            Shard(1),  # value
+        ]
+        batch_inputs: PlacementList = [
+            Shard(0),  # grad_out
+            Shard(0),  # query
+            Shard(0),  # key
+            Shard(0),  # value
+        ]
+        if has_attn_mask:
+            heads_inputs.append(Replicate())
+            batch_inputs.append(Replicate())
+        heads_inputs.extend(
+            [Shard(1), Shard(1), Replicate()]  # out, logsumexp, rng_state
+        )
+        batch_inputs.extend(
+            [Shard(0), Shard(0), Replicate()]  # out, logsumexp, rng_state
+        )
+
+        heads_sharding: PlacementList = [Shard(1), Shard(1), Shard(1)]
+        heads_sharding.extend(heads_inputs)
+        batch_sharding: PlacementList = [Shard(0), Shard(0), Shard(0)]
+        batch_sharding.extend(batch_inputs)
+        return [all_replicate, heads_sharding, batch_sharding]
+
+
+    @register_op_strategy(
+        aten._scaled_dot_product_flex_flash_attention_backward.default
+    )
+    def scaled_dot_product_flex_flash_attention_backward_strategy(
+        op_schema: OpSchema,
+    ) -> OpStrategy:
+        mesh = op_schema.get_mesh_from_args(validate=False)
+        return expand_to_full_mesh_op_strategy(
+            mesh,
+            op_schema,
+            _scaled_dot_product_flex_flash_attention_backward_base_strategies(
+                op_schema
+            ),
+            input_index=3,
+        )
+
+
 @register_op_strategy(aten.constant_pad_nd.default)
 def constant_pad_nd_strategy(op_schema: OpSchema) -> OpStrategy:
     mesh = op_schema.get_mesh_from_args(validate=False)
