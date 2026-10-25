@@ -112,7 +112,72 @@ docker buildx build --progress=plain \
   -f Dockerfile.ubuntu-ppu .
 ```
 
-### Method 2: Build inside a downloaded Flytiger PPU Docker image
+### Method 2: Build with `Dockerfile.sdk2.2-ppu` (SDK v2.2 + decoupled PCCL/NCCL)
+
+[`Dockerfile.sdk2.2-ppu`](Dockerfile.sdk2.2-ppu) targets PPU SDK v2.2 (`sdk2.2.0-cuda13.0-ubuntu24-py312`). Starting from SDK v2.2, PCCL and its NCCL compatibility wrapper are shipped as a package decoupled from the SDK, so this Dockerfile installs that package explicitly before compiling. The build context must be the repository root and must include the initialized `flash-attention`, `flex-flash-attention`, `cutlass`, `cudafy-for-sail`, and `xformers` submodules.
+
+```bash
+# Initialize submodules before Docker sends the build context.
+git submodule sync
+git submodule update --init --recursive
+
+# Build the runtime image. This also builds a wheel, installs it with runtime
+# dependencies, and verifies that torch can be imported outside the source
+# directory with CUDA support compiled in.
+docker buildx build --load --progress=plain \
+  --target runtime \
+  -t pytorch-for-sail:2.11-sdk2.2-ppu \
+  -f Dockerfile.sdk2.2-ppu .
+```
+
+The default `BASE_IMAGE` is pinned to an immutable digest. The decoupled PCCL/NCCL package is controlled by two build arguments:
+
+- `NCCL_PACKAGE_URL`: the PCCL/NCCL tarball matching the artifact version, CUDA version, and OS. The default points at the `v2.2.0` / `nccl-2.27.3` / `ubuntu2404` / `cuda13.0` package. Download it manually from the [Flytiger NCCL download page](https://www.flytiger-eco.com/download?businessType=NCCL) if you need a different build.
+- `NCCL_PACKAGE_SHA256`: the expected checksum of that tarball. The build verifies it after download.
+
+The tarball extracts a top-level `pccl/` directory into `/usr/local` (-> `/usr/local/pccl`), providing both the native PCCL layer and the NCCL compatibility wrapper (`/usr/local/pccl/nccl_wrapper`). If the URL is unreachable from the build network (for example, an authenticated artifact registry that returns `403` inside the container), the build falls back to the identical copy pre-installed in the base image, then still validates the required SDK, PCCL, and NCCL artifacts. Override either argument as needed:
+
+```bash
+docker buildx build --load \
+  --build-arg MAX_JOBS=16 \
+  --build-arg NCCL_PACKAGE_URL=<local-or-mirror-url>/nccl-2.27.3-v13_ubuntu2404_sdk-v2.2.0.tar.gz \
+  --build-arg NCCL_PACKAGE_SHA256=<expected-sha256> \
+  --target runtime \
+  -t pytorch-for-sail:2.11-sdk2.2-ppu \
+  -f Dockerfile.sdk2.2-ppu .
+```
+
+Start the built image with a shell (the base image ships its own `ENTRYPOINT`, so override it):
+
+```bash
+docker run -it --rm --entrypoint /bin/bash pytorch-for-sail:2.11-sdk2.2-ppu
+```
+
+The runtime image starts in `/workspace`; the source checkout remains available at `/workspace/pytorch-for-sail`. For workloads that require an accelerator device, add the device mapping required by the host environment.
+
+Verify the image independently after it is built:
+
+```bash
+docker run --rm -i --entrypoint /bin/bash pytorch-for-sail:2.11-sdk2.2-ppu <<'EOF'
+set -euo pipefail
+source /usr/local/PPU_SDK/envsetup.sh
+source /usr/local/pccl/envsetup.sh
+cd /tmp
+python3 -c "import sys, torch; compiled = torch.cuda._is_compiled(); print(torch.__version__); print(compiled); print(torch.cuda.nccl.version()); sys.exit(0 if compiled else 1)"
+EOF
+```
+
+To export the generated wheel without loading the runtime image, use the `artifact` target:
+
+```bash
+rm -rf wheels
+docker buildx build --progress=plain \
+  --target artifact \
+  --output type=local,dest=./wheels \
+  -f Dockerfile.sdk2.2-ppu .
+```
+
+### Method 3: Build inside a downloaded Flytiger PPU Docker image
 
 Download a compatible PPU Docker image from the [Flytiger download page](https://www.flytiger-eco.com/download?businessType=DOCKER), then set `FLYTIGER_PPU_IMAGE` to its local image name or tag. This workflow keeps the source checkout on the host and performs the build in the container. If the download is an image archive, import it first:
 
