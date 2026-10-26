@@ -41,7 +41,8 @@ __global__ void unrolled_elementwise_kernel_1_2_contiguous_castin2(
   f_arg1_t v2[vt];
 #pragma unroll
   for (int j = 0; j < n1; j++) {
-    const vec_in1 in = *reinterpret_cast<const vec_in1*>(
+    // ppu_load_vector normalizes bool bytes to 0/1 (see utils/common.cuh).
+    const vec_in1 in = ppu_load_vector<in1_t, vt1>(
         data1 + (x + j * vt1) * static_cast<int64_t>(sizeof(in1_t)));
 #pragma unroll
     for (int i = 0; i < vt1; i++) {
@@ -50,7 +51,7 @@ __global__ void unrolled_elementwise_kernel_1_2_contiguous_castin2(
   }
 #pragma unroll
   for (int j = 0; j < n2; j++) {
-    const vec_in2 in = *reinterpret_cast<const vec_in2*>(
+    const vec_in2 in = ppu_load_vector<in2_t, vt2>(
         data2 + (x + j * vt2) * static_cast<int64_t>(sizeof(in2_t)));
 #pragma unroll
     for (int i = 0; i < vt2; i++) {
