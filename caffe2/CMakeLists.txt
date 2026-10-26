@@ -1686,6 +1686,17 @@ if(USE_CUDA)
     # Link fbgemm_genai to torch_cuda (only for (1) CUDA build for SM100).
     target_link_libraries(torch_cuda PRIVATE fbgemm_genai)
   endif()
+
+  if(USE_PPU AND USE_ELEMENTWISE_OPT)
+    # The optimized elementwise kernels are compiled into torch_cuda, but every
+    # registered kernel slows down the runtime's per-launch lookup. Route kernel
+    # registration through registration.cpp, which enables them only on M890
+    # with PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT="1" and always drops them on 810E.
+    target_compile_definitions(torch_cuda PRIVATE USE_ELEMENTWISE_OPT)
+    target_sources(torch_cuda PRIVATE
+      ${PROJECT_SOURCE_DIR}/aten/src/ATen/native/cuda/ppu_opt_elementwise_kernels/registration.cpp)
+    target_link_options(torch_cuda PRIVATE "LINKER:--wrap=__cudaRegisterFunction")
+  endif()
 endif()
 
 # ---[ XPU library.

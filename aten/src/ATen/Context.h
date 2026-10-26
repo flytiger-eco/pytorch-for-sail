@@ -478,7 +478,7 @@ class TORCH_API Context {
   bool enabled_overrideable = true;
 #ifdef USE_PPU // PPU modification
   bool enabled_flex_flashSDP =
-      c10::utils::check_env("TORCH_FLEX_FLASH_SDPA_ENABLED") == true;
+      c10::utils::check_env("PYTORCH_ENABLE_PPU_FLEX_FLASH_ATTENTION") == true;
 #endif
   bool allow_fp16_bf16_reduction_mathSDP = false;
   bool benchmark_cudnn = false;

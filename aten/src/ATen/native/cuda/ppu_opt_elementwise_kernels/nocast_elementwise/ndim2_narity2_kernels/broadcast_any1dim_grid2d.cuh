@@ -63,7 +63,8 @@ struct strip_d1a1 {
     using vec_res = at::native::memory::aligned_vector<res_t, vt>;
     using vec_arg0 = at::native::memory::aligned_vector<arg0_t, vt>;
     using vec_arg1 = at::native::memory::aligned_vector<arg1_t, vt>;
-    const vec_arg1 in2 = *reinterpret_cast<const vec_arg1*>(data2 + x * stride02);
+    // ppu_load_vector normalizes a Bool mask to 0/1 (see utils/common.cuh).
+    const vec_arg1 in2 = ppu_load_vector<arg1_t, vt>(data2 + x * stride02);
     #pragma unroll 2
     for (int64_t y_idx = 0; y_idx < y_loop; y_idx++) {
       const int64_t y = y_start + y_idx;
@@ -188,7 +189,8 @@ __global__ void elementwise_kernel_2_2_broadcast_d1a1_narrow_x(
   if (threadIdx.y == 0) {
 #pragma unroll
     for (int i = 0; i < vt; ++i)
-      in2[x_lane * vt + i] = *reinterpret_cast<const arg1_t*>(data2 + (x_lane * vt + i) * stride02);
+      // c10::load normalizes a Bool mask to 0/1 (same as legacy loops).
+      in2[x_lane * vt + i] = c10::load(reinterpret_cast<const arg1_t*>(data2 + (x_lane * vt + i) * stride02));
   }
   __syncthreads();
   const int64_t y = static_cast<int64_t>(blockIdx.y) * 16 + threadIdx.y;
@@ -226,9 +228,23 @@ static void launch_elementwise_kernel_2_2_broadcast_any1dim_grid2d(
       return;
     }
   }
-  constexpr int64_t y_t = 8;
   const int64_t grid_x =
       (size0 + static_cast<int64_t>(nt) * vt - 1) / (static_cast<int64_t>(nt) * vt);
+  // Rows per block. 8 by default. strip_d0a1 with a Bool per-row operand
+  // (masked_fill with a dim0-broadcast mask) switches to 1 row per block when
+  // the resulting grid stays small (grid_x * size1 <= 2048 blocks): with 8
+  // rows the small/medium shapes launch too few blocks and lost to legacy
+  // (2048x65 / 4096x32 BF16: 0.90x); 1 row per block is ~1.9x vs legacy there.
+  // Above 2048 blocks the per-block overhead dominates and 8 rows stays
+  // ahead (R2 fix_bool_bug quick_analysis/b2, boundary points measured on
+  // both sides). size1 <= 2048 here, so the 1D-fallback cap is unaffected.
+  int64_t y_t = 8;
+  if constexpr (std::is_same_v<Policy, strip_d0a1<vt, res_t, arg0_t, arg1_t, func_t>> &&
+                std::is_same_v<arg1_t, bool>) {
+    if (grid_x * size1 <= 2048) {
+      y_t = 1;
+    }
+  }
   const int64_t grid_y = (size1 + y_t - 1) / y_t;
   const int64_t y_remain = size1 - (grid_y - 1) * y_t;
   dim3 block(nt);
