@@ -52,7 +52,7 @@ If you need to build and install from source, choose one of the following Docker
 
 ### Method 1: Build with `Dockerfile.ubuntu-ppu`
 
-[`Dockerfile.ubuntu-ppu`](Dockerfile.ubuntu-ppu) builds the source tree into a wheel in a PPU SDK environment. The build context must be the repository root and must include the initialized `flash-attention`, `cutlass`, and `cudafy-for-sail` submodules.
+[`Dockerfile.ubuntu-ppu`](docker/ppu/Dockerfile.ubuntu-ppu) builds the source tree into a wheel in a PPU SDK environment. The build context must be the repository root and must include the initialized `flash-attention`, `cutlass`, and `cudafy-for-sail` submodules.
 
 ```bash
 # Initialize submodules before Docker sends the build context.
@@ -65,7 +65,7 @@ git submodule update --init --recursive
 docker buildx build --load --progress=plain \
   --target runtime \
   -t pytorch-for-sail:ubuntu-ppu \
-  -f Dockerfile.ubuntu-ppu .
+  -f docker/ppu/Dockerfile.ubuntu-ppu .
 ```
 
 The default `BASE_IMAGE` is pinned to an immutable digest. `--build-arg BASE_IMAGE=<image>` can replace the base image, but the replacement should also be digest-pinned and must provide the same SDK path and toolchain layout. The build-time validation initializes the SDK environment, checks general build tools, and fails unless the installed wheel reports CUDA support as compiled. Build options can also be overridden, for example:
@@ -78,7 +78,7 @@ docker buildx build --load \
   --build-arg USE_MEM_EFF_ATTENTION=False \
   --target runtime \
   -t pytorch-for-sail:ubuntu-ppu-no-attention \
-  -f Dockerfile.ubuntu-ppu .
+  -f docker/ppu/Dockerfile.ubuntu-ppu .
 ```
 
 Start the built image with a shell:
@@ -109,10 +109,75 @@ rm -rf wheels
 docker buildx build --progress=plain \
   --target artifact \
   --output type=local,dest=./wheels \
-  -f Dockerfile.ubuntu-ppu .
+  -f docker/ppu/Dockerfile.ubuntu-ppu .
 ```
 
-### Method 2: Build inside a downloaded Flytiger PPU Docker image
+### Method 2: Build with `Dockerfile.sdk2.2-ppu` (SDK v2.2 + decoupled PCCL/NCCL)
+
+[`Dockerfile.sdk2.2-ppu`](docker/ppu/Dockerfile.sdk2.2-ppu) targets PPU SDK v2.2 (`sdk2.2.0-cuda13.0-ubuntu24-py312`). Starting from SDK v2.2, PCCL and its NCCL compatibility wrapper are shipped as a package decoupled from the SDK, so this Dockerfile installs that package explicitly before compiling. The build context must be the repository root and must include the initialized `flash-attention`, `flex-flash-attention`, `cutlass`, `cudafy-for-sail`, and `xformers` submodules.
+
+```bash
+# Initialize submodules before Docker sends the build context.
+git submodule sync
+git submodule update --init --recursive
+
+# Build the runtime image. This also builds a wheel, installs it with runtime
+# dependencies, and verifies that torch can be imported outside the source
+# directory with CUDA support compiled in.
+docker buildx build --load --progress=plain \
+  --target runtime \
+  -t pytorch-for-sail:2.11-sdk2.2-ppu \
+  -f docker/ppu/Dockerfile.sdk2.2-ppu .
+```
+
+The default `BASE_IMAGE` is pinned to an immutable digest. The decoupled PCCL/NCCL package is controlled by two build arguments:
+
+- `NCCL_PACKAGE_URL`: the PCCL/NCCL tarball matching the artifact version, CUDA version, and OS. The default points at the `v2.2.0` / `nccl-2.27.3` / `ubuntu2404` / `cuda13.0` package. Download it manually from the [Flytiger NCCL download page](https://www.flytiger-eco.com/download?businessType=NCCL) if you need a different build.
+- `NCCL_PACKAGE_SHA256`: the expected checksum of that tarball. The build verifies it after download.
+
+The tarball extracts a top-level `pccl/` directory into `/usr/local` (-> `/usr/local/pccl`), providing both the native PCCL layer and the NCCL compatibility wrapper (`/usr/local/pccl/nccl_wrapper`). If the URL is unreachable from the build network (for example, an authenticated artifact registry that returns `403` inside the container), the build falls back to the identical copy pre-installed in the base image, then still validates the required SDK, PCCL, and NCCL artifacts. Override either argument as needed:
+
+```bash
+docker buildx build --load \
+  --build-arg MAX_JOBS=16 \
+  --build-arg NCCL_PACKAGE_URL=<local-or-mirror-url>/nccl-2.27.3-v13_ubuntu2404_sdk-v2.2.0.tar.gz \
+  --build-arg NCCL_PACKAGE_SHA256=<expected-sha256> \
+  --target runtime \
+  -t pytorch-for-sail:2.11-sdk2.2-ppu \
+  -f docker/ppu/Dockerfile.sdk2.2-ppu .
+```
+
+Start the built image with a shell (the base image ships its own `ENTRYPOINT`, so override it):
+
+```bash
+docker run -it --rm --entrypoint /bin/bash pytorch-for-sail:2.11-sdk2.2-ppu
+```
+
+The runtime image starts in `/workspace`; the source checkout remains available at `/workspace/pytorch-for-sail`. For workloads that require an accelerator device, add the device mapping required by the host environment.
+
+Verify the image independently after it is built:
+
+```bash
+docker run --rm -i --entrypoint /bin/bash pytorch-for-sail:2.11-sdk2.2-ppu <<'EOF'
+set -euo pipefail
+source /usr/local/PPU_SDK/envsetup.sh
+source /usr/local/pccl/envsetup.sh
+cd /tmp
+python3 -c "import sys, torch; compiled = torch.cuda._is_compiled(); print(torch.__version__); print(compiled); print(torch.cuda.nccl.version()); sys.exit(0 if compiled else 1)"
+EOF
+```
+
+To export the generated wheel without loading the runtime image, use the `artifact` target:
+
+```bash
+rm -rf wheels
+docker buildx build --progress=plain \
+  --target artifact \
+  --output type=local,dest=./wheels \
+  -f docker/ppu/Dockerfile.sdk2.2-ppu .
+```
+
+### Method 3: Build inside a downloaded Flytiger PPU Docker image
 
 Download a compatible PPU Docker image from the [Flytiger download page](https://www.flytiger-eco.com/download?businessType=DOCKER), then set `FLYTIGER_PPU_IMAGE` to its local image name or tag. This workflow keeps the source checkout on the host and performs the build in the container. If the download is an image archive, import it first:
 
@@ -164,10 +229,14 @@ pip install -r requirements.txt
 # export CUDA_VERBOSE_BUILD=1      # Print full commands used to compile CUDA sources
 # export CMAKE_VERBOSE_MAKEFILE=1  # Print every compile and link command generated by CMake
 
-# PPU toolchain-specific behavior: 8.0 enables mixed compilation for SM80 and SM89.
-# Under standard CUDA semantics, 8.0 normally denotes SM80 only.
-# This example builds for SM89 only.
-export TORCH_CUDA_ARCH_LIST="8.9"
+# Build architecture: the Docker builds (Methods 1-2) default to "8.0a;8.9"; export the
+# same value here so the manual build matches. TORCH_CUDA_ARCH_LIST="8.0a;8.9" compiles
+# kernels for the SM80 family and SM89, so one wheel runs on every supported Zhenwu board
+# (610/610E/810/810E and M890). PPU toolchain note: unlike standard CUDA, where 8.0 means
+# SM80 only, here 8.0/8.0a enables mixed SM80+SM89 compilation; if this variable is left
+# unset, setup.py falls back to "8.0a". To target one architecture, override it (e.g. "8.9"
+# for SM89 / Zhenwu M890 only).
+export TORCH_CUDA_ARCH_LIST="8.0a;8.9"
 
 # 3. Optional build options
 # By default, the elementwise operator optimization and the Flex Flash Attention backend are

@@ -10,7 +10,9 @@ ARG BUILD_ENVIRONMENT=ubuntu-ppu
 ARG MAX_JOBS=32
 ARG PYTORCH_BUILD_VERSION=2.11.0
 ARG PYTORCH_BUILD_NUMBER=0
-ARG TORCH_CUDA_ARCH_LIST=8.9
+# Default "8.0a;8.9" builds for all supported Zhenwu boards (SM80 family + SM89);
+# override with --build-arg TORCH_CUDA_ARCH_LIST=<arch> to target a single arch.
+ARG TORCH_CUDA_ARCH_LIST=8.0a;8.9
 ARG USE_FLASH_ATTENTION=True
 ARG USE_MEM_EFF_ATTENTION=True
 ARG PIP_INDEX_URL=https://pypi.org/simple
