@@ -51,11 +51,11 @@ PyTorch-for-SAIL 基于社区开源 PyTorch 项目开发，面向真武 PPU 硬�
 
 ## 源码编译
 
-如需从源码编译并安装，可选择以下两种基于 Docker 的工作流。
+如需从源码编译并安装，可选择以下几种基于 Docker 的工作流。
 
 ### 方式一：使用 `Dockerfile.ubuntu-ppu` 构建
 
-[`Dockerfile.ubuntu-ppu`](Dockerfile.ubuntu-ppu) 会在 Flytiger PPU SDK 镜像中将源码编译为 wheel。它复用官方流水线所使用的 [`.ci/ppu/`](.ci/ppu) 下的 CI 脚本，因此 PPU SDK 与 v2.2 的 PCCL NCCL wrapper 都会被自动解析。Docker 构建上下文必须是仓库根目录，并且必须包含已初始化的 PPU 子模块（`cutlass`、`flash-attention`、`xformers`、`cudafy-for-sail`、`flex-flash-attention`，以及嵌套的 `flex-flash-attention/csrc/actlize`）。
+[`Dockerfile.ubuntu-ppu`](docker/ppu/Dockerfile.ubuntu-ppu) 会在 Flytiger PPU SDK 镜像中将源码编译为 wheel。它复用官方流水线所使用的 [`.ci/ppu/`](.ci/ppu) 下的 CI 脚本，因此 PPU SDK 与 v2.2 的 PCCL NCCL wrapper 都会被自动解析。Docker 构建上下文必须是仓库根目录，并且必须包含已初始化的 PPU 子模块（`cutlass`、`flash-attention`、`xformers`、`cudafy-for-sail`、`flex-flash-attention`，以及嵌套的 `flex-flash-attention/csrc/actlize`）。
 
 ```bash
 # Docker 发送构建上下文前，先初始化子模块。
@@ -67,7 +67,7 @@ git submodule update --init --recursive
 docker buildx build --load --progress=plain \
   --target runtime \
   -t pytorch-for-sail:ubuntu-ppu \
-  -f Dockerfile.ubuntu-ppu .
+  -f docker/ppu/Dockerfile.ubuntu-ppu .
 ```
 
 默认 `BASE_IMAGE` 已固定为 CI 使用的 PPU SDK 2.2.0 镜像。可通过 `--build-arg BASE_IMAGE=<image>` 替换基础镜像，但替换后的镜像必须提供相同的 SDK 路径和工具链布局。也可通过 `--build-arg` 覆盖编译选项，例如：
@@ -78,7 +78,7 @@ docker buildx build --load \
   --build-arg TORCH_CUDA_ARCH_LIST=8.9 \
   --target runtime \
   -t pytorch-for-sail:ubuntu-ppu-sm89 \
-  -f Dockerfile.ubuntu-ppu .
+  -f docker/ppu/Dockerfile.ubuntu-ppu .
 ```
 
 支持的构建参数：`BASE_IMAGE`、`TORCH_CUDA_ARCH_LIST`（默认 `8.0a;8.9`，即 SM80+SM89 混合编译）、`MAX_JOBS`（默认 `0`，按 CPU 核数与内存自动推导）、`PPU_LINK_JOBS`、`PPU_MEM_PER_JOB_GB`、`SDK_INSTALL_DIR`、`PIP_INDEX_URL`。
@@ -109,10 +109,74 @@ rm -rf wheels
 docker buildx build --progress=plain \
   --target artifact \
   --output type=local,dest=./wheels \
-  -f Dockerfile.ubuntu-ppu .
+  -f docker/ppu/Dockerfile.ubuntu-ppu .
 ```
 
-### 方式二：下载 Flytiger PPU Docker 镜像后自行编译
+### 方式二：使用 `Dockerfile.sdk2.2-ppu` 构建（SDK v2.2 + 解耦的 PCCL/NCCL）
+
+[`Dockerfile.sdk2.2-ppu`](docker/ppu/Dockerfile.sdk2.2-ppu) 面向 PPU SDK v2.2（`sdk2.2.0-cuda13.0-ubuntu24-py312`）。自 SDK v2.2 起，PCCL 及其 NCCL 兼容 wrapper 作为与 SDK 解耦的独立包分发，因此该 Dockerfile 会在编译前显式安装该包。Docker 构建上下文必须是仓库根目录，并且必须包含已初始化的 `flash-attention`、`flex-flash-attention`、`cutlass`、`cudafy-for-sail` 和 `xformers` 子模块。
+
+```bash
+# Docker 发送构建上下文前，先初始化子模块。
+git submodule sync
+git submodule update --init --recursive
+
+# 构建运行时镜像。该过程还会编译 wheel、安装其运行时依赖，并在源码目录外验证
+# torch 可导入且已编译 CUDA 支持。
+docker buildx build --load --progress=plain \
+  --target runtime \
+  -t pytorch-for-sail:2.13-sdk2.2-ppu \
+  -f docker/ppu/Dockerfile.sdk2.2-ppu .
+```
+
+默认 `BASE_IMAGE` 已固定为不可变 digest。解耦的 PCCL/NCCL 包由两个构建参数控制：
+
+- `NCCL_PACKAGE_URL`：与制品版本、CUDA 版本和操作系统匹配的 PCCL/NCCL 压缩包。默认指向 `v2.2.0` / `nccl-2.27.3` / `ubuntu2404` / `cuda13.0` 的包。如需其他构建，请从 [Flytiger NCCL 下载页面](https://www.flytiger-eco.com/download?businessType=NCCL) 手动下载。
+- `NCCL_PACKAGE_SHA256`：该压缩包的预期校验和。构建会在下载后校验它。
+
+压缩包解压后会在 `/usr/local` 下生成顶层 `pccl/` 目录（-> `/usr/local/pccl`），同时提供 PCCL 原生层和 NCCL 兼容 wrapper（`/usr/local/pccl/nccl_wrapper`）。如果构建网络无法访问该 URL（例如需要鉴权的制品仓库在容器内返回 `403`），构建会回退到基础镜像中预置的同版本副本，随后仍会校验所需的 SDK、PCCL 和 NCCL 制品。可按需覆盖任一参数：
+
+```bash
+docker buildx build --load \
+  --build-arg MAX_JOBS=16 \
+  --build-arg NCCL_PACKAGE_URL=<本地或镜像地址>/nccl-2.27.3-v13_ubuntu2404_sdk-v2.2.0.tar.gz \
+  --build-arg NCCL_PACKAGE_SHA256=<预期的-sha256> \
+  --target runtime \
+  -t pytorch-for-sail:2.13-sdk2.2-ppu \
+  -f docker/ppu/Dockerfile.sdk2.2-ppu .
+```
+
+以 Shell 启动构建完成的镜像（基础镜像自带 `ENTRYPOINT`，需覆盖）：
+
+```bash
+docker run -it --rm --entrypoint /bin/bash pytorch-for-sail:2.13-sdk2.2-ppu
+```
+
+运行时镜像默认从 `/workspace` 启动；源码检出仍位于 `/workspace/pytorch-for-sail`。需要使用加速设备的工作负载，应按宿主机环境要求添加设备映射。
+
+镜像构建完成后，可独立执行以下冒烟验证：
+
+```bash
+docker run --rm -i --entrypoint /bin/bash pytorch-for-sail:2.13-sdk2.2-ppu <<'EOF'
+set -euo pipefail
+source /usr/local/PPU_SDK/envsetup.sh
+source /usr/local/pccl/envsetup.sh
+cd /tmp
+python3 -c "import sys, torch; compiled = torch.cuda._is_compiled(); print(torch.__version__); print(compiled); print(torch.cuda.nccl.version()); sys.exit(0 if compiled else 1)"
+EOF
+```
+
+如需仅导出生成的 wheel 而不加载运行时镜像，可使用 `artifact` target：
+
+```bash
+rm -rf wheels
+docker buildx build --progress=plain \
+  --target artifact \
+  --output type=local,dest=./wheels \
+  -f docker/ppu/Dockerfile.sdk2.2-ppu .
+```
+
+### 方式三：下载 Flytiger PPU Docker 镜像后自行编译
 
 从 [Flytiger 下载页面](https://www.flytiger-eco.com/download?businessType=DOCKER) 下载兼容的 PPU Docker 镜像，并将 `FLYTIGER_PPU_IMAGE` 设置为本地镜像名称或 tag。该方式保留宿主机源码检出，并在容器内完成编译。若下载内容为镜像归档文件，先执行导入：
 
@@ -161,11 +225,13 @@ pip install -r requirements.txt
 # export CUDA_VERBOSE_BUILD=1      # 打印编译 CUDA 源文件的完整命令行
 # export CMAKE_VERBOSE_MAKEFILE=1  # 打印 CMake 生成的每条编译和链接命令
 
-# PPU 工具链特有行为：8.0a 仅表示 SM80，8.9 仅表示 SM89。
-# 当需要启动 SM80 和 SM89 混合编译时，可以使用如下表达方式：
+# 编译架构：方式一/方式二的 Docker 构建默认使用 "8.0a;8.9"；此处 export 相同取值，使手动
+# 构建与之一致。TORCH_CUDA_ARCH_LIST="8.0a;8.9" 会同时为 SM80 系列和 SM89 编译内核，生成
+# 可在全部受支持真武板卡（610/610E/810/810E 与 M890）上运行的单个 wheel。PPU 工具链说明：
+# 与标准 CUDA 中 8.0 仅表示 SM80 不同，此处 8.0/8.0a 会启用 SM80+SM89 混合编译；若不设置
+# 该变量，setup.py 会兜底为 "8.0"。如只需编译单一架构，可覆盖它（例如 "8.9" 表示仅
+# SM89 / 真武 M890）。
 export TORCH_CUDA_ARCH_LIST="8.0a;8.9"
-# 如需仅编译 SM89，请注释上一行并取消下一行的注释。
-# export TORCH_CUDA_ARCH_LIST="8.9"
 
 # 3. 可选编译选项
 # 默认会将 elementwise 算子优化和 Flex Flash Attention 后端编译进 wheel 包；
