@@ -40,7 +40,7 @@ env:
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   SOURCE_DIR: /workspace/source
-  NODE_SELECTOR: "board-type=OAM-810E"
+  NODE_SELECTOR: "board-type=ZW-810E"
   PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
   TRITON_VERSION: "3.6.0"
   WHEEL_DIR_REL: .ci/ppu/wheelhouse
@@ -163,7 +163,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: "810E 单卡 (1 PPU) CUDA 冒烟测试"
-        uses: flytiger-eco/ppu-distributed-action@main
+        uses: flytiger-eco/shared-workflows/cluster-task@main
         with:
           nnodes: 0
           nproc_per_node: 1
@@ -291,7 +291,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: "810E 单卡 (1 PPU) CUDA inductor 性能测试"
-        uses: flytiger-eco/ppu-distributed-action@main
+        uses: flytiger-eco/shared-workflows/cluster-task@main
         with:
           nnodes: 0
           nproc_per_node: 1

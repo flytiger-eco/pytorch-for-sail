@@ -19,7 +19,7 @@ env:
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   SOURCE_DIR: /workspace/source
-  NODE_SELECTOR: "board-type=OAM-810E"
+  NODE_SELECTOR: "board-type=ZW-810E"
   PIP_INDEX: https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
   TRITON_VERSION: "3.6.0"
   WHEEL_DIR_REL: .ci/ppu/wheelhouse
@@ -145,7 +145,7 @@ jobs:
         run: rm -rf .git
 
       - name: "810E 多卡 (2 PPU) CUDA 分布式测试"
-        uses: flytiger-eco/ppu-distributed-action@main
+        uses: flytiger-eco/shared-workflows/cluster-task@main
         with:
 
           nnodes: 0

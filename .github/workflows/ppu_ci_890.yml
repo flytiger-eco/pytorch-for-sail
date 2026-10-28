@@ -165,7 +165,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: "890P 单卡 (1 PPU) CUDA 冒烟测试"
-        uses: flytiger-eco/ppu-distributed-action@main
+        uses: flytiger-eco/shared-workflows/cluster-task@main
         with:
           nnodes: 0
           nproc_per_node: 1
@@ -293,7 +293,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: "890P 单卡 (1 PPU) CUDA inductor 性能测试"
-        uses: flytiger-eco/ppu-distributed-action@main
+        uses: flytiger-eco/shared-workflows/cluster-task@main
         with:
           nnodes: 0
           nproc_per_node: 1

@@ -141,7 +141,7 @@ jobs:
         run: rm -rf .git
 
       - name: "890P 多卡 (2 PPU) CUDA 分布式测试"
-        uses: flytiger-eco/ppu-distributed-action@main
+        uses: flytiger-eco/shared-workflows/cluster-task@main
         with:
           nnodes: 0
           nproc_per_node: 2
