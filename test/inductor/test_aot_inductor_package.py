@@ -324,6 +324,8 @@ class TestAOTInductorPackage(TestCase):
         if self.device != GPU_TYPE:
             raise unittest.SkipTest(f"Only meant to test {GPU_TYPE}")
         self.check_package_cpp_only()
+        if torch.version.ppu is not None:
+            raise unittest.SkipTest("Triton PPU backend has no PTX stage")
 
         class Model(torch.nn.Module):
             def __init__(self) -> None:
@@ -367,6 +369,8 @@ class TestAOTInductorPackage(TestCase):
     def test_compile_after_package_static(self):
         # compile_standalone will set package_cpp_only=True
         self.check_package_cpp_only()
+        if torch.version.ppu is not None and self.device == GPU_TYPE:
+            raise unittest.SkipTest("Triton PPU backend has no PTX stage")
 
         class Model(torch.nn.Module):
             def __init__(self) -> None:
@@ -426,6 +430,8 @@ class TestAOTInductorPackage(TestCase):
     def test_compile_standalone_cos(self):
         # compile_standalone will set package_cpp_only=True
         self.check_package_cpp_only()
+        if torch.version.ppu is not None and self.device == GPU_TYPE:
+            raise unittest.SkipTest("Triton PPU backend has no PTX stage")
 
         class Model(torch.nn.Module):
             def __init__(self) -> None:
@@ -458,6 +464,8 @@ class TestAOTInductorPackage(TestCase):
     @torch._inductor.config.patch("test_configs.use_libtorch", True)
     def test_compile_with_exporter(self):
         self.check_package_cpp_only()
+        if torch.version.ppu is not None and self.device == GPU_TYPE:
+            raise unittest.SkipTest("Triton PPU backend has no PTX stage")
 
         class Model1(torch.nn.Module):
             def forward(self, x, y):

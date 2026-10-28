@@ -264,6 +264,8 @@ class AOTInductorTestsTemplate:
     def test_simple_multi_arch(self, embed_kernel_binary):
         if self.device != GPU_TYPE:
             raise unittest.SkipTest("requires GPU_TYPE")
+        if torch.version.ppu is not None:
+            raise unittest.SkipTest("Triton PPU backend has no PTX stage")
 
         class Model(torch.nn.Module):
             def __init__(self) -> None:
