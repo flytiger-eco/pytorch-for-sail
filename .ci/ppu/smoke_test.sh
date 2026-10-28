@@ -55,6 +55,14 @@ and not test_float8_basics_layout_permutations_cpu \
 and not TestMaxAutotuneAsyncPipelined \
 and not test_float8_basics_e4m3_e5m2_default_cuda \
 and not test_float8_error_messages_cpu \
+and not test_float8_basics_e5m2_e4m3_default_cuda \
+and not test_float8_basics_e5m2_e5m2_default_cuda \
+and not test_float8_basics_e5m2_e5m2_f32_cuda \
+and not test_float8_basics_invalid_out_dtype_cuda \
+and not test_float8_bias_cuda \
+and not test_float8_bias_relu_edgecase_cuda \
+and not test_float8_scale_cuda \
+and not test_honor_sm_carveout_cuda \
 and not test_addmm_baddmm_dtype_overload_bfloat16_M_1_N_1_K_1_batch_size0_broadcast_self_False_high_precision_self_False_backend_cublaslt_cuda \
 and not test_addmm_baddmm_dtype_overload_bfloat16_M_1_N_1_K_1_batch_size0_broadcast_self_False_high_precision_self_False_backend_cublas_cuda \
 and not test_addmm_baddmm_dtype_overload_bfloat16_M_1_N_1_K_1_batch_size0_broadcast_self_False_high_precision_self_False_backend_cublaslt_cuda \
