@@ -55,7 +55,6 @@ and not test_float8_basics_layout_permutations \
 and not test_addmm_baddmm_dtype_overload_bfloat16_M_1_N_1_K_1_batch_size0_broadcast_self_False_high_precision_self_False_backend_cublaslt_cuda \
 and not test_max_autotune_remote_caching_dynamic_False \
 and not test_float8_basics_layout_permutations_cpu \
-
 and not test_cublas_addmm_size_10000_backend_cublas_cuda_float32"
 
 python test/run_test.py \
