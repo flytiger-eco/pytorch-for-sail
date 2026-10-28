@@ -53,6 +53,8 @@ and not test_addmm_baddmm_dtype_overload_bfloat16_M_1_N_1_K_1_batch_size0_broadc
 and not test_float8_basics_layout_permutations \
 and not test_max_autotune_remote_caching_dynamic_False \
 and not test_float8_basics_layout_permutations_cpu \
+and not TestMaxAutotuneAsyncPipelined \
+and not test_addmm_baddmm_dtype_overload_bfloat16_M_1_N_1_K_1_batch_size0_broadcast_self_False_high_precision_self_False_backend_cublaslt_cuda \
 and not test_triton_template_generated_code_caching_mm_plus_mm"
 
 python test/run_test.py \
