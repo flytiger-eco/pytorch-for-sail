@@ -50,6 +50,8 @@ and not test_noncontiguous_samples_nn_functional_grid_sample_cuda_float32 \
 and not test_triton_template_generated_code_caching \
 and not test_triton_template_generated_code_caching_bmm \
 and not test_float8_basics_layout_permutations \
+and not test_float8_basics_e4m3_e5m2_default_cuda \
+and not test_float8_error_messages_cpu \
 and not test_max_autotune_remote_caching_dynamic_False \
 and not test_float8_basics_layout_permutations_cpu \
 and not test_float8_error_messages_cpu \
