@@ -24,6 +24,22 @@ import torch.distributed as c10d
 import torch.distributed._functional_collectives as _functional_collectives
 from torch.distributed.distributed_c10d import SHRINK_ABORT as NCCL_SHRINK_ABORT
 
+# PPU/PCCL: disable the ext-kernel small-message fast path (one-shot peer-ICN, on
+# by default) for this whole module. Two groups of tests here need it:
+#   * test_abort_pg: the one-shot path cannot abort/cancel an in-flight collective,
+#     so abort hangs with only one rank printing "Abort COMPLETE"; the standard NCCL
+#     ring/tree + proxy fallback aborts symmetrically across ranks.
+#   * test_nan_assert_*: on the ext-kernel path the NaN-trap error is first observed
+#     by the ProcessGroupNCCL watchdog, which aborts the rank (exit -6 / code 10) and
+#     mismatches the expected +6; the standard path instead surfaces the trap error
+#     synchronously in the test's own except -> sys.exit(SIGABRT) (+6), producing the
+#     expected exit code.
+# libpccl reads this at communicator init; set it at module top (before setUp's
+# _spawn_processes and before any backend query) so the spawned rank subprocesses
+# inherit it. Guarded by torch.version.ppu since it only applies to the PCCL backend.
+if torch.version.ppu:
+    os.environ["PCCL_ENABLE_EXT_KERNEL"] = "0"
+
 
 if not c10d.is_available() or not c10d.is_nccl_available():
     print("c10d NCCL not available, skipping tests", file=sys.stderr)
