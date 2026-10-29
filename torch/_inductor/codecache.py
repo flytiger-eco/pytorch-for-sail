@@ -1755,6 +1755,8 @@ class CudaKernelParamCache:
         basename, _ = get_name_and_dir_from_output_file_path(bin_path)
 
         if config.aot_inductor.emit_multi_arch_kernel:
+            if torch.version.ppu is not None:
+                raise RuntimeError("emit_multi_arch_kernel=True is not supported on PPU")
             bin_type_to_ext = {
                 "cubin": ".fatbin",
                 XPU_KERNEL_FORMAT: ".spv",
@@ -1775,8 +1777,10 @@ class CudaKernelParamCache:
             config.aot_inductor.emit_multi_arch_kernel
             or config.aot_inductor.package_cpp_only
         ):
-            # Allow ROCm single-arch to skip (asm=None OK), require for everything else
-            if torch.version.hip is None or (asm and asm_type):
+            # ROCm and PPU single-arch binaries do not require assembly.
+            if torch.version.ppu is None and (
+                torch.version.hip is None or (asm and asm_type)
+            ):
                 assert asm, "Missing kernel assembly code"
                 assert asm_type, "Missing kernel assembly type"
 
