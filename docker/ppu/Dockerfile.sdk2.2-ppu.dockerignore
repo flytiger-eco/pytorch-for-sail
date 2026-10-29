@@ -1,0 +1,10 @@
+.git
+**/.git
+build
+dist
+wheels
+.pytest_cache
+**/.pytest_cache
+**/__pycache__
+**/*.pyc
+*.log
