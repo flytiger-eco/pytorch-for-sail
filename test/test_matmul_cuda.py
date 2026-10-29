@@ -12,6 +12,16 @@ import torch
 import torch.nn.functional as F
 from torch.profiler import profile, ProfilerActivity
 
+# PPU uses native FP32 Tensor Cores by default. Their GEMM accumulation drifts
+# from the CPU FP32 reference enough to exceed the tight tolerances of the
+# large-shape float32 cases (e.g. test_cublas_baddbmm_large_input with
+# atol=1e-5/rtol=1.1e-5), while small shapes and fp16/bf16 variants stay within
+# tolerance. Force the FP32 path onto CUDA (non-Tensor-Core) cores. This must be
+# set before any device query or test execution so the backend observes the
+# override on first use.
+if torch.version.ppu:
+    os.environ["PPU_FP32_TENSOR_OVERRIDE"] = "0"
+
 from torch.quantization._quantized_conversions import (
     pack_int4_to_int8,
     quantized_weight_reorder_for_mixed_dtypes_linear_cutlass,
