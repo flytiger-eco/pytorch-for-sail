@@ -3,6 +3,7 @@ uv venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
 uv pip install numpy
+
 lintrunner init
 NIGHTLY_PATCH=$(curl -s https://github.com/pytorch/pytorch/commit/nightly.patch | head -n20)
 COMMIT=$(grep -oE '[0-9a-f]{40}' <<< "$NIGHTLY_PATCH" | head -1)
