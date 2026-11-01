@@ -3348,7 +3348,7 @@ exit(2)
         torch.cuda.empty_cache()
 
         size = 1000
-        if torch.version.ppu:
+        if hasattr(torch.version, "ppu"):
             kSmallBuffer = 8388608
         else:
             kSmallBuffer = 2097152
@@ -3576,7 +3576,7 @@ exit(2)
     )
     def test_graph_memory_stats_and_use_result_after_destroy_graph(self):
         kSmallSize = 1048576
-        if torch.version.ppu:
+        if hasattr(torch.version, "ppu"):
             kSmallBuffer = 8388608
             kLargeBuffer = 33554432
         else:
@@ -3647,6 +3647,17 @@ exit(2)
                 a = torch.ones((numel,), device="cuda")
 
                 precapture_stats = torch.cuda.memory_stats()
+                # PPU allocates larger segments (8 MB in the small pool, 32 MB in
+                # the large pool), so a capture-time allocation often still fits
+                # in the segment that already exists and fewer segments get
+                # created than the CUDA-calibrated counts below expect. Track the
+                # segments around the capture so the deltas can be checked
+                # against them instead.
+                precapture_segments = (
+                    torch.cuda.memory_snapshot()
+                    if hasattr(torch.version, "ppu")
+                    else None
+                )
 
                 g.capture_begin()
                 b = a.clone()
@@ -3658,6 +3669,11 @@ exit(2)
             gc.collect()
 
             postcapture_stats = torch.cuda.memory_stats()
+            postcapture_segments = (
+                torch.cuda.memory_snapshot()
+                if hasattr(torch.version, "ppu")
+                else None
+            )
 
             expecteds = (
                 delta_cudaMallocs,
@@ -3665,11 +3681,26 @@ exit(2)
                 delta_active_blocks,
                 delta_active_bytes,
             )
+            # PPU's larger segments mean fewer segments are created during the
+            # capture than the CUDA-calibrated counts above expect. Derive the
+            # segment and reserved deltas from the segments themselves.
+            ppu_expected = {}
+            if precapture_segments is not None:
+                seg_type = "large" if pool_string == "large_pool" else "small"
+                pre_segs = get_segments_of_type(precapture_segments, seg_type)
+                post_segs = get_segments_of_type(postcapture_segments, seg_type)
+                ppu_expected["segment." + pool_string + ".current"] = (
+                    len(post_segs) - len(pre_segs)
+                )
+                ppu_expected["reserved_bytes." + pool_string + ".current"] = sum(
+                    seg["total_size"] for seg in post_segs
+                ) - sum(seg["total_size"] for seg in pre_segs)
             # Double checks replay and stats before and after a call to empty_cache
             for i in range(2):
                 for stat, expected in zip(stats_to_check, expecteds):
                     stat = stat + pool_string + ".current"
                     current = postcapture_stats[stat] - precapture_stats[stat]
+                    expected = ppu_expected.get(stat, expected)
 
                     # There will only ever be one expandable segment in each of the small and large pools. The way the
                     # bookkeeping is done in the allocator means that we never increment the number of segments.
@@ -3682,6 +3713,7 @@ exit(2)
                         self.expandable_segments
                         and "reserved" in stat
                         and (numel == cases[3][0] or numel == cases[4][0])
+                        and precapture_segments is None
                     ):
                         expected = 2 * kLargeBuffer
 
@@ -3702,9 +3734,28 @@ exit(2)
             gc.collect()
             torch.cuda.empty_cache()
             postdel_stats = torch.cuda.memory_stats()
+            postdel_segments = (
+                torch.cuda.memory_snapshot()
+                if precapture_segments is not None
+                else None
+            )
 
             # Uses graph result b after graph has been deleted
             self.assertEqual(b.sum().item(), 6 * numel)
+
+            # The reserved deltas below are calibrated for CUDA's segment sizes. On
+            # PPU derive them from the segments the pool actually still holds.
+            ppu_postdel_expected = {}
+            if postdel_segments is not None:
+                seg_type = "large" if pool_string == "large_pool" else "small"
+                key = "reserved_bytes." + pool_string + ".current"
+                ppu_postdel_expected[key] = sum(
+                    seg["total_size"]
+                    for seg in get_segments_of_type(postdel_segments, seg_type)
+                ) - sum(
+                    seg["total_size"]
+                    for seg in get_segments_of_type(precapture_segments, seg_type)
+                )
 
             # b should be the only live reference remaining from the graph's private pool
             expecteds = (1, delta_cudaMalloc_bytes_post_del_g, 1, numel * elem)
@@ -3723,14 +3774,17 @@ exit(2)
                     self.expandable_segments
                     and "reserved" in stat
                     and numel == cases[3][0]
+                    and postdel_segments is None
                 ):
                     expected = 2 * kLargeBuffer
                 if (
                     self.expandable_segments
                     and "reserved" in stat
                     and numel == cases[4][0]
+                    and postdel_segments is None
                 ):
                     expected = kLargeBuffer
+                expected = ppu_postdel_expected.get(stat, expected)
 
                 self.assertEqual(
                     current,
@@ -6219,7 +6273,7 @@ print(f"{torch.cuda.device_count()}")
 
 MIN_BLOCK_SIZE = 512
 SMALL_SIZE = 1048576
-if torch.version.ppu:
+if hasattr(torch.version, "ppu"):
     SMALL_BUFFER = 8388608
     LARGE_BUFFER = 33554432
 else:
@@ -6230,6 +6284,17 @@ else:
 def get_cudagraph_segments(pool_id):
     segments = torch.cuda.memory_snapshot()
     return [segment for segment in segments if segment["segment_pool_id"] == pool_id]
+
+
+def get_segments_of_type(snapshot, segment_type):
+    # Segments created during a graph capture come from a graph private pool, so
+    # they do not carry the default (0, 0) pool id. Filtering on segment_type
+    # instead matches how memory_stats() splits usages into the small and large
+    # pools, and diffing two snapshots cancels out segments left behind by other
+    # pools.
+    return [
+        segment for segment in snapshot if segment["segment_type"] == segment_type
+    ]
 
 
 def get_all_cudagraph_segments():
