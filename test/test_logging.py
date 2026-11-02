@@ -61,6 +61,13 @@ class LoggingTest(TestCase):
                 )
 
             env = os.environ.copy()
+            # The subprocess below runs with cwd=pytorch_root (the directory that
+            # contains the torch package, i.e. site-packages for an installed
+            # build). Without this, the cwd lands on sys.path and a stale stdlib
+            # backport living there (e.g. dataclasses 0.6 on Python 3.12) shadows
+            # the real module and breaks `import torch`. PYTHONSAFEPATH (3.11+)
+            # keeps the cwd off sys.path; older interpreters ignore it.
+            env["PYTHONSAFEPATH"] = "1"
             env["PYTHONPATH"] = os.pathsep.join(
                 filter(None, [tmpdir, env.get("PYTHONPATH", "")])
             )
