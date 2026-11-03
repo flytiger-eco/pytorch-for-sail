@@ -91,7 +91,6 @@ from torch.testing._internal.common_utils import (
     TEST_WITH_ROCM,
     TestCase,
 )
-from torch.testing._utils import is_ppu
 from torch.utils._triton import has_triton
 from torch.utils.checkpoint import checkpoint_sequential
 from torch.utils.viz._cycles import observe_tensor_cycles
@@ -2710,7 +2709,7 @@ exit(2)
         torch.cuda.empty_cache()
 
         size = 1000
-        if is_ppu():
+        if getattr(torch.version, "ppu", None):
             kSmallBuffer = 8388608
         else:
             kSmallBuffer = 2097152
@@ -2942,7 +2941,7 @@ exit(2)
     )
     def test_graph_memory_stats_and_use_result_after_destroy_graph(self):
         kSmallSize = 1048576
-        if is_ppu():
+        if getattr(torch.version, "ppu", None):
             kSmallBuffer = 8388608
             kLargeBuffer = 33554432
         else:
@@ -3017,7 +3016,9 @@ exit(2)
                 # segments around the capture so the deltas can be checked
                 # against them instead.
                 precapture_segments = (
-                    torch.cuda.memory_snapshot() if is_ppu() else None
+                    torch.cuda.memory_snapshot()
+                    if getattr(torch.version, "ppu", None)
+                    else None
                 )
 
                 g.capture_begin()
@@ -3031,7 +3032,9 @@ exit(2)
 
             postcapture_stats = torch.cuda.memory_stats()
             postcapture_segments = (
-                torch.cuda.memory_snapshot() if is_ppu() else None
+                torch.cuda.memory_snapshot()
+                if getattr(torch.version, "ppu", None)
+                else None
             )
 
             expecteds = (
@@ -4690,7 +4693,7 @@ class TestCudaMallocAsync(TestCase):
                 "expandable_segments:True,max_split_size_mb:40"
             )
             b = alloc(40)
-            if hasattr(torch.version, "ppu"):
+            if getattr(torch.version, "ppu", None):
                 # PPU maps expandable large segments in 32 MB pages, so a 40 MB
                 # allocation reserves a 64 MB segment. Allow one more 40 MB
                 # allocation based on the actual reserved size.
@@ -5199,7 +5202,7 @@ print(f"{torch.cuda.device_count()}")
 
 MIN_BLOCK_SIZE = 512
 SMALL_SIZE = 1048576
-if is_ppu():
+if getattr(torch.version, "ppu", None):
     SMALL_BUFFER = 8388608
     LARGE_BUFFER = 33554432
 else:
@@ -6079,7 +6082,7 @@ class TestMemPool(TestCase):
             # (1 MB) that got packed into the existing 2 MB buffer
             self.assertEqual(len(pool.snapshot()), 1)
 
-            if hasattr(torch.version, "ppu"):
+            if getattr(torch.version, "ppu", None):
                 # PPU uses an 8 MB minimum segment. Allocate enough additional
                 # 1 MB tensors to exceed the first segment's capacity.
                 segment_size = pool.snapshot()[0]["total_size"]
