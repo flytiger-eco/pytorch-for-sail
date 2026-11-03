@@ -1,0 +1,107 @@
+name: ppu-nightly-build
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    if: contains(fromJSON('["v2.10.0", "v2.11.0", "v2.12.0", "v2.13.0"]'), github.ref_name)
+    uses: ./.github/workflows/_ppu_build.yml
+    with:
+      board: mixed
+      upload-wheel: true
+      force-rebuild: true
+      timeout-minutes: 400
+
+  publish:
+    name: Publish wheel to the nightly-build release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 400
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: nightly-build
+      ARTIFACT_DIR: dist
+      WHEEL_NAME: ${{ needs.build.outputs.wheel-name }}
+      SOURCE_BRANCH: ${{ github.ref_name }}
+      SOURCE_COMMIT: ${{ github.sha }}
+
+    steps:
+      - name: Download wheel from this build
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ${{ env.ARTIFACT_DIR }}
+
+      - name: Prepare branch-specific wheel asset
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel_asset="${ARTIFACT_DIR}/${WHEEL_NAME}"
+          shopt -s nullglob
+          wheels=("${ARTIFACT_DIR}"/torch-*.whl)
+          if [[ "${WHEEL_NAME}" == */* || ! -f "${wheel_asset}" || ${#wheels[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one wheel from this build: ${WHEEL_NAME}"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          branch = os.environ["SOURCE_BRANCH"]
+          if not re.fullmatch(r"v2\.(10|11|12|13)\.0", branch):
+              raise SystemExit(f"Unsupported release branch: {branch}")
+          wheel = Path(os.environ["ARTIFACT_DIR"]) / os.environ["WHEEL_NAME"]
+          parts = wheel.stem.split("-")
+          if wheel.suffix != ".whl" or len(parts) not in (5, 6):
+              raise SystemExit(f"Invalid wheel filename: {wheel.name}")
+          build_tag = "1ppumixed" + branch.replace(".", "_")
+          asset_name = "-".join(parts[:2] + [build_tag] + parts[-3:]) + ".whl"
+          wheel.rename(wheel.with_name(asset_name))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"asset-name={asset_name}\n")
+          PY
+
+      - name: Upload asset to the nightly-build release
+        shell: bash
+        env:
+          ASSET_NAME: ${{ steps.prepare.outputs.asset-name }}
+        run: |
+          set -euo pipefail
+          wheel_asset="${ARTIFACT_DIR}/${ASSET_NAME}"
+          if [[ ! -f "${wheel_asset}" ]]; then
+            echo "::error::Wheel to publish not found: ${wheel_asset}"
+            exit 1
+          fi
+          if ! gh release view "${RELEASE_TAG}" > /dev/null 2>&1; then
+            if ! gh release create "${RELEASE_TAG}" \
+              --target "${SOURCE_COMMIT}" \
+              --title "Nightly Build" \
+              --notes "Rolling release holding the latest nightly PPU wheels (8.0a;8.9)." \
+              --prerelease; then
+              gh release view "${RELEASE_TAG}" > /dev/null
+            fi
+          fi
+          gh release upload "${RELEASE_TAG}" "${wheel_asset}" --clobber
+          {
+            echo "### Nightly PPU wheel"
+            echo "- Branch: \`${SOURCE_BRANCH}\`"
+            echo "- Commit: \`${SOURCE_COMMIT}\`"
+            echo "- Architectures: \`8.0a;8.9\`"
+            echo "- Asset: \`${ASSET_NAME}\`"
+            echo "- Release: ${GITHUB_SERVER_URL}/${GH_REPO}/releases/tag/${RELEASE_TAG}"
+          } >> "${GITHUB_STEP_SUMMARY}"

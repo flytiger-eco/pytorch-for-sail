@@ -5,7 +5,7 @@ on:
     inputs:
       board:
         description: |
-          板型：810 或 890。它单手决定目标架构（810 → 8.0，890 → 8.9），
+          板型：810、890 或 mixed。目标架构分别为 8.0、8.9、8.0a;8.9，
           并作为后缀拼在 build-environment 后面进 cache key / artifact 名
         type: string
         required: true
@@ -103,7 +103,7 @@ jobs:
     env:
       BUILD_ENVIRONMENT: ${{ inputs.build-environment }}-${{ inputs.board }}
       DOCKER_IMAGE: ${{ inputs.docker-image }}
-      TORCH_CUDA_ARCH_LIST: ${{ inputs.board == '810' && '8.0' || '8.9' }}
+      TORCH_CUDA_ARCH_LIST: ${{ inputs.board == '810' && '8.0' || inputs.board == '890' && '8.9' || '8.0a;8.9' }}
       MAX_JOBS: ${{ inputs.max-jobs }}
       PPU_MEM_PER_JOB_GB: ${{ inputs.mem-per-job-gb }}
       PPU_LINK_JOBS: ${{ inputs.link-jobs }}
@@ -122,8 +122,8 @@ jobs:
           # board 同时决定 arch 与 cache key 后缀，拼错一个字符就是一次 4~5h 的无效编译，
           # 所以卡在第一步而不是靠 job env 里的三元表达式静默归一
           case "${BOARD}" in
-            810|890) echo "[board] board=${BOARD} arch=${TORCH_CUDA_ARCH_LIST} env=${BUILD_ENVIRONMENT}" ;;
-            *) echo "::error::board 只能是 810 或 890，当前为 '${BOARD}'"; exit 1 ;;
+            810|890|mixed) echo "[board] board=${BOARD} arch=${TORCH_CUDA_ARCH_LIST} env=${BUILD_ENVIRONMENT}" ;;
+            *) echo "::error::board 只能是 810、890 或 mixed，当前为 '${BOARD}'"; exit 1 ;;
           esac
 
       - name: Show runner spec
