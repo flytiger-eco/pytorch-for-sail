@@ -669,7 +669,7 @@ def scaled_dot_product_flash_attention_backward_strategy(
 
 
 # PPU modification: flex flash attention DTensor strategies.
-if torch.version.ppu is not None:
+if getattr(torch.version, "ppu", None) is not None:
 
     def _scaled_dot_product_flex_flash_attention_base_strategies(
         op_schema: OpSchema,

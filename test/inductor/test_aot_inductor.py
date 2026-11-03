@@ -101,7 +101,6 @@ from torch.testing._internal.inductor_utils import (
 )
 from torch.testing._internal.logging_utils import LoggingTestCase, make_logging_test
 from torch.testing._internal.triton_utils import requires_gpu
-from torch.testing._utils import is_ppu
 from torch.utils import _pytree as pytree
 from torch.utils._triton import (
     has_triton_experimental_host_tma,
@@ -334,7 +333,7 @@ class AOTInductorTestsTemplate:
     def test_simple_multi_arch(self, embed_kernel_binary):
         if self.device != GPU_TYPE:
             raise unittest.SkipTest("requires GPU_TYPE")
-        if is_ppu():
+        if getattr(torch.version, "ppu", None):
             raise unittest.SkipTest("Triton PPU backend has no PTX stage")
 
         class Model(torch.nn.Module):

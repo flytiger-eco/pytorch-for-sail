@@ -32,7 +32,7 @@ __all__ = [
             "enable_flex_flash_attention_sdp",  # PPU modification
             "flex_flash_attention_sdp_enabled",  # PPU modification
         ]
-        if torch.version.ppu is not None
+        if getattr(torch.version, "ppu", None) is not None
         else []
     ),
     "allow_fp16_bf16_reduction_math_sdp",
@@ -461,7 +461,7 @@ def enable_math_sdp(enabled: bool):
 
 # PPU modification: FA3 flex flash attention SDPA enable/query flags (PPU only,
 # gated on the build-time torch.version.ppu to match the C++ USE_PPU guard)
-if torch.version.ppu is not None:
+if getattr(torch.version, "ppu", None) is not None:
 
     def flex_flash_attention_sdp_enabled():
         r"""
