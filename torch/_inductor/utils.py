@@ -1672,7 +1672,7 @@ def is_big_gpu(index_or_device: Union[int, torch.device] = 0) -> bool:
             return False
         return True
 
-    if hasattr(torch.version, "ppu") and prop.cc <= 89:
+    if getattr(torch.version, "ppu", None) and prop.cc <= 89:
         return True
 
     min_sms = 16 if device.type == "xpu" else 68  # 3080
