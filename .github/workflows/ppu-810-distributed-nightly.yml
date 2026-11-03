@@ -145,7 +145,7 @@ jobs:
         run: rm -rf .git
 
       - name: "810E 多卡 (2 PPU) CUDA 分布式测试"
-        uses: flytiger-eco/ppu-distributed-action@main
+        uses: flytiger-eco/shared-workflows/cluster-task@main
         with:
 
           nnodes: 0
