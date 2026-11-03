@@ -4019,7 +4019,7 @@ def handle_traced_output(
         # PPU modification: flex flash attention SDPA support.
         + (
             [torch._C._get_flex_flash_attention_sdp_enabled]
-            if torch.version.ppu is not None
+            if getattr(torch.version, "ppu", None) is not None
             else []
         )
         + list(supported_const_comparison_op_values.keys())

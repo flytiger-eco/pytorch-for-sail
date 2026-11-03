@@ -6155,7 +6155,7 @@ def meta__scaled_dot_product_flash_attention(
         offset = torch.empty((), dtype=torch.uint64, device="meta")
     # For PPU 1.0 and 1.5, the dtypes of meta seed and offset depend on the return types
     # defined in PPU flash-attention flash_api.cpp.
-    if torch.version.ppu:
+    if getattr(torch.version, "ppu", None):
         seed = torch.empty((2), dtype=torch.int64, device="meta")
         offset = torch.empty((), dtype=torch.int64, device="meta")
     return (
@@ -6705,7 +6705,7 @@ def meta__flash_attention_forward(
         offset = torch.empty((), dtype=torch.uint64, device="meta")
     # For PPU 1.0 and 1.5, the dtypes of meta seed and offset depend on the return types
     # defined in PPU flash-attention flash_api.cpp.
-    if torch.version.ppu:
+    if getattr(torch.version, "ppu", None):
         seed = torch.empty((2), dtype=torch.int64, device="meta")
         offset = torch.empty((), dtype=torch.int64, device="meta")
     return (

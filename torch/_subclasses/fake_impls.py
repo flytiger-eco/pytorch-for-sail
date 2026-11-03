@@ -207,7 +207,7 @@ def dispatch_to_op_implementations_dict(
 
 # USE_PPU modification: eager flex flash attention returns its RNG state on
 # CPU outside CUDA graph capture, unlike the CUDA output and logsumexp tensors.
-if torch.version.ppu is not None:
+if getattr(torch.version, "ppu", None) is not None:
 
     @register_op_impl(aten._scaled_dot_product_flex_flash_attention.default)
     def flex_flash_attention(

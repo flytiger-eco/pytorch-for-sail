@@ -7352,7 +7352,7 @@ torch.cuda.synchronize()
 
         output = f(values, offsets)
         output.sum().backward()
-        if torch.version.ppu:
+        if getattr(torch.version, "ppu", None):
             self.assertEqual(values.grad, torch.ones_like(values), atol=2e-4, rtol=1e-6)
         else:
             self.assertEqual(values.grad, torch.ones_like(values))
