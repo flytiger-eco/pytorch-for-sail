@@ -60,7 +60,6 @@ import torch.utils._pytree as pytree
 from torch._inductor.analysis.device_info import datasheet_tops
 from torch._inductor.runtime.hints import DeviceProperties
 from torch.fx.passes.regional_inductor import _needs_inductor_compile
-from torch.testing._utils import is_ppu
 from torch.utils._dtype_abbrs import dtype_abbrs
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._pytree import tree_flatten, tree_map_only
@@ -1726,7 +1725,7 @@ def is_big_gpu(index_or_device: Union[int, torch.device] = 0) -> bool:
             return False
         return True
 
-    if torch.version.ppu is not None and prop.cc <= 89:
+    if hasattr(torch.version, "ppu") and prop.cc <= 89:
         return True
 
     min_sms = 16 if device.type == "xpu" else 68  # 3080
