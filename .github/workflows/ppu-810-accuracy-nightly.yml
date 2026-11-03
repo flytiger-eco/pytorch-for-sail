@@ -2,8 +2,8 @@ name: ppu-810-accuracy-nightly
 
 on:
   schedule:
-    # 北京时间每周六 03:00（UTC 周五 19:00）触发一次
-    - cron: '0 19 * * 5'
+    # 04:00
+    - cron: '0 20 * * *'
   workflow_dispatch:
 
 concurrency:

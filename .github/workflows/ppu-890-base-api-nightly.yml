@@ -2,8 +2,8 @@ name: ppu-890-base-api-nightly
 
 on:
   schedule:
-    # 北京时间每周六 01:00（UTC 周五 17:00）触发一次
-    - cron: '0 17 * * 5'
+    # 20:00
+    - cron: '0 12 * * *'
   workflow_dispatch:
 
 concurrency:
