@@ -38,7 +38,7 @@ from torch.distributed.distributed_c10d import SHRINK_ABORT as NCCL_SHRINK_ABORT
 # libpccl reads this at communicator init; set it at module top (before setUp's
 # _spawn_processes and before any backend query) so the spawned rank subprocesses
 # inherit it. Guarded by torch.version.ppu since it only applies to the PCCL backend.
-if torch.version.ppu:
+if getattr(torch.version, "ppu", None):
     os.environ["PCCL_ENABLE_EXT_KERNEL"] = "0"
 
 

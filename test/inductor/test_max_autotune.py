@@ -5410,7 +5410,7 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
         if test_case == "occupancy_ratio_accept":
             # blocks_unfused=5, blocks_fused=3, ratio=0.6 > 0.5 -> accept
             # aten slightly faster to verify fusion picks triton even when aten wins
-            if torch.version.ppu:
+            if getattr(torch.version, "ppu", None):
                 mock_unfused_n_regs = self._get_mock_n_regs_for_blocks(5)
                 mock_fused_n_regs = self._get_mock_n_regs_for_blocks(3)
             else:
@@ -5419,7 +5419,7 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
             expect_fusion = True
         elif test_case == "occupancy_ratio_reject":
             # blocks_unfused=8, blocks_fused=2, ratio=0.25 < 0.5 -> reject
-            if torch.version.ppu:
+            if getattr(torch.version, "ppu", None):
                 mock_unfused_n_regs = self._get_mock_n_regs_for_blocks(8)
                 mock_fused_n_regs = self._get_mock_n_regs_for_blocks(2)
             else:
@@ -5487,7 +5487,7 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
         if test_case == "memory_bound_accept":
             # blocks_fused=2 > 1, ms2=0.3 > 2*ms1=0.2 -> Branch C accepts
             # aten slightly faster to verify fusion picks triton even when aten wins
-            if torch.version.ppu:
+            if getattr(torch.version, "ppu", None):
                 mock_unfused_n_regs = self._get_mock_n_regs_for_blocks(8)
                 mock_fused_n_regs = self._get_mock_n_regs_for_blocks(2)
             else:
@@ -5497,7 +5497,7 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
             expect_fusion = True
         elif test_case == "memory_bound_reject_low_occupancy":
             # blocks_fused=1, ms2=0.3 > 2*ms1=0.2 BUT blocks_fused <= 1 -> reject
-            if torch.version.ppu:
+            if getattr(torch.version, "ppu", None):
                 mock_unfused_n_regs = self._get_mock_n_regs_for_blocks(8)
                 mock_fused_n_regs = self._get_mock_n_regs_for_blocks(1)
             else:

@@ -20,7 +20,7 @@ from torch.profiler import profile, ProfilerActivity
 # tolerance. Force the FP32 path onto CUDA (non-Tensor-Core) cores. This must be
 # set before any device query or test execution so the backend observes the
 # override on first use.
-if torch.version.ppu:
+if getattr(torch.version, "ppu", None):
     os.environ["PPU_FP32_TENSOR_OVERRIDE"] = "0"
 
 from torch.quantization._quantized_conversions import (

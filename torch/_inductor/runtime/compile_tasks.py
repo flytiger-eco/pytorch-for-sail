@@ -78,7 +78,7 @@ def _set_triton_libdevice_path_impl() -> None:
     # at it makes every libdevice call unresolvable on the PPU backend
     # (__ppu_* undefined symbols). Keep Triton's default libdevice handling.
 
-    if torch.version.ppu:
+    if getattr(torch.version, "ppu", None):
         return
 
     try:
