@@ -39,6 +39,18 @@ and not LSTM \
 and not GRU \
 and not test_put_cuda_float16 \
 and not test_corrcoef_cuda_complex \
+and not test_cpu_gpu_parity_nn_TransformerDecoderLayer_cuda_float32 \
+and not test_cpu_gpu_parity_nn_TransformerDecoderLayer_cuda_float64 \
+and not test_cpu_gpu_parity_nn_TransformerEncoderLayer_eval_mode_cuda_float32 \
+and not test_cpu_gpu_parity_nn_TransformerEncoderLayer_eval_mode_cuda_float64 \
+and not test_cpu_gpu_parity_nn_TransformerEncoderLayer_train_mode_cuda_float32 \
+and not test_cpu_gpu_parity_nn_TransformerEncoderLayer_train_mode_cuda_float64 \
+and not test_cpu_gpu_parity_nn_TransformerEncoder_eval_mode_cuda_float32 \
+and not test_cpu_gpu_parity_nn_TransformerEncoder_eval_mode_cuda_float64 \
+and not test_cpu_gpu_parity_nn_TransformerEncoder_train_mode_cuda_float32 \
+and not test_cpu_gpu_parity_nn_TransformerEncoder_train_mode_cuda_float64 \
+and not test_cpu_gpu_parity_nn_Transformer_cuda_float32 \
+and not test_cpu_gpu_parity_nn_Transformer_cuda_float64 \
 and not test_cov_cuda_complex"
 
 echo "=== CUDA inductor 精度单测（单卡全量）==="

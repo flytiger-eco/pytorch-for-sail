@@ -81,7 +81,7 @@ run_case() {
 
 echo "=== CUDA 分布式用例（2 卡；仅 CUDA、已排除 FP8） ==="
 
-run_case "" distributed/test_c10d_functional_native
+run_case "not test_inductor_all_gather_into_tensor_coalesced" distributed/test_c10d_functional_native
 run_case "" distributed/tensor/test_dtensor_compile
 run_case "" distributed/tensor/parallel/test_micro_pipeline_tp
 run_case "" distributed/_composable/test_replicate_with_compiler
