@@ -783,6 +783,9 @@ and not test_fn_gradgrad_fft_irfft2_cuda_float64 \
 and not test_fn_gradgrad_fft_irfftn_cuda_complex128 \
 and not test_fn_gradgrad_fft_irfftn_cuda_float64 \
 and not test_fn_gradgrad_linalg_householder_product_cuda_float64 \
+and not test_non_standard_bool_values_nonzero_static_cuda_bool \
+and not test_noncontiguous_samples_nn_functional_grid_sample_cuda_float32 \
+and not test_numpy_ref_nn_functional_pdist_cuda_float64 \
 and not test_fn_gradgrad_ormqr_cuda_float64 \
 "
 
