@@ -257,9 +257,6 @@ def _extract_arch_version(arch_string: str) -> int:
 
 
 def _check_capability():
-    if USE_PPU:  # on PPU we don't want this check
-        return
-
     incompatible_gpu_warn = """
     Found GPU%d %s which is of cuda capability %d.%d.
     Minimum and Maximum cuda capability supported by this version of PyTorch is
