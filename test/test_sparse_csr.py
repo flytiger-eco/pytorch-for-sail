@@ -10,7 +10,7 @@ import os
 # path onto CUDA (non-Tensor-Core) cores so both sides stay consistent. This must
 # be set before any device query or test execution so the backend observes the
 # override on first use.
-if torch.version.ppu:
+if getattr(torch.version, "ppu", None):
     os.environ["PPU_FP32_TENSOR_OVERRIDE"] = "0"
 
 import random

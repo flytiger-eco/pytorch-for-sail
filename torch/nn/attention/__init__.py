@@ -80,7 +80,7 @@ _backend_names = {
 # PPU modification: the flex flash attention backend enum/binding only exists in
 # PPU builds (C++ side guarded by USE_PPU); gate on the build-time flag
 # torch.version.ppu (not a runtime env check) so it tracks the C++ guard.
-if torch.version.ppu is not None:
+if getattr(torch.version, "ppu", None) is not None:
     _backend_names["flex_flash_attention"] = "FLEX_FLASH_ATTENTION"
 
 

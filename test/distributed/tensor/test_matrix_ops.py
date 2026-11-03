@@ -15,7 +15,7 @@ import os
 # Route the FP32 path onto CUDA (non-Tensor-Core) cores. This is set at module
 # top level (not in setUp) so the spawned rank subprocesses re-import this module
 # and inherit the override before any device query or GEMM execution.
-if torch.version.ppu:
+if getattr(torch.version, "ppu", None):
     os.environ["PPU_FP32_TENSOR_OVERRIDE"] = "0"
 
 import torch.nn.functional as F

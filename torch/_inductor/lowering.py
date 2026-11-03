@@ -3452,7 +3452,7 @@ make_fallback(
 )
 # PPU modification: flex flash attention is an external CUDA kernel, matching
 # the fallback integration used by the other fused SDPA backends.
-if torch.version.ppu is not None:
+if getattr(torch.version, "ppu", None) is not None:
     make_fallback(
         aten._scaled_dot_product_flex_flash_attention.default,
         sdpa_constraint,

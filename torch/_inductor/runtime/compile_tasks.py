@@ -69,9 +69,9 @@ def _set_triton_libdevice_path_impl() -> None:
     # PPU has no CUDA toolkit libdevice bitcode; pointing TRITON_LIBDEVICE_PATH
     # at it makes every libdevice call unresolvable on the PPU backend
     # (__ppu_* undefined symbols). Keep Triton's default libdevice handling.
-    from torch.testing._utils import is_ppu
+    import torch
 
-    if is_ppu():
+    if getattr(torch.version, "ppu", None):
         return
 
     try:
