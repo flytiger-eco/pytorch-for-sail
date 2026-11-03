@@ -156,7 +156,7 @@ and not test_transformerencoderlayer"
 
     run_case test_complex "cuda"
 
-    run_case test_foreach "cuda and not test_autodiff__foreach_mm_outplace_cuda_complex128"
+    run_case test_foreach "cuda and not test_autodiff__foreach_mm_outplace_cuda_complex128 and not test_autodiff__foreach_mm_outplace_cuda_complex128"
 
     run_case test_sort_and_select "cuda"
 
