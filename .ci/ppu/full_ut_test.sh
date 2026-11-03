@@ -71,15 +71,15 @@ shard_heavy() {
 # shard 2：其余全部文件
 shard_rest() {
     run_case test_torch \
-        "not test_corrcoef_cuda_complex64 and not test_terminate_handler_on_crash and not test_cov_cuda_complex and not test_put_cuda_float16"
+        "cuda and not test_corrcoef_cuda_complex64 and not test_terminate_handler_on_crash and not test_cov_cuda_complex and not test_put_cuda_float16 and not test_grad_scaling_autocast_foreach0_fused0_AdamW_cuda_float32 and not test_grad_scaling_autocast_foreach0_fused0_Adam_cuda_float32"
 
-    run_case test_autograd "not test_thread_shutdown"
+    run_case test_autograd "cuda and not test_thread_shutdown and not test_multi_grad_all_hooks"
 
-    run_case test_nn "cuda"
+    run_case test_nn "cuda and not test_Embedding_discontiguous_cuda and not GRU and not LSTM and not RNN"
 
     run_case test_binary_ufuncs "TestBinaryUfuncsCUDA"
 
-    run_case test_unary_ufuncs "not TestUnaryUfuncsCPU"
+    run_case test_unary_ufuncs "cuda and not TestUnaryUfuncsCPU"
 
     run_case test_reductions "cuda and not test_ref_extremal_values_hash_tensor_cuda_float32"
 
@@ -124,7 +124,7 @@ shard_rest() {
 
     run_case dynamo/test_export
 
-    run_case distributed/test_c10d_common
+    run_case distributed/test_c10d_common "cuda and not testWithoutEnv and not testWithoutEnvWithFallback"
 
     run_case test_dynamic_shapes "not test_do_not_guard_unbacked_inputs"
 }

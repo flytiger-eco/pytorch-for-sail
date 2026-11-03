@@ -1,0 +1,32 @@
+name: ppu-810-accuracy-scheduler
+
+on:
+  schedule:
+    # 04:00
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    name: schedule accuracy (${{ matrix.branch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [v2.10.0, v2.12.0, v2.13.0]
+
+    steps:
+      - name: Trigger target branch workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_BRANCH: ${{ matrix.branch }}
+        run: |
+          gh workflow run ppu-810-accuracy-nightly.yml \
+            --repo "$GH_REPO" \
+            --ref "$TARGET_BRANCH"
