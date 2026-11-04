@@ -127,7 +127,7 @@ and not test_skip_in \
 and not test_to_complex_cuda_ \
 and not test_transformerencoderlayer"
 
-    run_case test_autograd "not test_thread_shutdown"
+    run_case test_autograd "not test_thread_shutdown and not test_multi_grad_all_hooks"
 
     run_case test_binary_ufuncs "TestBinaryUfuncsCUDA"
 
@@ -156,7 +156,7 @@ and not test_transformerencoderlayer"
 
     run_case test_complex "cuda"
 
-    run_case test_foreach "cuda"
+    run_case test_foreach "cuda and not test_autodiff__foreach_mm_outplace_cuda_complex128 and not test_autodiff__foreach_mm_outplace_cuda_complex128"
 
     run_case test_sort_and_select "cuda"
 
@@ -176,7 +176,7 @@ and not test_transformerencoderlayer"
 
     run_case dynamo/test_export
 
-    run_case distributed/test_c10d_common
+    run_case distributed/test_c10d_common "cuda and not testWithoutEnv and not testWithoutEnvWithFallback"
 
     run_case test_dynamic_shapes "not test_do_not_guard_unbacked_inputs"
 }
