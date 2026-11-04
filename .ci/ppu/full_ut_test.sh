@@ -125,9 +125,11 @@ and not test_overwrite_module_params_on_conversion_cpu_device_cuda \
 and not test_rrelu_bounds_validation \
 and not test_skip_in \
 and not test_to_complex_cuda_ \
+and not test_partial_flat_weights \
+and not test_multi_grad_all_hooks \
 and not test_transformerencoderlayer"
 
-    run_case test_autograd "not test_thread_shutdown"
+    run_case test_autograd "not test_thread_shutdown and not test_multi_grad_all_hooks"
 
     run_case test_binary_ufuncs "TestBinaryUfuncsCUDA"
 

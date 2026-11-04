@@ -146,7 +146,7 @@ jobs:
         run: rm -rf .git
 
       - name: "890P 单卡 (1 PPU) CUDA 全量 UT (shard 1/2)"
-        uses: flytiger-eco/ppu-distributed-action@main
+        uses: flytiger-eco/shared-workflows/cluster-task@main
         with:
           nnodes: 0
           nproc_per_node: 1
@@ -278,7 +278,7 @@ jobs:
         run: rm -rf .git
 
       - name: "890P 单卡 (1 PPU) CUDA 全量 UT (shard 2/2)"
-        uses: flytiger-eco/ppu-distributed-action@main
+        uses: flytiger-eco/shared-workflows/cluster-task@main
         with:
           nnodes: 0
           nproc_per_node: 1
