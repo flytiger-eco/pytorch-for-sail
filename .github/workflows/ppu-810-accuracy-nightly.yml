@@ -2,8 +2,8 @@ name: ppu-810-accuracy-nightly
 
 on:
   schedule:
-    # 北京时间每周六 03:00（UTC 周五 19:00）触发一次
-    - cron: '0 19 * * 5'
+    # 04:00
+    - cron: '0 20 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -142,7 +142,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: "810E 单卡 (1 PPU) CUDA inductor 精度单测"
-        uses: flytiger-eco/ppu-distributed-action@main
+        uses: flytiger-eco/shared-workflows/cluster-task@main
         with:
           nnodes: 0
           nproc_per_node: 1
