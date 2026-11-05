@@ -503,11 +503,6 @@ class AsyncCompile:
 
         return SizeHintMultiKernelCall(*args, **kwargs)
 
-    def preserved_reduction(self, standard_kernel, **kwargs) -> Any:
-        from torch._inductor.runtime.preserved_reduction import PreservedReductionCall
-
-        return PreservedReductionCall(standard_kernel, **kwargs)
-
     def cpp(self, source_code: str):
         kernel_code_log.info("CPP Kernel:\n%s", source_code)
         if get_compile_threads() <= 1:

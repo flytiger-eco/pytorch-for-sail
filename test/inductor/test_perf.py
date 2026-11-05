@@ -600,13 +600,9 @@ class SharedReadCatTests(TestCase):
                         expected, _, _ = self.compile_cat(fn, (x,), dynamic=dynamic)
                     for a, b in zip(actual, expected):
                         self.assert_same_bits(a, b)
-                    # The reduction stays independent: standard two kernels; if the Gluon dual path
-                    # is established, there is one extra fused candidate definition and it must carry
-                    # the preserved-order selector wrapper.
-                    if kernels == 3:
-                        self.assertIn("async_compile.preserved_reduction(", code)
-                    else:
-                        self.assertEqual(kernels, 2)
+                    # The reduction stays independent: the shared-read cat branch is never fused
+                    # with the sibling reduction, so exactly two standard kernels are emitted.
+                    self.assertEqual(kernels, 2)
                     self.assertEqual(code.count("tl.sum("), 1)
                     self.assertEqual(code.count("tl.store("), 3)
 
