@@ -28,8 +28,14 @@ from torch._inductor.runtime.preserved_reduction import (
     ReductionLaunchConfig,
     UnsupportedReductionContract,
 )
-from torch.testing._internal.inductor_utils import HAS_GPU_AND_TRITON
-from torch.testing._internal.triton_utils import requires_gpu_and_triton
+from torch._inductor.test_case import TestCase as InductorTestCase
+from torch.testing._internal.inductor_utils import HAS_CUDA_AND_TRITON
+
+
+# Inductor's TestCase isolates the compile/choice caches per test and supports the
+# standard test driver's shard options, unlike plain unittest.TestCase.
+class TestCase(InductorTestCase):
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +83,7 @@ SAMPLE_TTGIR = textwrap.dedent("""\
 """)
 
 
-class TestGluonCodegen(unittest.TestCase):
+class TestGluonCodegen(TestCase):
     """GluonCodegen AST transform and admission."""
 
     def test_simple_reduction(self):
@@ -187,7 +193,7 @@ class TestGluonCodegen(unittest.TestCase):
         self.assertIn("gl.exp", result.source)
 
 
-class TestBlockedReductionLayout(unittest.TestCase):
+class TestBlockedReductionLayout(TestCase):
     def test_valid_layout(self):
         layout = BlockedReductionLayout((1, 8), (32, 1), (4, 1), (1, 0))
         self.assertEqual(layout.size_per_thread, (1, 8))
@@ -211,7 +217,7 @@ class TestBlockedReductionLayout(unittest.TestCase):
         layout.validate_launch(4, 32, 1)  # must not raise
 
 
-class TestReductionLaunchConfig(unittest.TestCase):
+class TestReductionLaunchConfig(TestCase):
     def test_from_config_valid(self):
         cfg = SimpleNamespace(
             kwargs={"XBLOCK": 128, "R0_BLOCK": 64},
@@ -239,7 +245,7 @@ class TestReductionLaunchConfig(unittest.TestCase):
             ReductionLaunchConfig.from_config(cfg)
 
 
-class TestExtractReductionEncoding(unittest.TestCase):
+class TestExtractReductionEncoding(TestCase):
     def test_sample_ttgir(self):
         enc = extract_reduction_encoding(SAMPLE_TTGIR)
         self.assertEqual(enc.layout.size_per_thread, (1, 8))
@@ -276,7 +282,7 @@ class TestExtractReductionEncoding(unittest.TestCase):
             extract_reduction_encoding(bad)
 
 
-class TestReductionEncoding(unittest.TestCase):
+class TestReductionEncoding(TestCase):
     def test_validate_config_match(self):
         enc = extract_reduction_encoding(SAMPLE_TTGIR)
         cfg = SimpleNamespace(
@@ -297,7 +303,7 @@ class TestReductionEncoding(unittest.TestCase):
             enc.validate_config(launch)
 
 
-class TestReductionCacheIdentity(unittest.TestCase):
+class TestReductionCacheIdentity(TestCase):
     def test_cache_key_deterministic(self):
         enc = extract_reduction_encoding(SAMPLE_TTGIR)
         cfg = SimpleNamespace(
@@ -323,7 +329,7 @@ class TestReductionCacheIdentity(unittest.TestCase):
         self.assertEqual(len(key1), 64)  # sha256 hex
 
 
-class TestPreservedReductionCall(unittest.TestCase):
+class TestPreservedReductionCall(TestCase):
     def _make_standard_kernel(self, *, has_launchers=True, has_asm=True, fp_fusion=True):
         # spec=[] keeps the mock free of an auto result attribute so it is not treated as a Future
         kernel = MagicMock(spec=[])
@@ -410,7 +416,7 @@ class TestPreservedReductionCall(unittest.TestCase):
         self.assertEqual(prc.custom_attr, "hello")
 
 
-class TestAsyncCompilePreservedReduction(unittest.TestCase):
+class TestAsyncCompilePreservedReduction(TestCase):
     def test_preserved_reduction_method_exists(self):
         from torch._inductor.async_compile import AsyncCompile
         ac = AsyncCompile()
@@ -427,7 +433,7 @@ class TestAsyncCompilePreservedReduction(unittest.TestCase):
         self.assertIsInstance(result, PreservedReductionCall)
 
 
-class TestPreservedSequenceAdmission(unittest.TestCase):
+class TestPreservedSequenceAdmission(TestCase):
     """_next_preserved_reduction structural admission: benign cat aliases/Nop accepted, dangerous structures rejected."""
 
     def _buffer(self, name, aliases=(), mutations=()):
@@ -485,7 +491,8 @@ class TestPreservedSequenceAdmission(unittest.TestCase):
         buf1 = self._buffer("buf1", aliases=[alias_target], mutations=pw_mutations)
         pw = self._node(
             "op0_op1", buffers=["buf0", "buf1"], outputs=[buf0, buf1],
-            used=["arg0_1"] if shared_read else ["other"],
+            # Real scheduler read sets include the node's own produced buffers.
+            used=(["arg0_1", "buf0", "buf1"] if shared_read else ["other", "buf0", "buf1"]),
         )
         out_user = SimpleNamespace(node=MagicMock(spec=OutputNode))
         nop = self._node(
@@ -524,12 +531,71 @@ class TestPreservedSequenceAdmission(unittest.TestCase):
         self.assertIsNone(self._run_admission(nodes, pw))
 
     def test_alias_without_nop_rejected(self):
-        nodes, pw, _ = self._make_cat_sequence(middle_nop=False)
+        nodes, pw, red = self._make_cat_sequence(middle_nop=False)
         self.assertIsNone(self._run_admission(nodes, pw))
 
+    def test_pointwise_only_input_rejected(self):
+        # The deferred pointwise launch runs at the reduction endpoint; an input the
+        # reduction never reads could have its storage reused before that launch, so
+        # the pointwise external read set must be a subset of the reduction read set.
+        nodes, pw, red = self._make_cat_sequence()
+        pw.used_buffer_names.return_value = {"arg0_1", "buf0", "buf1", "pw_only_input"}
+        self.assertIsNone(self._run_admission(nodes, pw))
 
-@unittest.skipUnless(HAS_GPU_AND_TRITON, "requires GPU and Triton")
-class TestPreservedReductionIntegration(unittest.TestCase):
+    def test_self_reads_do_not_break_subset_admission(self):
+        # Regression: used_buffer_names() reports the node's own outputs as reads; the
+        # subset check must exclude produced buffers or every real sequence is rejected.
+        nodes, pw, red = self._make_cat_sequence()
+        self.assertIs(self._run_admission(nodes, pw), red)
+
+    def test_nan_asserts_rejected(self):
+        # NaN checks inspect the pointwise outputs right after its call site, which
+        # deferral leaves unwritten.
+        from torch._inductor.codegen import triton as triton_codegen
+
+        nodes, pw, red = self._make_cat_sequence()
+        with patch.object(triton_codegen.config, "nan_asserts", True):
+            self.assertIsNone(self._run_admission(nodes, pw))
+
+    def test_intermediate_hooks_rejected(self):
+        from torch._inductor.codegen import triton as triton_codegen
+
+        nodes, pw, red = self._make_cat_sequence()
+        with patch.object(triton_codegen.config, "generate_intermediate_hooks", True):
+            self.assertIsNone(self._run_admission(nodes, pw))
+
+    def test_cant_split_falls_back_to_standard_sequence(self):
+        # Tiling can raise CantSplit for incompatible iteration ranges; it must keep
+        # the standard sequence instead of failing compilation.
+        from torch._inductor.codegen import triton as triton_codegen
+        from torch._inductor.codegen.simd import CantSplit
+
+        reduction_node = MagicMock()
+        kernel = MagicMock(spec=triton_codegen.TritonKernel)
+        kernel.inside_reduction = True
+        kernel.persistent_reduction = False
+        pending = {
+            "node": MagicMock(),
+            "reduction": reduction_node,
+            "kernel_name": "triton_poi_fused_0",
+            "kernel": MagicMock(),
+        }
+        fake = SimpleNamespace(
+            scheduler=SimpleNamespace(current_node=reduction_node),
+            _preserved_reduction_pointwise=pending,
+            _define_preserved_sequence=MagicMock(side_effect=CantSplit()),
+        )
+        triton_codegen.TritonScheduling._track_preserved_reduction(
+            fake, "triton_red_fused_1", kernel
+        )
+        fake._define_preserved_sequence.assert_called_once()
+        self.assertIsNone(fake._preserved_reduction_pointwise)
+
+
+# The suite allocates device="cuda" tensors explicitly; HAS_GPU_AND_TRITON would also
+# enable it on XPU-only hosts where those allocations fail instead of being skipped.
+@unittest.skipUnless(HAS_CUDA_AND_TRITON, "requires CUDA and Triton")
+class TestPreservedReductionIntegration(TestCase):
     """End-to-end: inspect generated code for preserved_reduction after torch.compile."""
 
     def test_reduction_generates_preserved_wrapper(self):
@@ -552,8 +618,8 @@ class TestPreservedReductionIntegration(unittest.TestCase):
             for a, b in zip(tensors_a, tensors_b):
                 self.assertEqual(a.shape, b.shape)
                 self.assertEqual(a.stride(), b.stride())
-                # Plain unittest.TestCase cannot assertEqual multi-element tensors (ambiguous
-                # truth value); torch.equal compares every byte including NaN signs/payloads.
+                # Byte-level comparison covers NaN signs/payloads that allclose-style
+                # checks would mask.
                 self.assertTrue(
                     torch.equal(a.contiguous().view(torch.uint8), b.contiguous().view(torch.uint8))
                 )
@@ -590,20 +656,25 @@ class TestPreservedReductionIntegration(unittest.TestCase):
 
         with patch.object(pr_mod.PreservedReductionCall, "_benchmark", return_value=(2.0, 1.0)):
             with patch.object(pr_mod.PreservedReductionCall, "_run_candidate_fast", spy):
-                torch._dynamo.reset()
-                with torch._inductor.config.patch(fx_graph_cache=False):
-                    compiled = torch.compile(fn, fullgraph=True)
-                    first = compiled(x)
-                bits(first, reference)
-                # A second call at the same shape reuses the selector in Gluon steady state; a
-                # fresh nonpersistent shape recompiles, selects, then verifies steady state too.
-                for fresh_shape in (shape, (32, 2048)):
-                    y = torch.randn(*fresh_shape, device="cuda")
-                    compiled(y)  # first invocation at a new shape selects; same shape reuses
-                    z = torch.randn(*fresh_shape, device="cuda")
-                    with patch.object(lowering, "_cat_inputs_share_read", return_value=False):
-                        ref = reference_compiled(z)
-                    bits(compiled(z), ref)
+                # Isolate the persistent choice cache: the earlier unmocked invocation may
+                # have stored a real timing decision for this identity, which would
+                # short-circuit selection before the benchmark mock is ever reached.
+                with patch.object(pr_mod.PreservedReductionCall, "_load_choice", return_value=None):
+                    with patch.object(pr_mod.PreservedReductionCall, "_store_choice"):
+                        torch._dynamo.reset()
+                        with torch._inductor.config.patch(fx_graph_cache=False):
+                            compiled = torch.compile(fn, fullgraph=True)
+                            first = compiled(x)
+                        bits(first, reference)
+                        # A second call at the same shape reuses the selector in Gluon steady state; a
+                        # fresh nonpersistent shape recompiles, selects, then verifies steady state too.
+                        for fresh_shape in (shape, (32, 2048)):
+                            y = torch.randn(*fresh_shape, device="cuda")
+                            compiled(y)  # first invocation at a new shape selects; same shape reuses
+                            z = torch.randn(*fresh_shape, device="cuda")
+                            with patch.object(lowering, "_cat_inputs_share_read", return_value=False):
+                                ref = reference_compiled(z)
+                            bits(compiled(z), ref)
         self.assertTrue(selected_modes, "Gluon steady-state path was never exercised")
         self.assertTrue(all(mode == "gluon" for mode in selected_modes), selected_modes)
 
@@ -658,4 +729,6 @@ class TestPreservedReductionIntegration(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    from torch._inductor.test_case import run_tests
+
+    run_tests(needs="filelock")

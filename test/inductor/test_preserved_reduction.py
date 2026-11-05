@@ -3,7 +3,7 @@ import ast
 import dataclasses
 import hashlib
 import pickle
-import unittest
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +18,13 @@ from torch._inductor.runtime.preserved_reduction import (
     ReductionLaunchConfig,
     UnsupportedReductionContract,
 )
+from torch._inductor.test_case import TestCase as InductorTestCase
+
+
+# Inductor's TestCase isolates the compile/choice caches per test and supports the
+# standard test driver's shard options, unlike plain unittest.TestCase.
+class TestCase(InductorTestCase):
+    pass
 
 
 TTGIR = '''
@@ -51,7 +58,7 @@ def kernel(in_ptr0, out_ptr0, out_ptr1, xnumel, r0_numel, XBLOCK: tl.constexpr, 
 '''
 
 
-class PreservedReductionTests(unittest.TestCase):
+class PreservedReductionTests(TestCase):
     def config(self, **kwargs):
         values = dict(kwargs={"XBLOCK": 2, "R0_BLOCK": 64}, num_warps=2, num_stages=1, num_ctas=1)
         values.update(kwargs)
@@ -150,7 +157,13 @@ class PreservedReductionTests(unittest.TestCase):
 
         normal = SimpleNamespace(is_gluon=lambda: False)
         gluon = SimpleNamespace(is_gluon=lambda: True)
-        self.assertIs(triton_heuristics._get_ast_source(normal), triton_heuristics.ASTSource)
+        if triton_heuristics.ASTSource is not None:
+            self.assertIs(triton_heuristics._get_ast_source(normal), triton_heuristics.ASTSource)
+        else:
+            # Without Triton, triton_compat sets ASTSource=None; normal dispatch must
+            # raise instead of silently returning None.
+            with self.assertRaises(RuntimeError):
+                triton_heuristics._get_ast_source(normal)
         try:
             from triton.experimental.gluon._runtime import GluonASTSource
         except ImportError:
@@ -518,6 +531,80 @@ class PreservedReductionTests(unittest.TestCase):
         )
         self.assertNotEqual(identity.cache_key(), other_map.cache_key())
 
+    def test_contract_compiler_version_unknown_without_triton(self):
+        # Without Triton installed, `import triton` raises ImportError (not just
+        # AttributeError); the identity must still be constructible on CPU-only hosts.
+        call, pointwise, reduction, launcher, result = self._contract_call(
+            standard_fp_fusion=True, pointwise_fp_fusion=True,
+        )
+        with (
+            patch.object(call, "_selected_compile_result", return_value=(launcher, result)),
+            patch.object(call, "_read_ttgir", return_value=TTGIR),
+            patch.object(BlockedReductionLayout, "to_gluon", return_value="layout"),
+            patch.dict(sys.modules, {"triton": None}),
+        ):
+            identity = call._contract(reduction)
+        self.assertEqual(identity.compiler_version, "unknown")
+
+    def test_is_capturing_checks_device_stream(self):
+        call, _, _ = self.sequence_call()
+        with patch.object(torch.cuda, "is_current_stream_capturing", return_value=True):
+            self.assertTrue(call._is_capturing())
+        with patch.object(torch.cuda, "is_current_stream_capturing", return_value=False):
+            self.assertFalse(call._is_capturing())
+        call._device_str = "unsupported_device"
+        self.assertFalse(call._is_capturing())
+
+    def test_capture_runs_standard_and_defers_selection(self):
+        # Validation/benchmarking synchronize with the host, which is forbidden during
+        # graph capture; the captured call must run the standard sequence without
+        # selecting, and a later non-capturing call must still perform the choice.
+        call, pointwise, reduction = self.sequence_call()
+        with (
+            patch.object(call, "_is_capturing", return_value=True),
+            patch.object(call, "_contract") as contract,
+        ):
+            call.pointwise.run("captured-pointwise")
+            call.reduction.run("captured-reduction")
+            contract.assert_not_called()
+        self.assertIsNone(call._selected_mode)
+        pointwise.run.assert_called_once_with("captured-pointwise")
+        reduction.run.assert_called_once_with("captured-reduction")
+        with (
+            patch.object(call, "_is_capturing", return_value=False),
+            patch.object(call, "_contract", side_effect=UnsupportedReductionContract("unsupported")),
+        ):
+            call.pointwise.run("later-pointwise")
+            call.reduction.run("later-reduction")
+        self.assertEqual(call._selected_mode, "standard")
+        self.assertEqual(pointwise.run.call_count, 2)
+        self.assertEqual(reduction.run.call_count, 2)
+
+    def test_validation_oom_falls_back_to_standard(self):
+        # Candidate validation allocates full output copies; an OOM there must reject
+        # the optional optimization instead of failing the model invocation.
+        for stage in ("_validate_candidate", "_benchmark"):
+            with self.subTest(stage=stage):
+                call, pointwise, reduction = self.sequence_call()
+                overrides = {
+                    "_contract": MagicMock(return_value=MagicMock()),
+                    "_load_choice": MagicMock(return_value=None),
+                    "_load_candidate": MagicMock(),
+                    "_validate_candidate": MagicMock(return_value=True),
+                    "_benchmark": MagicMock(return_value=(2.0, 1.0)),
+                }
+                overrides[stage] = MagicMock(
+                    side_effect=torch.OutOfMemoryError("out of memory")
+                )
+                with patch.multiple(call, **overrides):
+                    call.pointwise.run("pointwise")
+                    call.reduction.run("reduction")
+                self.assertEqual(call._selected_mode, "standard")
+                pointwise.run.assert_called_once_with("pointwise")
+                reduction.run.assert_called_once_with("reduction")
+
 
 if __name__ == "__main__":
-    unittest.main()
+    from torch._inductor.test_case import run_tests
+
+    run_tests(needs="filelock")

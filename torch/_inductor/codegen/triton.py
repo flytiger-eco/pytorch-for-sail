@@ -97,6 +97,7 @@ from .common import (
     WorkspaceZeroMode,
 )
 from .simd import (
+    CantSplit,
     constant_repr,
     IterationRanges,
     IterationRangesEntry,
@@ -6184,6 +6185,10 @@ class TritonScheduling(SIMDScheduling):
             or pointwise.has_side_effects()
         ):
             return None
+        # NaN assertions and intermediate hooks inspect the pointwise outputs right after
+        # its call site; deferring the launch would leave them reading unwritten storage.
+        if config.nan_asserts or config.generate_intermediate_hooks:
+            return None
         if pointwise.is_reduction():
             return None
         # Cat branches writing aliases of the concat output are benign; real mutations are still rejected.
@@ -6251,12 +6256,17 @@ class TritonScheduling(SIMDScheduling):
             or not self._only_output_users(reduction)
         ):
             return None
-        # Only accept siblings sharing external reads; if the reduction reads the pointwise
-        # output, deferring the pointwise launch would change dependency semantics and the
-        # standard path must be kept.
+        # If the reduction reads the pointwise output, deferring the pointwise launch
+        # would change dependency semantics and the standard path must be kept.
         if produced & reduction.used_buffer_names():
             return None
-        if not (pointwise.used_buffer_names() & reduction.used_buffer_names()):
+        # Only accept siblings whose reads cover every pointwise input: the deferred
+        # pointwise launch runs at the reduction endpoint, so any pointwise-only input
+        # must stay live until then or buffer reuse could overwrite it (shared reads are
+        # guaranteed by the subset relation). The read sets include the nodes' own
+        # produced buffers, which are excluded here; the reduction never reads them
+        # (checked above).
+        if not (pointwise.used_buffer_names() - produced) <= reduction.used_buffer_names():
             return None
         if len([node for node in reduction.get_nodes() if node.is_reduction()]) != 1:
             return None
@@ -6404,8 +6414,9 @@ class TritonScheduling(SIMDScheduling):
 
                 try:
                     self._define_preserved_sequence(pending, kernel_name, kernel)
-                except (NotImplementedError, UnsupportedReductionContract):
-                    # Known unsupported structures keep the full standard sequence with a diagnosable record.
+                except (CantSplit, NotImplementedError, UnsupportedReductionContract):
+                    # Known unsupported structures (including incompatible iteration ranges
+                    # raised by tiling) keep the full standard sequence with a diagnosable record.
                     log.debug(
                         "preserved reduction candidate rejected",
                         exc_info=True,

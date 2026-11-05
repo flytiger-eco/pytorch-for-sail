@@ -321,7 +321,7 @@ class PreservedReductionCall:
                 if self._selected is None:
                     try:
                         self._contract(kernel)
-                    except (ImportError, OSError, UnsupportedReductionContract):
+                    except (ImportError, OSError, UnsupportedReductionContract, torch.OutOfMemoryError):
                         pass
                     self._selected = kernel
         return result
@@ -375,6 +375,11 @@ class PreservedReductionCall:
         # reduction autotune, and user-visible outputs always come from this path; candidate validation
         # and timing never contribute to that result.
         self._run_standard(endpoints)
+        # Candidate validation and benchmarking need host synchronization, which is forbidden
+        # during CUDA graph capture. Run the standard sequence for this call but leave the mode
+        # unselected so a later non-capturing invocation can still perform the one-time choice.
+        if self._is_capturing():
+            return None
         try:
             identity = self._contract(self._standard)
             cached = self._load_choice(identity)
@@ -411,9 +416,19 @@ class PreservedReductionCall:
                 standard_ms,
                 candidate_ms,
             )
-        except (ImportError, OSError, UnsupportedReductionContract):
+        except (ImportError, OSError, UnsupportedReductionContract, torch.OutOfMemoryError):
+            # Validation/benchmark allocations may OOM even when the standard sequence fits;
+            # the optional optimization is rejected rather than failing the model invocation.
             self._selected_mode = "standard"
         return None
+
+    def _is_capturing(self) -> bool:
+        try:
+            device_module = getattr(torch, self._device_str, None)
+            checker = getattr(device_module, "is_current_stream_capturing", None)
+            return bool(checker()) if checker is not None else False
+        except Exception:
+            return False
 
     def _run_standard(
         self,
@@ -657,7 +672,7 @@ class PreservedReductionCall:
             import triton
 
             compiler_version = triton.__version__
-        except AttributeError:
+        except (AttributeError, ImportError):
             compiler_version = "unknown"
         return ReductionCacheIdentity.create(
             source=source,
