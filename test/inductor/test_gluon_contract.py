@@ -324,10 +324,11 @@ class TestReductionCacheIdentity(unittest.TestCase):
 
 
 class TestPreservedReductionCall(unittest.TestCase):
-    def _make_standard_kernel(self, *, has_launchers=True, has_asm=True):
+    def _make_standard_kernel(self, *, has_launchers=True, has_asm=True, fp_fusion=True):
         # spec=[] keeps the mock free of an auto result attribute so it is not treated as a Future
         kernel = MagicMock(spec=[])
         kernel.run = MagicMock(return_value="run_result")
+        kernel.triton_meta = {"enable_fp_fusion": fp_fusion}
         if has_launchers:
             launcher = MagicMock()
             launcher.config = SimpleNamespace(
@@ -532,24 +533,79 @@ class TestPreservedReductionIntegration(unittest.TestCase):
     """End-to-end: inspect generated code for preserved_reduction after torch.compile."""
 
     def test_reduction_generates_preserved_wrapper(self):
-        """A simple reduction should trigger Gluon candidate generation."""
+        """An eligible shared-read cat + nonpersistent sibling sum must emit the selector,
+        actually select Gluon when it wins timing, and stay bitwise correct on subsequent calls."""
+        from torch._inductor import lowering
         from torch._inductor.utils import run_and_get_code
+        from torch._inductor.runtime import preserved_reduction as pr_mod
+
+        try:
+            from triton.experimental.gluon._runtime import GluonASTSource  # noqa: F401
+        except ImportError:
+            self.skipTest("Gluon is not available")
 
         def fn(x):
-            return x.sum(-1)
+            s = x.sigmoid()
+            return torch.cat((s * x, s + x), -1).to(torch.bfloat16), (x * x).sum(-1, keepdim=True)
 
-        x = torch.randn(17, 33, device="cuda")
+        def bits(tensors_a, tensors_b):
+            for a, b in zip(tensors_a, tensors_b):
+                self.assertEqual(a.shape, b.shape)
+                self.assertEqual(a.stride(), b.stride())
+                # Plain unittest.TestCase cannot assertEqual multi-element tensors (ambiguous
+                # truth value); torch.equal compares every byte including NaN signs/payloads.
+                self.assertTrue(
+                    torch.equal(a.contiguous().view(torch.uint8), b.contiguous().view(torch.uint8))
+                )
+
+        # A reduction dim > 1024 keeps the standard sum nonpersistent (looped); admission rejects
+        # persistent reductions, so a small dim would never emit the selector.
+        shape = (17, 4096)
+        x = torch.randn(*shape, device="cuda")
         torch._dynamo.reset()
         with torch._inductor.config.patch(fx_graph_cache=False):
-            result, code = run_and_get_code(
-                torch.compile(fn, fullgraph=True), x
-            )
+            compiled = torch.compile(fn, fullgraph=True)
+            result, code = run_and_get_code(compiled, x)
         code_str = "\n".join(code)
-        # Verify correctness of the standard reduction
-        self.assertTrue(torch.allclose(result, fn(x)))
-        # If Gluon codegen succeeds, the code should contain preserved_reduction
-        # If Gluon is unavailable or the structure is unsupported, it must not crash
-        # (this is a contract test, not a functional requirement)
+        # The eligible sequence must carry the preserved-reduction selector wrapper.
+        self.assertIn("async_compile.preserved_reduction(", code_str)
+
+        # Reference: the same graph compiled with the optimization disabled. Compare against
+        # it (not eager) so the standard reduction's own summation order is the baseline.
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(fx_graph_cache=False):
+            with patch.object(lowering, "_cat_inputs_share_read", return_value=False):
+                reference_compiled = torch.compile(fn, fullgraph=True)
+                reference = reference_compiled(x)
+        bits(result, reference)
+
+        # Force the candidate to win timing and spy on the steady-state path so the test proves
+        # Gluon was actually selected (not a silent standard fallback) before comparing bits.
+        original_fast = pr_mod.PreservedReductionCall._run_candidate_fast
+        selected_modes = []
+
+        def spy(self, pointwise, reduction):
+            selected_modes.append(self._selected_mode)
+            return original_fast(self, pointwise, reduction)
+
+        with patch.object(pr_mod.PreservedReductionCall, "_benchmark", return_value=(2.0, 1.0)):
+            with patch.object(pr_mod.PreservedReductionCall, "_run_candidate_fast", spy):
+                torch._dynamo.reset()
+                with torch._inductor.config.patch(fx_graph_cache=False):
+                    compiled = torch.compile(fn, fullgraph=True)
+                    first = compiled(x)
+                bits(first, reference)
+                # A second call at the same shape reuses the selector in Gluon steady state; a
+                # fresh nonpersistent shape recompiles, selects, then verifies steady state too.
+                for fresh_shape in (shape, (32, 2048)):
+                    y = torch.randn(*fresh_shape, device="cuda")
+                    compiled(y)  # first invocation at a new shape selects; same shape reuses
+                    z = torch.randn(*fresh_shape, device="cuda")
+                    with patch.object(lowering, "_cat_inputs_share_read", return_value=False):
+                        ref = reference_compiled(z)
+                    bits(compiled(z), ref)
+        self.assertTrue(selected_modes, "Gluon steady-state path was never exercised")
+        self.assertTrue(all(mode == "gluon" for mode in selected_modes), selected_modes)
 
     def test_cat_with_reduction_no_fusion(self):
         """The output branch of a shared-read cat must not fuse with the reduction."""

@@ -6374,6 +6374,12 @@ class TritonScheduling(SIMDScheduling):
         )
         wrapper.define_kernel(pointwise_name, f"{selector_name}.pointwise")
         wrapper.define_kernel(reduction_name, f"{selector_name}.reduction")
+        # The rebound names now refer to sequence-specific endpoints. Drop them from the
+        # source-reuse cache so later source-identical kernels get independent definitions
+        # instead of calling this sequence's endpoints with unpaired arguments.
+        for source, name in list(wrapper.src_to_kernel.items()):
+            if name in (pointwise_name, reduction_name):
+                del wrapper.src_to_kernel[source]
 
     def _track_preserved_reduction(
         self, kernel_name: str, kernel: TritonKernel

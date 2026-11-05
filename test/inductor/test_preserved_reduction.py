@@ -1,6 +1,7 @@
 # Owner(s): ["module: inductor"]
 import ast
 import dataclasses
+import hashlib
 import pickle
 import unittest
 from types import SimpleNamespace
@@ -110,6 +111,8 @@ class PreservedReductionTests(unittest.TestCase):
             dict(contract_version=identity.contract_version + 1),
             dict(encoding=dataclasses.replace(identity.encoding, layout=BlockedReductionLayout((1, 2), (1, 32), (1, 2), (1, 0)))),
             dict(config=dataclasses.replace(identity.config, num_stages=2)),
+            dict(gluon_source_hash="other-gluon"),
+            dict(candidate_arg_map=((0, 1),)),
         )
         for change in changes:
             with self.subTest(change=change):
@@ -351,6 +354,169 @@ class PreservedReductionTests(unittest.TestCase):
         left = nan_bits.view(torch.float32)
         right = nan_bits.clone().view(torch.float32)
         self.assertTrue(PreservedReductionCall._bitwise_equal(left, right))
+
+    def test_fp_fusion_option_reads_standard_meta(self):
+        # #4: the candidate inherits the standard kernel's FMA contraction option.
+        for value in (True, False):
+            kernel = SimpleNamespace(triton_meta={"enable_fp_fusion": value})
+            self.assertIs(PreservedReductionCall._fp_fusion_option(kernel), value)
+
+    def test_fp_fusion_option_rejects_missing_or_non_bool(self):
+        for meta in (None, {}, {"enable_fp_fusion": 1}, {"enable_fp_fusion": "true"}):
+            with self.subTest(meta=meta):
+                with self.assertRaisesRegex(UnsupportedReductionContract, "enable_fp_fusion"):
+                    PreservedReductionCall._fp_fusion_option(SimpleNamespace(triton_meta=meta))
+
+    def _contract_call(self, *, standard_fp_fusion, pointwise_fp_fusion):
+        call, pointwise, reduction = self.sequence_call()
+        reduction.triton_meta = {"enable_fp_fusion": standard_fp_fusion}
+        pointwise.triton_meta = {"enable_fp_fusion": pointwise_fp_fusion}
+        reduction.device_props = SimpleNamespace(type="cuda", cc=89, warp_size=32)
+        reduction.fn = SimpleNamespace(src=SIMD_SOURCE)
+        launcher = SimpleNamespace(config=SimpleNamespace(
+            kwargs={"XBLOCK": 2, "R0_BLOCK": 64}, num_warps=2, num_stages=1, num_ctas=1,
+        ))
+        result = MagicMock()
+        result.compile_meta = {
+            "enable_fp_fusion": standard_fp_fusion, "num_warps": 2, "num_stages": 1,
+        }
+        result.kernel.hash = "kernel-hash"
+        return call, pointwise, reduction, launcher, result
+
+    def test_contract_rejects_fp_fusion_disagreement(self):
+        # #4: pointwise and reduction compiled with different FMA settings cannot share a candidate.
+        call, pointwise, reduction, launcher, result = self._contract_call(
+            standard_fp_fusion=True, pointwise_fp_fusion=False,
+        )
+        with (
+            patch.object(call, "_selected_compile_result", return_value=(launcher, result)),
+            patch.object(call, "_read_ttgir", return_value=TTGIR),
+        ):
+            with self.assertRaisesRegex(UnsupportedReductionContract, "disagree on enable_fp_fusion"):
+                call._contract(reduction)
+
+    def test_contract_inherits_fp_fusion_and_gluon_identity(self):
+        # #4 + #7: fp_fusion flows into the launch kwargs; Gluon source and arg map enter the identity.
+        call, pointwise, reduction, launcher, result = self._contract_call(
+            standard_fp_fusion=False, pointwise_fp_fusion=False,
+        )
+        with (
+            patch.object(call, "_selected_compile_result", return_value=(launcher, result)),
+            patch.object(call, "_read_ttgir", return_value=TTGIR),
+            patch.object(BlockedReductionLayout, "to_gluon", return_value="layout"),
+        ):
+            identity = call._contract(reduction)
+        self.assertIs(call._candidate_fp_fusion, False)
+        self.assertIs(call._launch_kwargs["enable_fp_fusion"], False)
+        self.assertEqual(identity.gluon_source_hash, hashlib.sha256(b"source").hexdigest())
+        self.assertEqual(identity.candidate_arg_map, ((0, 0), (1, 0)))
+
+    def test_run_candidate_passes_fp_fusion(self):
+        # #4: the full candidate launch forwards the inherited enable_fp_fusion option.
+        call, _, _ = self.fast_path_call()
+        call._launch_kwargs = None  # force the full validation path
+        call._candidate_config = self.config()
+        call._candidate_layout = "layout"
+        call._candidate_fp_fusion = False
+        call.pointwise.run("input", 17)
+        call.reduction.run("output", "extra")
+        launch = call._candidate.__getitem__.return_value
+        launch.assert_called_once_with(
+            "input", "output", 17,
+            XBLOCK=2, R0_BLOCK=64, LAYOUT="layout",
+            num_warps=2, num_stages=1, num_ctas=1, enable_fp_fusion=False,
+        )
+
+    def test_compile_errors_fall_back_to_standard(self):
+        # #3: Triton compilation/resource errors are not OSError; they must still fall back.
+        try:
+            from triton.compiler.errors import CompilationError
+            from triton.runtime.errors import OutOfResources, PTXASError
+        except ImportError:
+            self.skipTest("Triton errors unavailable")
+        errors = (
+            CompilationError(None, None, "boom"),
+            OutOfResources(128, 64, "shared memory"),
+            PTXASError("boom"),
+        )
+        for stage in ("_validate_candidate", "_benchmark"):
+            for exc in errors:
+                with self.subTest(stage=stage, exc=type(exc).__name__):
+                    call, pointwise, reduction = self.sequence_call()
+                    overrides = {
+                        "_contract": MagicMock(return_value=MagicMock()),
+                        "_load_choice": MagicMock(return_value=None),
+                        "_load_candidate": MagicMock(),
+                        "_validate_candidate": MagicMock(return_value=True),
+                        "_benchmark": MagicMock(return_value=(2.0, 1.0)),
+                    }
+                    overrides[stage] = MagicMock(side_effect=exc)
+                    with patch.multiple(call, **overrides):
+                        call.pointwise.run("pointwise")
+                        call.reduction.run("reduction")
+                    self.assertEqual(call._selected_mode, "standard")
+                    pointwise.run.assert_called_once_with("pointwise")
+                    reduction.run.assert_called_once_with("reduction")
+
+    def test_standard_path_consumes_pointwise_stashed_before_selection(self):
+        # #2: a pointwise call deferred while no mode was selected must still run once the
+        # standard mode becomes visible (e.g. selected by another thread).
+        call, pointwise, reduction = self.sequence_call()
+        call.pointwise.run("pointwise", stream=1)
+        call._selected_mode = "standard"  # another thread completed the one-time selection
+        call.reduction.run("reduction", stream=1)
+        pointwise.run.assert_called_once_with("pointwise", stream=1)
+        reduction.run.assert_called_once_with("reduction", stream=1)
+
+    def test_concurrent_selection_serializes_and_consumes_pending(self):
+        # #2: the selection lock serializes the one-time choice; every thread's deferred
+        # pointwise still runs exactly once whether it selected or observed the mode.
+        import threading
+
+        call, pointwise, reduction = self.sequence_call()
+        barrier = threading.Barrier(2)
+
+        def worker(tag):
+            call.pointwise.run(f"pw-{tag}", stream=tag)
+            barrier.wait()
+            call.reduction.run(f"red-{tag}", stream=tag)
+
+        with patch.object(call, "_contract", side_effect=UnsupportedReductionContract("unsupported")):
+            threads = [threading.Thread(target=worker, args=(t,)) for t in (1, 2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(call._selected_mode, "standard")
+        self.assertEqual(pointwise.run.call_count, 2)
+        self.assertEqual(reduction.run.call_count, 2)
+        pointwise.run.assert_any_call("pw-1", stream=1)
+        pointwise.run.assert_any_call("pw-2", stream=2)
+        reduction.run.assert_any_call("red-1", stream=1)
+        reduction.run.assert_any_call("red-2", stream=2)
+
+    def test_cache_identity_separates_gluon_source_and_arg_map(self):
+        # #7: different Gluon payloads or argument mappings must not share a timing decision.
+        base = dict(
+            source=SIMD_SOURCE, config=self.config(),
+            encoding=extract_reduction_encoding(TTGIR),
+            target=SimpleNamespace(backend="cuda", arch=89, warp_size=32),
+            compiler_version="3.7.0", backend_hash="ppu-version",
+            compile_options={"enable_fp_fusion": True, "num_stages": 1},
+        )
+        identity = ReductionCacheIdentity.create(
+            gluon_source="gluon-a", candidate_arg_map=((0, 0), (1, 0)), **base
+        )
+        self.assertEqual(identity.gluon_source_hash, hashlib.sha256(b"gluon-a").hexdigest())
+        self.assertEqual(identity.candidate_arg_map, ((0, 0), (1, 0)))
+        other_source = ReductionCacheIdentity.create(
+            gluon_source="gluon-b", candidate_arg_map=((0, 0), (1, 0)), **base
+        )
+        self.assertNotEqual(identity.cache_key(), other_source.cache_key())
+        other_map = ReductionCacheIdentity.create(
+            gluon_source="gluon-a", candidate_arg_map=((0, 0), (1, 1)), **base
+        )
+        self.assertNotEqual(identity.cache_key(), other_map.cache_key())
 
 
 if __name__ == "__main__":

@@ -18,7 +18,27 @@ import torch
 log = logging.getLogger(__name__)
 
 
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
+
+
+def _recoverable_triton_errors() -> tuple[type[BaseException], ...]:
+    # Recoverable compilation/resource failures of the optional Gluon candidate must fall
+    # back to the standard sequence instead of failing the model invocation. They are not
+    # OSError subclasses, so collect them explicitly; missing Triton means no extra types.
+    errors: list[type[BaseException]] = []
+    try:
+        from triton.compiler.errors import CompilationError
+
+        errors.append(CompilationError)
+    except ImportError:
+        pass
+    try:
+        from triton.runtime.errors import OutOfResources, PTXASError
+
+        errors.extend((OutOfResources, PTXASError))
+    except ImportError:
+        pass
+    return tuple(errors)
 
 
 class UnsupportedReductionContract(ValueError):
@@ -180,6 +200,8 @@ class ReductionCacheIdentity:
     compiler_version: str
     backend_hash: str
     compile_options_json: str
+    gluon_source_hash: str = ""
+    candidate_arg_map: tuple[tuple[int, int], ...] = ()
     contract_version: int = CONTRACT_VERSION
 
     @classmethod
@@ -193,6 +215,8 @@ class ReductionCacheIdentity:
         compiler_version: str,
         backend_hash: str,
         compile_options: dict[str, Any],
+        gluon_source: str = "",
+        candidate_arg_map: tuple[tuple[int, int], ...] = (),
     ) -> ReductionCacheIdentity:
         encoding.validate_config(config)
         return cls(
@@ -203,6 +227,8 @@ class ReductionCacheIdentity:
             compiler_version,
             backend_hash,
             json.dumps(compile_options, sort_keys=True, separators=(",", ":")),
+            hashlib.sha256(gluon_source.encode()).hexdigest(),
+            candidate_arg_map,
         )
 
     def cache_key(self) -> str:
@@ -259,10 +285,14 @@ class PreservedReductionCall:
         self._candidate: Any | None = None
         self._candidate_config: ReductionLaunchConfig | None = None
         self._candidate_layout: Any | None = None
+        self._candidate_fp_fusion: bool | None = None
         # Steady-state fast path: precompute launch arguments after selection to avoid rebuilding a dict per call.
         # The grid cache is thread-local so concurrent sequences never overwrite each other's grid.
         self._launch_kwargs: dict[str, Any] | None = None
         self._pending = threading.local()
+        # Serializes the one-time selection so concurrent sequences never race between
+        # stashing a pointwise call and observing the selected mode.
+        self._selection_lock = threading.Lock()
         self.pointwise = _SequenceEndpoint(self, True)
         self.reduction = _SequenceEndpoint(self, False)
 
@@ -287,11 +317,13 @@ class PreservedReductionCall:
         kernel = self._standard
         result = kernel.run(*args, **kwargs)
         if self._selected is None:
-            try:
-                self._contract(kernel)
-            except (ImportError, OSError, UnsupportedReductionContract):
-                pass
-            self._selected = kernel
+            with self._selection_lock:
+                if self._selected is None:
+                    try:
+                        self._contract(kernel)
+                    except (ImportError, OSError, UnsupportedReductionContract):
+                        pass
+                    self._selected = kernel
         return result
 
     def __getattr__(self, name: str) -> Any:
@@ -312,14 +344,31 @@ class PreservedReductionCall:
 
     def _run_reduction(self, *args: Any, **kwargs: Any) -> Any:
         mode = self._selected_mode
+        if mode is None:
+            # Serialize the one-time selection; pairs stashed before another thread finished
+            # selecting are consumed below once the mode becomes visible.
+            with self._selection_lock:
+                mode = self._selected_mode
+                if mode is None:
+                    return self._select_mode(*args, **kwargs)
+        pending = getattr(self._pending, "pointwise", None)
+        if pending is not None:
+            del self._pending.pointwise
         if mode == "standard":
+            # A pair deferred before selection must still run its pointwise call; skipping
+            # it would leave the pointwise outputs unwritten.
+            if pending is not None:
+                self._pointwise_kernel.run(*pending[0], **pending[1])
             return self._standard.run(*args, **kwargs)
+        if pending is None:
+            raise RuntimeError("preserved-reduction reduction endpoint has no matching pointwise call")
+        return self._run_candidate_fast(pending, (args, kwargs))
+
+    def _select_mode(self, *args: Any, **kwargs: Any) -> Any:
         pending = getattr(self._pending, "pointwise", None)
         if pending is None:
             raise RuntimeError("preserved-reduction reduction endpoint has no matching pointwise call")
         del self._pending.pointwise
-        if mode == "gluon":
-            return self._run_candidate_fast(pending, (args, kwargs))
         endpoints = (pending, (args, kwargs))
 
         # The first call runs the untouched full two-kernel sequence. It also completes the standard
@@ -333,14 +382,25 @@ class PreservedReductionCall:
                 self._selected_mode = "standard"
                 return None
             self._load_candidate()
-            if not self._validate_candidate(endpoints):
+            try:
+                valid = self._validate_candidate(endpoints)
+            except _recoverable_triton_errors() as exc:
+                raise UnsupportedReductionContract(
+                    "Gluon candidate failed to compile"
+                ) from exc
+            if not valid:
                 self._selected_mode = "standard"
                 self._store_choice(identity, "standard")
                 return None
             if cached == "gluon":
                 self._selected_mode = "gluon"
                 return None
-            standard_ms, candidate_ms = self._benchmark(endpoints)
+            try:
+                standard_ms, candidate_ms = self._benchmark(endpoints)
+            except _recoverable_triton_errors() as exc:
+                raise UnsupportedReductionContract(
+                    "Gluon candidate failed to compile"
+                ) from exc
             self._selected_mode = (
                 "gluon" if candidate_ms < standard_ms else "standard"
             )
@@ -404,6 +464,7 @@ class PreservedReductionCall:
             num_warps=self._candidate_config.num_warps,
             num_stages=self._candidate_config.num_stages,
             num_ctas=self._candidate_config.num_ctas,
+            enable_fp_fusion=self._candidate_fp_fusion,
         )
 
     def _run_candidate_fast(
@@ -539,11 +600,32 @@ class PreservedReductionCall:
         except FileNotFoundError as exc:
             raise UnsupportedReductionContract("selected reduction TTGIR missing from Triton cache") from exc
 
+    @staticmethod
+    def _fp_fusion_option(kernel: Any) -> bool:
+        # Numerical compiler options must be inherited from the standard kernels: with
+        # emulate_precision_casts the standard path disables FMA contraction, and a candidate
+        # launched with the default option could produce different bits on later inputs.
+        meta = getattr(kernel, "triton_meta", None)
+        value = meta.get("enable_fp_fusion") if isinstance(meta, dict) else None
+        if type(value) is not bool:
+            raise UnsupportedReductionContract(
+                "standard kernel does not expose enable_fp_fusion"
+            )
+        return value
+
     def _contract(self, standard: Any) -> ReductionCacheIdentity:
         launcher, result = self._selected_compile_result(standard)
         config = ReductionLaunchConfig.from_config(launcher.config)
         encoding = extract_reduction_encoding(self._read_ttgir(standard, result))
         encoding.validate_config(config)
+        fp_fusion = self._fp_fusion_option(standard)
+        pointwise = self._pointwise_or_future
+        if pointwise is not None:
+            if self._fp_fusion_option(self._pointwise_kernel) != fp_fusion:
+                raise UnsupportedReductionContract(
+                    "standard kernels disagree on enable_fp_fusion"
+                )
+        self._candidate_fp_fusion = fp_fusion
         self._candidate_config = config
         self._candidate_layout = encoding.layout.to_gluon()
         self._launch_kwargs = {
@@ -552,6 +634,7 @@ class PreservedReductionCall:
             "num_warps": config.num_warps,
             "num_stages": config.num_stages,
             "num_ctas": config.num_ctas,
+            "enable_fp_fusion": fp_fusion,
         }
         device = standard.device_props
         compile_meta = result.compile_meta
@@ -588,6 +671,8 @@ class PreservedReductionCall:
             compiler_version=compiler_version,
             backend_hash=kernel_hash,
             compile_options=compile_options,
+            gluon_source=self._gluon_source,
+            candidate_arg_map=self._candidate_arg_map,
         )
 
     def _load_candidate(self) -> None:

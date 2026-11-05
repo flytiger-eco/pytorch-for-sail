@@ -478,10 +478,11 @@ class SharedReadCatTests(TestCase):
         self.assertEqual(actual.shape, expected.shape)
         self.assertEqual(actual.stride(), expected.stride())
         self.assertEqual(torch.isnan(actual), torch.isnan(expected))
-        mask = ~torch.isnan(expected)
+        # Compare every byte including NaN signs and payloads; masking NaNs out would
+        # let NaN-bit changes pass unnoticed.
         self.assertEqual(
-            actual[mask].contiguous().view(torch.uint8),
-            expected[mask].contiguous().view(torch.uint8),
+            actual.contiguous().view(torch.uint8),
+            expected.contiguous().view(torch.uint8),
         )
 
     @requires_gpu_and_triton
@@ -638,9 +639,8 @@ class SharedReadCatTests(TestCase):
                 self.assertEqual(code.count("tl.load("), 3)
                 self.assertEqual(code.count("tl.store("), 2)
                 self.assertEqual(torch.isnan(result), torch.isnan(reference))
-                mask = ~torch.isnan(reference)
                 bits = torch.int32 if dtype == torch.float32 else torch.int16
-                self.assertEqual(result.view(bits)[mask], reference.view(bits)[mask])
+                self.assertEqual(result.view(bits), reference.view(bits))
 
         # Exhaust all BF16 encodings, including subnormals, infinities, NaNs and signed zeros.
         a = torch.arange(65536, device=DEVICE, dtype=torch.int32).to(torch.int16)
@@ -653,8 +653,7 @@ class SharedReadCatTests(TestCase):
         self.assertEqual(kernels, 1)
         self.assertEqual(code.count("tl.store("), 2)
         self.assertEqual(torch.isnan(result), torch.isnan(reference))
-        mask = ~torch.isnan(reference)
-        self.assertEqual(result.view(torch.int16)[mask], reference.view(torch.int16)[mask])
+        self.assertEqual(result.view(torch.int16), reference.view(torch.int16))
 
     @requires_gpu_and_triton
     def test_autograd(self):
