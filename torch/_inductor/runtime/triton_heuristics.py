@@ -87,6 +87,16 @@ class NoTritonConfigsError(RuntimeError):
     pass
 
 
+def _get_ast_source(fn):
+    if getattr(fn, "is_gluon", lambda: False)():
+        from triton.experimental.gluon._runtime import GluonASTSource
+
+        return GluonASTSource
+    if not ASTSource:
+        raise RuntimeError("Installed triton version too old, please upgrade")
+    return ASTSource
+
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Container, Hashable
 
@@ -477,6 +487,7 @@ class CachingAutotuner(KernelInterface):
         if (
             not self.deterministic_mode
             and self.inductor_meta.get("dynamic_scale_rblock", True)
+            and not self.inductor_meta.get("preserved_reduction", False)
             and not self.inductor_meta.get("persistent_reduction")
             and self.heuristic_type == HeuristicType.REDUCTION
             and self.size_hints is not None
@@ -770,11 +781,15 @@ class CachingAutotuner(KernelInterface):
         else:
             triton_helpers.set_driver_to_gpu()
 
-        if not ASTSource:
-            raise RuntimeError("Installed triton version too old, please upgrade")
+        source_type = _get_ast_source(self.fn)
+        if self.inductor_meta.get("preserved_reduction", False):
+            if source_type is ASTSource:
+                raise RuntimeError("preserved-reduction candidates must use GluonASTSource")
+            if len(self.compile_results) > 1:
+                raise RuntimeError("preserved-reduction candidates must not re-select launch configs")
 
         compile_args = (
-            ASTSource(
+            source_type(
                 self.fn,
                 compile_meta["signature"],
                 compile_meta["constants"],
@@ -1380,7 +1395,10 @@ class CachingAutotuner(KernelInterface):
 
         if not getattr(
             self.launchers[0].config, "found_by_coordesc", False
-        ) and self.inductor_meta.get("coordinate_descent_tuning", False):
+        ) and (
+            self.inductor_meta.get("coordinate_descent_tuning", False)
+            and not self.inductor_meta.get("preserved_reduction", False)
+        ):
             self.launchers = [
                 self.coordinate_descent_tuning(self.launchers[0], *args, **kwargs)
             ]

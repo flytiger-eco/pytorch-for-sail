@@ -49,7 +49,14 @@ from ..runtime.hints import (
     TRITON_MAX_RSPLIT,
 )
 from ..runtime.runtime_utils import get_max_y_grid, next_power_of_2
-from ..scheduler import BaseSchedulerNode, FusedSchedulerNode, Scheduler, SchedulerNode
+from ..scheduler import (
+    BaseSchedulerNode,
+    FusedSchedulerNode,
+    NopKernelSchedulerNode,
+    OutputNode,
+    Scheduler,
+    SchedulerNode,
+)
 from ..shape_propagation import get_broadcasted_shape
 from ..utils import (
     cache_on_self,
@@ -5832,6 +5839,7 @@ class TritonScheduling(SIMDScheduling):
 
     def __init__(self, scheduler: Optional[Scheduler]) -> None:
         super().__init__(scheduler)
+        self._preserved_reduction_pointwise: Optional[dict[str, Any]] = None
         if scheduler is None or not hasattr(scheduler, "nodes"):
             return
         for node in scheduler.nodes:
@@ -5884,7 +5892,8 @@ class TritonScheduling(SIMDScheduling):
 
     def define_kernel(self, src_code, node_schedule, kernel):
         wrapper = V.graph.wrapper_code
-        if src_code in wrapper.src_to_kernel:
+        kernel_is_new = src_code not in wrapper.src_to_kernel
+        if not kernel_is_new:
             kernel_name = wrapper.src_to_kernel[src_code]
         else:
             fused_name = (
@@ -5942,6 +5951,13 @@ class TritonScheduling(SIMDScheduling):
             # padding helps with the perf kernel by kernel.
             if metrics.is_metric_table_enabled("kernel_metadata"):
                 metrics.log_kernel_metadata(kernel_name, kernel_path, src_code)
+
+        if not V.graph.cpp_wrapper:
+            if kernel_is_new:
+                self._track_preserved_reduction(kernel_name, kernel)
+            else:
+                # Rebinding a reused global kernel name would affect its other call sites.
+                self._preserved_reduction_pointwise = None
 
         return kernel_name
 
@@ -6134,6 +6150,272 @@ class TritonScheduling(SIMDScheduling):
             # persistent kernels must be generated last so must_keep_buffers works right
             kernels.sort(key=lambda k: k.persistent_reduction)
         return kernels
+
+    @staticmethod
+    def _only_output_users(node: BaseSchedulerNode) -> bool:
+        # The concat Nop placeholder emits no kernel; like graph outputs it is a benign consumer.
+        return all(
+            isinstance(use.node, (OutputNode, NopKernelSchedulerNode))
+            for output in node.get_outputs()
+            for use in output.users
+        )
+
+    @staticmethod
+    def _call_argument_keys(kernel: TritonKernel, name: str) -> tuple[str, ...]:
+        _, call_args, _, arg_types = kernel.args.python_argdefs()
+        kernel.add_numel_to_call_args(name, call_args, arg_types)
+        keys = []
+        for arg in call_args:
+            if isinstance(arg, SymbolicCallArg):
+                # The fused kernel and the endpoints each generate wrapper-local symbol names;
+                # match by the underlying symbolic expression, not by name.
+                keys.append(f"SymbolicCallArg:{arg.inner_expr}")
+            else:
+                keys.append(f"{type(arg).__name__}:{arg}")
+        return tuple(keys)
+
+    def _next_preserved_reduction(
+        self, pointwise: BaseSchedulerNode
+    ) -> Optional[BaseSchedulerNode]:
+        """Return the immediately adjacent sibling reduction; never build a dual path for unknown structures."""
+        if (
+            self.scheduler is None
+            or config.triton.multi_kernel
+            or pointwise.has_side_effects()
+        ):
+            return None
+        if pointwise.is_reduction():
+            return None
+        # Cat branches writing aliases of the concat output are benign; real mutations are still rejected.
+        pw_outputs = pointwise.get_outputs()
+        if any(buf.get_mutations() for buf in pw_outputs):
+            return None
+        if not (pointwise.get_buffer_names() & V.graph.no_fuse_with_reduction):
+            return None
+        if not self._only_output_users(pointwise):
+            return None
+        try:
+            index = self.scheduler.nodes.index(pointwise)
+        except ValueError:
+            return None
+        # Skip the concat Nop placeholders; they may only alias the pointwise's own outputs.
+        produced = set(pointwise.get_buffer_names())
+        cursor = index + 1
+        while cursor < len(self.scheduler.nodes):
+            candidate = self.scheduler.nodes[cursor]
+            if not isinstance(candidate, NopKernelSchedulerNode):
+                break
+            # A Nop placeholder is itself an alias artifact; accept only placeholders whose
+            # aliases close within the produced set and carry no real mutation/side effect.
+            # The concat output is a fresh buffer outside the pointwise produced set; its
+            # safety is guaranteed by alias closure and consumer checks.
+            nop_outputs = candidate.get_outputs()
+            if (
+                candidate.has_side_effects()
+                or any(buf.get_mutations() for buf in nop_outputs)
+                or candidate.get_device() != pointwise.get_device()
+                or any(
+                    alias not in produced
+                    for buf in nop_outputs
+                    for alias in buf.get_aliases()
+                )
+            ):
+                return None
+            if not self._only_output_users(candidate):
+                return None
+            # All aliases of the pointwise outputs must point at these benign placeholders.
+            nop_names = set(candidate.get_buffer_names())
+            if any(
+                alias not in nop_names
+                for buf in pw_outputs
+                for alias in buf.get_aliases()
+            ):
+                return None
+            produced |= nop_names
+            cursor += 1
+        if cursor >= len(self.scheduler.nodes):
+            return None
+        # Aliases not closed through benign Nops (e.g. no placeholder at all) are still rejected.
+        if any(
+            alias not in produced - set(pointwise.get_buffer_names())
+            for buf in pw_outputs
+            for alias in buf.get_aliases()
+        ):
+            return None
+        reduction = self.scheduler.nodes[cursor]
+        if (
+            not reduction.is_reduction()
+            or reduction.has_side_effects()
+            or reduction.has_aliasing_or_mutation()
+            or reduction.get_device() != pointwise.get_device()
+            or not self._only_output_users(reduction)
+        ):
+            return None
+        # Only accept siblings sharing external reads; if the reduction reads the pointwise
+        # output, deferring the pointwise launch would change dependency semantics and the
+        # standard path must be kept.
+        if produced & reduction.used_buffer_names():
+            return None
+        if not (pointwise.used_buffer_names() & reduction.used_buffer_names()):
+            return None
+        if len([node for node in reduction.get_nodes() if node.is_reduction()]) != 1:
+            return None
+        return reduction
+
+    def _generate_preserved_candidate(
+        self, nodes: Sequence[SchedulerNode]
+    ) -> tuple[str, TritonKernel]:
+        from .simd_kernel_features import SIMDKernelFeatures
+
+        _, (numel, rnumel) = max(
+            nodes, key=lambda node: int(node.is_reduction())
+        ).group
+        node_schedule = self.generate_node_schedule(nodes, numel, rnumel)
+        tiling = self.select_tiling(node_schedule, numel, rnumel)
+        kernel = self.kernel_type(
+            tiling,
+            features=SIMDKernelFeatures(node_schedule, numel, rnumel),
+        )
+        removed_buffers = V.graph.removed_buffers
+        inplaced_to_remove = V.graph.inplaced_to_remove
+        V.graph.removed_buffers = OrderedSet(removed_buffers)
+        V.graph.inplaced_to_remove = OrderedSet(inplaced_to_remove)
+        try:
+            self.codegen_node_schedule_with_kernel(node_schedule, kernel)
+            with V.set_kernel_handler(kernel):
+                source = kernel.codegen_kernel()
+        finally:
+            V.graph.removed_buffers = removed_buffers
+            V.graph.inplaced_to_remove = inplaced_to_remove
+        source = source.replace(str(Placeholder.KERNEL_NAME), "triton_")
+        return source, kernel
+
+    def _define_preserved_sequence(
+        self,
+        pointwise: dict[str, Any],
+        reduction_name: str,
+        reduction_kernel: TritonKernel,
+    ) -> None:
+        """Wrap the two standard calls into a sequence-vs-fused runtime selector."""
+        from ..runtime.preserved_reduction import UnsupportedReductionContract
+        from .gluon import GluonCodegen
+
+        pointwise_node = cast(BaseSchedulerNode, pointwise["node"])
+        reduction_node = cast(BaseSchedulerNode, pointwise["reduction"])
+        nodes = [
+            *cast(Sequence[SchedulerNode], pointwise_node.get_nodes()),
+            *cast(Sequence[SchedulerNode], reduction_node.get_nodes()),
+        ]
+        fused_source, fused_kernel = self._generate_preserved_candidate(nodes)
+        gluon_source = GluonCodegen.generate(fused_source, function_name="triton_")
+
+        pointwise_name = cast(str, pointwise["kernel_name"])
+        pointwise_kernel = cast(TritonKernel, pointwise["kernel"])
+        pointwise_keys = self._call_argument_keys(pointwise_kernel, pointwise_name)
+        reduction_keys = self._call_argument_keys(reduction_kernel, reduction_name)
+        fused_keys = self._call_argument_keys(fused_kernel, "triton_")
+        runtime_arg_names = tuple(
+            name
+            for name in gluon_source.argument_names
+            if name not in {"XBLOCK", "R0_BLOCK"}
+        )
+        if len(runtime_arg_names) != len(fused_keys):
+            raise UnsupportedReductionContract(
+                "Gluon arguments do not match the fused kernel call arguments"
+            )
+
+        sources: dict[str, tuple[int, int]] = {}
+        for endpoint, keys in enumerate((pointwise_keys, reduction_keys)):
+            for position, key in enumerate(keys):
+                sources.setdefault(key, (endpoint, position))
+        if any(key not in sources for key in fused_keys):
+            raise UnsupportedReductionContract(
+                "fused kernel introduces runtime arguments outside the standard sequence"
+            )
+        argument_map = tuple(sources[key] for key in fused_keys)
+
+        output_names = (
+            pointwise_kernel.args.live_output_buffers()
+            | reduction_kernel.args.live_output_buffers()
+        )
+        fused_output_indices = tuple(
+            index
+            for index, key in enumerate(fused_keys)
+            if key.split(":", 1)[1] in output_names
+        )
+        try:
+            xnumel_index = runtime_arg_names.index("xnumel")
+        except ValueError as exc:
+            raise UnsupportedReductionContract(
+                "fused kernel lacks the xnumel argument required by 2D reductions"
+            ) from exc
+        wrapper = V.graph.wrapper_code
+        selector_name = f"preserved_sequence_{reduction_name}"
+        current_device = V.graph.get_current_device_or_throw()
+        wrapper.define_kernel(
+            selector_name,
+            (
+                "async_compile.preserved_reduction(\n"
+                f"    {reduction_name},\n"
+                f"    pointwise_kernel={pointwise_name},\n"
+                f"    gluon_source={gluon_source.source!r},\n"
+                f"    gluon_function_name={gluon_source.function_name!r},\n"
+                f"    gluon_arg_names={gluon_source.argument_names!r},\n"
+                f"    gluon_layout_arg={gluon_source.layout_argument!r},\n"
+                f"    pointwise_arg_count={len(pointwise_keys)},\n"
+                f"    reduction_arg_count={len(reduction_keys)},\n"
+                f"    candidate_arg_map={argument_map!r},\n"
+                f"    candidate_output_indices={fused_output_indices!r},\n"
+                f"    candidate_xnumel_index={xnumel_index},\n"
+                f"    device_str={current_device.type!r},\n"
+                ")"
+            ),
+            "# preserved reduction: standard sequence and fused Gluon candidate",
+        )
+        wrapper.define_kernel(pointwise_name, f"{selector_name}.pointwise")
+        wrapper.define_kernel(reduction_name, f"{selector_name}.reduction")
+
+    def _track_preserved_reduction(
+        self, kernel_name: str, kernel: TritonKernel
+    ) -> None:
+        # Other kernel types such as ComboKernel lack the structural information required
+        # for reduction admission; their presence also means pointwise and reduction no
+        # longer form a pure standard sequence.
+        if not isinstance(kernel, TritonKernel):
+            self._preserved_reduction_pointwise = None
+            return
+        current = self.scheduler.current_node if self.scheduler is not None else None
+        pending = self._preserved_reduction_pointwise
+        if pending is not None:
+            if (
+                current is pending["reduction"]
+                and kernel.inside_reduction
+                and not kernel.persistent_reduction
+            ):
+                from ..runtime.preserved_reduction import (
+                    UnsupportedReductionContract,
+                )
+
+                try:
+                    self._define_preserved_sequence(pending, kernel_name, kernel)
+                except (NotImplementedError, UnsupportedReductionContract):
+                    # Known unsupported structures keep the full standard sequence with a diagnosable record.
+                    log.debug(
+                        "preserved reduction candidate rejected",
+                        exc_info=True,
+                    )
+            self._preserved_reduction_pointwise = None
+            return
+        if current is None or kernel.inside_reduction:
+            return
+        reduction = self._next_preserved_reduction(current)
+        if reduction is not None:
+            self._preserved_reduction_pointwise = {
+                "node": current,
+                "reduction": reduction,
+                "kernel_name": kernel_name,
+                "kernel": kernel,
+            }
 
     def benchmark_combo_kernel(self, node_list):
         mod: ModuleType
