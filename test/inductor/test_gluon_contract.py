@@ -676,8 +676,12 @@ class TestPreservedReductionIntegration(TestCase):
         selected_modes = []
 
         def spy(self, pointwise, reduction):
+            result = original_fast(self, pointwise, reduction)
+            # Record only after a successful launch: _run_reduction falls back to the
+            # standard pair on candidate failures, so recording the attempt up front
+            # would let an always-failing Gluon path satisfy the assertions.
             selected_modes.append(self._selected_mode)
-            return original_fast(self, pointwise, reduction)
+            return result
 
         with patch.object(pr_mod.PreservedReductionCall, "_benchmark", return_value=(2.0, 1.0)):
             with patch.object(pr_mod.PreservedReductionCall, "_run_candidate_fast", spy):
