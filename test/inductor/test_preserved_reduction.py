@@ -728,6 +728,65 @@ class PreservedReductionTests(TestCase):
         self.assertIsNot(cand_out, reduction_out)
         self.assertTrue(torch.equal(cand_out, torch.full((4,), 5.0)))
 
+    def test_shadow_endpoints_deduplicate_shared_inputs(self):
+        # An input read by both endpoints must map to one shadow copy per benchmark;
+        # duplicating it would double the standard sequence's memory traffic relative
+        # to the fused candidate and bias the selection.
+        shared = torch.arange(8, dtype=torch.float32).as_strided((4,), (2,), 0)
+        pw_out = torch.zeros(4)
+        red_out = torch.zeros(2)
+        endpoints = (
+            ((shared, pw_out, 4), {}),
+            ((shared, red_out, 2), {}),
+        )
+        shadowed = PreservedReductionCall._shadow_endpoints(endpoints)
+        pw_shadow, red_shadow = shadowed[0][0][0], shadowed[1][0][0]
+        self.assertIs(pw_shadow, red_shadow)
+        self.assertIsNot(pw_shadow, shared)
+        self.assertEqual(pw_shadow.stride(), shared.stride())
+        self.assertIsNot(shadowed[0][0][1], pw_out)
+        self.assertIsNot(shadowed[1][0][1], red_out)
+
+    def test_debug_mode_keeps_standard_pair_during_selection(self):
+        # Debug diagnostics record kernels inside CachingAutotuner.run, which the fused
+        # candidate launch bypasses; an active DebugMode must keep the standard pair and
+        # leave the choice unmade so a later non-debug invocation can still select.
+        call, pointwise, reduction = self.sequence_call()
+        pr_module = sys.modules[PreservedReductionCall.__module__]
+        with (
+            patch.object(pr_module, "get_active_debug_mode", return_value=MagicMock()),
+            patch.object(call, "_contract") as contract,
+            patch.object(call, "_store_choice") as store,
+        ):
+            call.pointwise.run("pointwise")
+            call.reduction.run("reduction")
+        pointwise.run.assert_called_once_with("pointwise")
+        reduction.run.assert_called_once_with("reduction")
+        self.assertIsNone(call._selected_mode)
+        contract.assert_not_called()
+        store.assert_not_called()
+
+    def test_debug_mode_runs_standard_pair_in_gluon_steady_state(self):
+        call, pointwise, reduction = self.sequence_call()
+        call._selected_mode = "gluon"
+        pr_module = sys.modules[PreservedReductionCall.__module__]
+        with patch.object(pr_module, "get_active_debug_mode", return_value=MagicMock()):
+            call.pointwise.run("pointwise")
+            call.reduction.run("reduction")
+        pointwise.run.assert_called_once_with("pointwise")
+        reduction.run.assert_called_once_with("reduction")
+        # The override is per-invocation: the selected mode is untouched and a later
+        # non-debug pair takes the fused path again.
+        self.assertEqual(call._selected_mode, "gluon")
+        pointwise.run.reset_mock()
+        reduction.run.reset_mock()
+        with patch.object(call, "_run_candidate_fast", return_value="candidate") as fast:
+            call.pointwise.run("next-pointwise")
+            self.assertEqual(call.reduction.run("next-reduction"), "candidate")
+        fast.assert_called_once()
+        pointwise.run.assert_not_called()
+        reduction.run.assert_not_called()
+
 
 if __name__ == "__main__":
     from torch._inductor.test_case import run_tests

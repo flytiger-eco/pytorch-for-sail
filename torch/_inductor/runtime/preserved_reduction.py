@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import torch
+from torch.utils._debug_mode import get_active_debug_mode
 
 
 log = logging.getLogger(__name__)
@@ -335,6 +336,10 @@ class PreservedReductionCall:
         if mode == "standard":
             return self._pointwise_kernel.run(*args, **kwargs)
         if mode == "gluon":
+            if get_active_debug_mode() is not None:
+                # Debug diagnostics record kernels inside CachingAutotuner.run; a deferred
+                # pointwise (and the direct fused launch) would leave the sequence invisible.
+                return self._pointwise_kernel.run(*args, **kwargs)
             # In steady state just stash the arguments without extra checks; first selection still takes the full path.
             self._pending.pointwise = (args, kwargs)
             return None
@@ -355,9 +360,10 @@ class PreservedReductionCall:
         pending = getattr(self._pending, "pointwise", None)
         if pending is not None:
             del self._pending.pointwise
-        if mode == "standard":
+        if mode == "standard" or get_active_debug_mode() is not None:
             # A pair deferred before selection must still run its pointwise call; skipping
-            # it would leave the pointwise outputs unwritten.
+            # it would leave the pointwise outputs unwritten. Under an active DebugMode the
+            # standard pair also keeps both kernels visible to the diagnostics.
             if pending is not None:
                 self._pointwise_kernel.run(*pending[0], **pending[1])
             return self._standard.run(*args, **kwargs)
@@ -395,6 +401,11 @@ class PreservedReductionCall:
         # during CUDA graph capture. Run the standard sequence for this call but leave the mode
         # unselected so a later non-capturing invocation can still perform the one-time choice.
         if self._is_capturing():
+            return None
+        if get_active_debug_mode() is not None:
+            # Debug diagnostics record kernels inside CachingAutotuner.run, which the
+            # fused candidate launch bypasses; keep the standard pair for this call and
+            # leave the mode unselected so a later non-debug invocation can still choose.
             return None
         try:
             identity = self._contract(self._standard)
@@ -589,10 +600,20 @@ class PreservedReductionCall:
         # Benchmark private clones instead, keeping the argument structure intact.
         from ..utils import clone_preserve_strides
 
+        shadows: dict[int, torch.Tensor] = {}
+
         def shadow(value: Any) -> Any:
-            # clone() compacts non-dense views while the compiled kernels keep their
-            # original indexing, so the copy must span the same storage offsets.
-            return clone_preserve_strides(value) if isinstance(value, torch.Tensor) else value
+            if not isinstance(value, torch.Tensor):
+                return value
+            # Inputs shared by both endpoints must map to one shadow copy: duplicating
+            # them would double the standard sequence's memory traffic relative to the
+            # fused candidate and bias the selection.
+            key = id(value)
+            if key not in shadows:
+                # clone() compacts non-dense views while the compiled kernels keep their
+                # original indexing, so the copy must span the same storage offsets.
+                shadows[key] = clone_preserve_strides(value)
+            return shadows[key]
 
         return tuple(
             (tuple(shadow(arg) for arg in args), {key: shadow(value) for key, value in kwargs.items()})
