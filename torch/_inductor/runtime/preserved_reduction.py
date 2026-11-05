@@ -282,6 +282,7 @@ class PreservedReductionCall:
         self._device_str = device_str
         self._selected: Any | None = None
         self._selected_mode: str | None = None
+        self._identity: ReductionCacheIdentity | None = None
         self._candidate: Any | None = None
         self._candidate_config: ReductionLaunchConfig | None = None
         self._candidate_layout: Any | None = None
@@ -362,7 +363,22 @@ class PreservedReductionCall:
             return self._standard.run(*args, **kwargs)
         if pending is None:
             raise RuntimeError("preserved-reduction reduction endpoint has no matching pointwise call")
-        return self._run_candidate_fast(pending, (args, kwargs))
+        try:
+            return self._run_candidate_fast(pending, (args, kwargs))
+        except (
+            UnsupportedReductionContract,
+            torch.OutOfMemoryError,
+            *_recoverable_triton_errors(),
+        ):
+            # A later dynamic-shape call can trigger a fresh JIT specialization of the
+            # candidate; compilation/resource failures (or a changed argument contract)
+            # must not fail the invocation with both standard kernels skipped. Switch to
+            # the standard sequence permanently and run the saved pointwise/reduction pair.
+            self._selected_mode = "standard"
+            if self._identity is not None:
+                self._store_choice(self._identity, "standard")
+            self._pointwise_kernel.run(*pending[0], **pending[1])
+            return self._standard.run(*args, **kwargs)
 
     def _select_mode(self, *args: Any, **kwargs: Any) -> Any:
         pending = getattr(self._pending, "pointwise", None)
@@ -382,6 +398,7 @@ class PreservedReductionCall:
             return None
         try:
             identity = self._contract(self._standard)
+            self._identity = identity
             cached = self._load_choice(identity)
             if cached == "standard":
                 self._selected_mode = "standard"
@@ -587,7 +604,7 @@ class PreservedReductionCall:
         from .runtime_utils import triton_config_to_hashable
 
         selected = triton_config_to_hashable(launcher.config)
-        for result in getattr(standard, "compile_results", ()): 
+        for result in getattr(standard, "compile_results", ()):
             if triton_config_to_hashable(result.config) == selected:
                 return launcher, result
         raise UnsupportedReductionContract("compile result for the selected launcher not found")
@@ -717,14 +734,25 @@ class PreservedReductionCall:
         return LocalCache()
 
     def _load_choice(self, identity: ReductionCacheIdentity) -> str | None:
-        value = self._choice_cache().lookup(
-            f"preserved_reduction:{identity.cache_key()}"
-        )
+        try:
+            value = self._choice_cache().lookup(
+                f"preserved_reduction:{identity.cache_key()}"
+            )
+        except Exception:
+            # The choice cache is best-effort (its system probe may touch the device);
+            # an unreadable cache only means the one-time selection runs again.
+            log.warning("preserved reduction choice cache unreadable", exc_info=True)
+            return None
         return value if value in {"standard", "gluon"} else None
 
     def _store_choice(
         self, identity: ReductionCacheIdentity, choice: str
     ) -> None:
-        self._choice_cache().set_value(
-            f"preserved_reduction:{identity.cache_key()}", value=choice
-        )
+        try:
+            self._choice_cache().set_value(
+                f"preserved_reduction:{identity.cache_key()}", value=choice
+            )
+        except Exception:
+            # Persisting the choice is optional; a cache failure must not break the
+            # model invocation that already produced its outputs.
+            log.warning("preserved reduction choice cache unwritable", exc_info=True)

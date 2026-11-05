@@ -218,6 +218,9 @@ class PreservedReductionTests(TestCase):
         with (
             patch.object(call, "_contract", return_value=identity),
             patch.object(call, "_load_choice", return_value=None),
+            # Keep the persistent choice cache out of the test: the real LocalCache
+            # probes the device and would pollute (or fail on) CPU-only hosts.
+            patch.object(call, "_store_choice"),
             patch.object(call, "_load_candidate"),
             patch.object(call, "_validate_candidate", return_value=True),
             patch.object(call, "_benchmark", return_value=(2.0, 1.0)),
@@ -316,11 +319,16 @@ class PreservedReductionTests(TestCase):
         full.assert_called_once()
         call._candidate.__getitem__.assert_not_called()
 
-    def test_fast_path_argument_count_change_raises(self):
-        call, _, _ = self.fast_path_call()
+    def test_fast_path_argument_count_change_falls_back_to_standard(self):
+        # A changed argument contract after selection must run the saved standard pair
+        # instead of failing the invocation with both standard kernels skipped.
+        call, pointwise, reduction = self.fast_path_call()
         call.pointwise.run("input")
-        with self.assertRaisesRegex(UnsupportedReductionContract, "argument count changed"):
-            call.reduction.run("output", "extra")
+        result = call.reduction.run("output", "extra")
+        self.assertEqual(call._selected_mode, "standard")
+        pointwise.run.assert_called_once_with("input")
+        reduction.run.assert_called_once_with("output", "extra")
+        self.assertIs(result, reduction.run.return_value)
 
     def test_fast_path_without_precomputed_kwargs_uses_full_path(self):
         call, _, _ = self.fast_path_call()
@@ -602,6 +610,60 @@ class PreservedReductionTests(TestCase):
                 self.assertEqual(call._selected_mode, "standard")
                 pointwise.run.assert_called_once_with("pointwise")
                 reduction.run.assert_called_once_with("reduction")
+
+    def test_launch_failure_after_gluon_selection_falls_back_to_standard(self):
+        # After Gluon is selected, a later dynamic-shape call can trigger a fresh JIT
+        # specialization; its compilation/resource errors must switch to the standard
+        # sequence and run the saved pair instead of escaping with both kernels skipped.
+        try:
+            from triton.compiler.errors import CompilationError
+            from triton.runtime.errors import OutOfResources, PTXASError
+        except ImportError:
+            self.skipTest("Triton errors unavailable")
+        errors = (
+            CompilationError(None, None, "boom"),
+            OutOfResources(128, 64, "shared memory"),
+            PTXASError("boom"),
+            torch.OutOfMemoryError("out of memory"),
+        )
+        for exc in errors:
+            with self.subTest(exc=type(exc).__name__):
+                call, pointwise, reduction = self.fast_path_call()
+                identity = MagicMock()
+                call._identity = identity
+                call._candidate.__getitem__.return_value = MagicMock(side_effect=exc)
+                with patch.object(call, "_store_choice") as store:
+                    call.pointwise.run("input", 17)
+                    result = call.reduction.run("output", "extra")
+                self.assertEqual(call._selected_mode, "standard")
+                store.assert_called_once_with(identity, "standard")
+                pointwise.run.assert_called_once_with("input", 17)
+                reduction.run.assert_called_once_with("output", "extra")
+                self.assertIs(result, reduction.run.return_value)
+                # The fallback is permanent: later pairs keep using the standard path.
+                pointwise.run.reset_mock()
+                reduction.run.reset_mock()
+                call.pointwise.run("input2", 17)
+                call.reduction.run("output2", "extra")
+                pointwise.run.assert_called_once_with("input2", 17)
+                reduction.run.assert_called_once_with("output2", "extra")
+
+    def test_choice_cache_failure_does_not_break_selection(self):
+        # The persistent choice cache is best-effort; its system probe may touch the
+        # device and fail on constrained hosts. Selection must still complete in memory.
+        call, pointwise, reduction = self.sequence_call()
+        with (
+            patch.object(call, "_contract", return_value=MagicMock()),
+            patch.object(call, "_choice_cache", side_effect=RuntimeError("cache unavailable")),
+            patch.object(call, "_load_candidate"),
+            patch.object(call, "_validate_candidate", return_value=True),
+            patch.object(call, "_benchmark", return_value=(2.0, 1.0)),
+        ):
+            call.pointwise.run("pointwise")
+            call.reduction.run("reduction")
+        self.assertEqual(call._selected_mode, "gluon")
+        pointwise.run.assert_called_once_with("pointwise")
+        reduction.run.assert_called_once_with("reduction")
 
 
 if __name__ == "__main__":

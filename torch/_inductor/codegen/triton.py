@@ -5953,7 +5953,7 @@ class TritonScheduling(SIMDScheduling):
             if metrics.is_metric_table_enabled("kernel_metadata"):
                 metrics.log_kernel_metadata(kernel_name, kernel_path, src_code)
 
-        if not V.graph.cpp_wrapper:
+        if not V.graph.cpp_wrapper and not V.graph.fx_wrapper:
             if kernel_is_new:
                 self._track_preserved_reduction(kernel_name, kernel)
             else:
@@ -6394,6 +6394,12 @@ class TritonScheduling(SIMDScheduling):
     def _track_preserved_reduction(
         self, kernel_name: str, kernel: TritonKernel
     ) -> None:
+        # The FX wrapper imports each kernel definition in isolation and only accepts
+        # CachingAutotuner objects; the selector and the rebound endpoint names are not
+        # resolvable there, so preserved sequences must stay disabled for it.
+        if V.graph.fx_wrapper:
+            self._preserved_reduction_pointwise = None
+            return
         # Other kernel types such as ComboKernel lack the structural information required
         # for reduction admission; their presence also means pointwise and reduction no
         # longer form a pure standard sequence.

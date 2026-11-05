@@ -585,11 +585,36 @@ class TestPreservedSequenceAdmission(TestCase):
             _preserved_reduction_pointwise=pending,
             _define_preserved_sequence=MagicMock(side_effect=CantSplit()),
         )
-        triton_codegen.TritonScheduling._track_preserved_reduction(
-            fake, "triton_red_fused_1", kernel
-        )
+        with patch.object(triton_codegen, "V") as v:
+            v.graph.fx_wrapper = False
+            triton_codegen.TritonScheduling._track_preserved_reduction(
+                fake, "triton_red_fused_1", kernel
+            )
         fake._define_preserved_sequence.assert_called_once()
         self.assertIsNone(fake._preserved_reduction_pointwise)
+
+    def test_fx_wrapper_disables_preserved_sequences(self):
+        # FxConverter imports each kernel definition in isolation and only accepts
+        # CachingAutotuner objects; the selector/rebound endpoints would fail there,
+        # so tracking must stay disabled whenever the FX wrapper is active.
+        from torch._inductor.codegen import triton as triton_codegen
+
+        kernel = MagicMock(spec=triton_codegen.TritonKernel)
+        pending = {"node": MagicMock(), "reduction": MagicMock()}
+        fake = SimpleNamespace(
+            scheduler=SimpleNamespace(current_node=MagicMock()),
+            _preserved_reduction_pointwise=pending,
+            _next_preserved_reduction=MagicMock(),
+            _define_preserved_sequence=MagicMock(),
+        )
+        with patch.object(triton_codegen, "V") as v:
+            v.graph.fx_wrapper = True
+            triton_codegen.TritonScheduling._track_preserved_reduction(
+                fake, "triton_poi_fused_0", kernel
+            )
+        self.assertIsNone(fake._preserved_reduction_pointwise)
+        fake._next_preserved_reduction.assert_not_called()
+        fake._define_preserved_sequence.assert_not_called()
 
 
 # The suite allocates device="cuda" tensors explicitly; HAS_GPU_AND_TRITON would also
