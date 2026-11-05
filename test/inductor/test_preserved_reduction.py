@@ -665,6 +665,58 @@ class PreservedReductionTests(TestCase):
         pointwise.run.assert_called_once_with("pointwise")
         reduction.run.assert_called_once_with("reduction")
 
+    def test_benchmark_does_not_mutate_live_endpoints(self):
+        # With in-place buffer reuse an output can share storage with a live input, which
+        # the codegen mutation checks do not see; benchmarking must write to private
+        # clones so repeated launches never overwrite caller-visible data, whichever
+        # mode is ultimately selected.
+        call, pointwise, reduction = self.sequence_call()
+        pointwise.run.side_effect = lambda *args, **kwargs: args[1].fill_(7.0)
+        reduction.run.side_effect = lambda *args, **kwargs: args[1].fill_(9.0)
+        call._device_str = "cpu"
+
+        live_input = torch.arange(4, dtype=torch.float32)
+        aliased_output = live_input.view(4)  # same storage, as buffer reuse may produce
+        reduction_out = torch.zeros(4)
+        endpoints = (
+            ((live_input, aliased_output, 4), {}),
+            ((live_input, reduction_out, 4), {}),
+        )
+        before = live_input.clone()
+        before_out = reduction_out.clone()
+        seen = {}
+
+        def fake_candidate(bench_endpoints, args=None):
+            seen["candidate"] = bench_endpoints
+            bench_endpoints[1][0][1].fill_(5.0)
+
+        def fake_benchmark(fn, **kwargs):
+            fn()
+            return 1.0
+
+        with (
+            patch.object(call, "_run_candidate", side_effect=fake_candidate),
+            patch(
+                "torch._inductor.runtime.benchmarking.benchmarker.benchmark",
+                side_effect=fake_benchmark,
+            ),
+        ):
+            call._benchmark(endpoints)
+
+        self.assertTrue(torch.equal(live_input, before))
+        self.assertTrue(torch.equal(reduction_out, before_out))
+        # The launches really ran and wrote to shadow copies, not the live buffers;
+        # each benchmark owns its private copies, so the standard shadow keeps its value.
+        pw_args = pointwise.run.call_args_list[0].args
+        self.assertIsNot(pw_args[1], aliased_output)
+        self.assertTrue(torch.equal(pw_args[1], torch.full((4,), 7.0)))
+        red_args = reduction.run.call_args_list[0].args
+        self.assertIsNot(red_args[1], reduction_out)
+        self.assertTrue(torch.equal(red_args[1], torch.full((4,), 9.0)))
+        cand_out = seen["candidate"][1][0][1]
+        self.assertIsNot(cand_out, reduction_out)
+        self.assertTrue(torch.equal(cand_out, torch.full((4,), 5.0)))
+
 
 if __name__ == "__main__":
     from torch._inductor.test_case import run_tests

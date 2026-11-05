@@ -572,6 +572,29 @@ class PreservedReductionCall:
         self._run_candidate(endpoints, candidate_args)
         return all(self._bitwise_equal(reference, actual) for reference, actual in references)
 
+    @staticmethod
+    def _shadow_endpoints(
+        endpoints: tuple[
+            tuple[tuple[Any, ...], dict[str, Any]],
+            tuple[tuple[Any, ...], dict[str, Any]],
+        ],
+    ) -> tuple[
+        tuple[tuple[Any, ...], dict[str, Any]],
+        tuple[tuple[Any, ...], dict[str, Any]],
+    ]:
+        # Kernels write their output arguments on every launch. With in-place buffer
+        # reuse an output may share storage with a live input, and the codegen mutation
+        # checks do not see that aliasing; benchmarking on the live endpoints would
+        # overwrite caller-visible data even when standard is ultimately selected.
+        # Benchmark private clones instead, keeping the argument structure intact.
+        def shadow(value: Any) -> Any:
+            return value.clone() if isinstance(value, torch.Tensor) else value
+
+        return tuple(
+            (tuple(shadow(arg) for arg in args), {key: shadow(value) for key, value in kwargs.items()})
+            for args, kwargs in endpoints
+        )
+
     def _benchmark(
         self,
         endpoints: tuple[
@@ -581,14 +604,18 @@ class PreservedReductionCall:
     ) -> tuple[float, float]:
         from .benchmarking import benchmarker
 
+        # Each benchmark gets its own private copies so one kernel's writes cannot
+        # poison the other's measurement inputs.
+        standard_endpoints = self._shadow_endpoints(endpoints)
+        candidate_endpoints = self._shadow_endpoints(endpoints)
         standard_ms = benchmarker.benchmark(
-            lambda: self._run_standard(endpoints),
+            lambda: self._run_standard(standard_endpoints),
             device=self._device_str,
             rep=40,
             is_vetted_benchmarking=True,
         )
         candidate_ms = benchmarker.benchmark(
-            lambda: self._run_candidate(endpoints),
+            lambda: self._run_candidate(candidate_endpoints),
             device=self._device_str,
             rep=40,
             is_vetted_benchmarking=True,
