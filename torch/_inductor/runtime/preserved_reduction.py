@@ -587,8 +587,12 @@ class PreservedReductionCall:
         # checks do not see that aliasing; benchmarking on the live endpoints would
         # overwrite caller-visible data even when standard is ultimately selected.
         # Benchmark private clones instead, keeping the argument structure intact.
+        from ..utils import clone_preserve_strides
+
         def shadow(value: Any) -> Any:
-            return value.clone() if isinstance(value, torch.Tensor) else value
+            # clone() compacts non-dense views while the compiled kernels keep their
+            # original indexing, so the copy must span the same storage offsets.
+            return clone_preserve_strides(value) if isinstance(value, torch.Tensor) else value
 
         return tuple(
             (tuple(shadow(arg) for arg in args), {key: shadow(value) for key, value in kwargs.items()})

@@ -678,12 +678,17 @@ class PreservedReductionTests(TestCase):
         live_input = torch.arange(4, dtype=torch.float32)
         aliased_output = live_input.view(4)  # same storage, as buffer reuse may produce
         reduction_out = torch.zeros(4)
+        # A non-dense view: clone() would compact it while the compiled kernels keep
+        # the original indexing, so the shadow must preserve strides and storage span.
+        gapped_base = torch.arange(8 * 16, dtype=torch.float32)
+        gapped_input = gapped_base.as_strided((8, 8), (16, 2), 0)
         endpoints = (
-            ((live_input, aliased_output, 4), {}),
+            ((live_input, aliased_output, 4, gapped_input), {}),
             ((live_input, reduction_out, 4), {}),
         )
         before = live_input.clone()
         before_out = reduction_out.clone()
+        before_gapped = gapped_base.clone()
         seen = {}
 
         def fake_candidate(bench_endpoints, args=None):
@@ -705,11 +710,17 @@ class PreservedReductionTests(TestCase):
 
         self.assertTrue(torch.equal(live_input, before))
         self.assertTrue(torch.equal(reduction_out, before_out))
+        self.assertTrue(torch.equal(gapped_base, before_gapped))
         # The launches really ran and wrote to shadow copies, not the live buffers;
         # each benchmark owns its private copies, so the standard shadow keeps its value.
         pw_args = pointwise.run.call_args_list[0].args
         self.assertIsNot(pw_args[1], aliased_output)
         self.assertTrue(torch.equal(pw_args[1], torch.full((4,), 7.0)))
+        gapped_shadow = pw_args[3]
+        self.assertIsNot(gapped_shadow, gapped_input)
+        self.assertEqual(gapped_shadow.stride(), gapped_input.stride())
+        needed_span = sum((s - 1) * st for s, st in zip(gapped_input.size(), gapped_input.stride())) + 1
+        self.assertGreaterEqual(gapped_shadow.untyped_storage().nbytes() // 4, needed_span)
         red_args = reduction.run.call_args_list[0].args
         self.assertIsNot(red_args[1], reduction_out)
         self.assertTrue(torch.equal(red_args[1], torch.full((4,), 9.0)))
