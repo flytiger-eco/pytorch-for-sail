@@ -67,7 +67,7 @@ FAILED_CASES=()
 run_pytest() {
     local test_file="$1"
     echo "=== [case] ${test_file}  -k cuda ==="
-    if python .ci/ppu/multi_run_case.py "$test_file" --crash-list "$CRASH_LIST" --allow-empty -k "cuda"; then
+    if python .ci/ppu/multi_run_case.py "$test_file" --crash-list "$CRASH_LIST" -k "cuda"; then
         echo "=== [done] ${test_file}（通过或正常跳过）==="
     else
         echo "::error::[fail] ${test_file}"

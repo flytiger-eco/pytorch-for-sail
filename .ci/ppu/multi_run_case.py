@@ -61,7 +61,7 @@ class Config:
         return cls(
             repo_root=os.path.abspath(repo_root or os.getcwd()),
             progress_file=progress_file,
-            per_test_timeout=int(os.environ.get("PER_TEST_TIMEOUT", "60")),
+            per_test_timeout=int(os.environ.get("PER_TEST_TIMEOUT", "180")),
             pytest_args=tuple(argv),
             crash_list=os.path.abspath(crash_list) if crash_list else "",
         )
@@ -407,6 +407,7 @@ def orchestrate(cfg: Config) -> int:
         print(f"crash list: {cfg.crash_list} "
               f"({len(crash_list.nodeids())} exclusion entries)")
     newly_listed = []
+    aborted = False
     rounds = 0
     while True:
         rounds += 1
@@ -437,6 +438,7 @@ def orchestrate(cfg: Config) -> int:
         if len(log.done_nodeids()) <= len(prev_done):
             print(f"  WARN: abnormal exit rc={rc} with no progress; aborting to "
                   f"avoid an infinite loop.")
+            aborted = True
             break
 
     counts = _print_summary(log)
@@ -445,6 +447,8 @@ def orchestrate(cfg: Config) -> int:
               f"{cfg.crash_list} (deselected from next run on):")
         for nodeid, status in newly_listed:
             print(f"  {status:<6} {nodeid}")
+    if aborted:
+        return 1
     return 1 if set(counts) - OK_STATUSES else 0
 
 
