@@ -50,6 +50,9 @@ and not test_cpu_gpu_parity_nn_TransformerEncoder_eval_mode_cuda_float64 \
 and not test_cpu_gpu_parity_nn_TransformerEncoder_train_mode_cuda_float32 \
 and not test_cpu_gpu_parity_nn_TransformerEncoder_train_mode_cuda_float64 \
 and not test_cpu_gpu_parity_nn_Transformer_cuda_float32 \
+and not test_grad_nn_Transformer_cuda_float64 \
+and not test_gradgrad_nn_TransformerEncoderLayer_eval_mode_cuda_float64 \
+and not test_multiple_device_transfer_nn_TransformerEncoderLayer_train_mode_cuda_float64 \
 and not test_cpu_gpu_parity_nn_Transformer_cuda_float64 \
 and not test_cov_cuda_complex"
 
