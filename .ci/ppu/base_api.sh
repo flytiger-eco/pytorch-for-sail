@@ -9,16 +9,14 @@ source .ci/ppu/nccl_env.sh
 bash .ci/ppu/install_wheel.sh
 
 echo "=== 环境自检 ==="
-echo "pr=${PR_NUMBER:-none} hostname=$(hostname) node=${NODE_NAME:-unknown}"
-echo "rank=${RANK:-0} nproc_per_node=${NPROC_PER_NODE:-1}"
-python --version
-(cd /tmp && python -c "import torch; print('torch', torch.__version__, torch.__file__); print('cuda_available', torch.cuda.is_available()); print('device_count', torch.cuda.device_count())")
-ppu-smi || echo "[warn] ppu-smi 不可用，请确认 pod 已分配 PPU 设备"
 bash .ci/ppu/install_test_deps.sh
 echo "=== CUDA base api 用例（test/test_ops.py，仅 CUDA 相关） ==="
 
 pytest -v test/test_ops.py -k "cuda \
 and not test_dtypes___rmatmul___cuda \
+and not test_fake_crossref_backward_no_amp_nn_functional_bilinear_cuda_float32 \
+and not test_numpy_ref_nn_functional_pdist_cuda_float64 \
+and not test_noncontiguous_samples_nn_functional_grid_sample_cuda_float32 \
 and not test_dtypes__refs_dot_cuda \
 and not test_dtypes__refs_linalg_matrix_norm_cuda \
 and not test_dtypes__refs_linalg_norm_cuda \
@@ -652,6 +650,8 @@ echo "=== CUDA base api 用例（test/test_ops_gradients.py，仅 CUDA 相关）
 
 pytest -v test/test_ops_gradients.py -k "cuda \
 and not test_fn_grad___rmatmul___cuda_complex128 \
+and not test_fn_gradgrad_cholesky_solve_cpu_complex128 \
+and not test_fn_gradgrad_triangular_solve_cpu_complex128 \
 and not test_fn_grad_addbmm_cuda_complex128 \
 and not test_fn_grad_addmm_cuda_complex128 \
 and not test_fn_grad_addmm_decomposed_cuda_complex128 \

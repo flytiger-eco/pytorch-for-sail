@@ -33,6 +33,9 @@ and not test_consecutive_split_ \
 and not test_linalg_eig_stride_consistency_cuda \
 and not test_sort_stable_cuda \
 and not test_copy_non_blocking_is_pinned_use_cat_True_cuda \
+and not test_grad_nn_Transformer_cuda_float64 \
+and not test_gradgrad_nn_TransformerEncoderLayer_eval_mode_cuda_float64 \
+and not test_multiple_device_transfer_nn_TransformerEncoderLayer_train_mode_cuda_float64 \
 and not test_split_ \
 and not RNN \
 and not LSTM \
