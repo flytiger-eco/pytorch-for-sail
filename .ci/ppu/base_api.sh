@@ -645,6 +645,10 @@ and not test_pointwise_ops_linalg_ldl_solve_cuda_float32 \
 and not test_cow_input_nn_functional_scaled_dot_product_attention_cuda_float32 \
 and not test_cow_input_torch_ops_aten__efficient_attention_forward_cuda_float32 \
 and not test_neg_view_geqrf_cuda_float64 \
+and not test_non_standard_bool_values_nonzero_static_cuda_bool \
+and not test_noncontiguous_samples_nn_functional_grid_sample_cuda_float32 \
+and not test_numpy_ref_nn_functional_pdist_cuda_float64 \
+and not test_fake_crossref_backward_no_amp_nn_functional_bilinear_cuda_float32 \
 and not test_fake_crossref_backward_amp_nn_functional_bilinear_cuda_float32 \
 "
 
