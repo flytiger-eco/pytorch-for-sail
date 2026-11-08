@@ -3,14 +3,47 @@ set -euo pipefail
 
 export SDK_INSTALL_DIR="${SDK_INSTALL_DIR:-/usr/local}"
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+PPU_BOARD="${PPU_BOARD:-}"
+PPU_BRANCH="${PPU_BRANCH:-unknown}"
+NAS_LOG_DIR="${NAS_LOG_DIR:-/mnt/wl_nas/ut_test/logs}"
+SHARD_NUMBER="${SHARD_NUMBER:-1}"
+NUM_TEST_SHARDS="${NUM_TEST_SHARDS:-1}"
+
+copy_log_to_nas() {
+    local rc=$?
+    # 恢复原始输出并等待 tee 写完，保证本地日志完整后再复制
+    exec 1>&3 2>&4
+    wait "$TEE_PID" 2>/dev/null || true
+    if mkdir -p "$NAS_LOG_DIR" && cp -- "$LOCAL_LOG_FILE" "$NAS_LOG_FILE"; then
+        echo "[full_ut] 日志已复制到网盘: ${NAS_LOG_FILE}"
+    else
+        echo "::warning::[full_ut] 日志复制到网盘失败: ${LOCAL_LOG_FILE} -> ${NAS_LOG_FILE}" >&2
+    fi
+    exit "$rc"
+}
+
+if [[ -n "$PPU_BOARD" ]]; then
+    LOG_NAME="$(TZ=UTC-8 date +%Y_%m_%d_%H)_${PPU_BRANCH//\//-}_full_ut_${PPU_BOARD}_shard${SHARD_NUMBER}.txt"
+    NAS_LOG_FILE="${NAS_LOG_DIR}/${LOG_NAME}"
+    LOCAL_LOG_FILE="${TMPDIR:-/tmp}/${LOG_NAME}"
+    : >"$LOCAL_LOG_FILE"
+    exec 3>&1 4>&2
+    exec > >(tee -a "$LOCAL_LOG_FILE") 2>&1
+    TEE_PID=$!
+    trap copy_log_to_nas EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    echo "[full_ut] 日志将在结束时复制到网盘: ${NAS_LOG_FILE}"
+else
+    echo "::warning::[full_ut] 未设置 PPU_BOARD，跳过日志落盘" >&2
+fi
 echo "[full_ut] 源码目录: $(pwd)"
 
 UT_FILES="${UT_FILES:-.ci/ppu/badcase_list/ut_files.txt}"
 NAS_SKIP_FILE="${NAS_SKIP_FILE:-/mnt/wl_nas/ut_test/pytorch/full_ut_skip.txt}"
 LOCAL_SKIP_FILE=".ci/ppu/badcase_list/full_ut_skip.txt"
 CRASH_LIST="${CRASH_LIST:-$LOCAL_SKIP_FILE}"
-SHARD_NUMBER="${SHARD_NUMBER:-1}"
-NUM_TEST_SHARDS="${NUM_TEST_SHARDS:-1}"
 
 if [[ ! -f "$NAS_SKIP_FILE" || ! -r "$NAS_SKIP_FILE" ]]; then
     echo "::error::[full_ut] 网盘 skip 清单不存在或不可读: ${NAS_SKIP_FILE}" >&2

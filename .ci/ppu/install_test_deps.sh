@@ -3,7 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 REQ_FILE="$REPO_ROOT/.ci/docker/requirements-ci.txt"
-WANTED=(pytest pytest-xdist pytest-flakefinder pytest-rerunfailures pytest-subtests expecttest hypothesis pyyaml)
+WANTED=(pytest pytest-xdist pytest-flakefinder pytest-rerunfailures pytest-subtests expecttest hypothesis pyyaml ninja)
+PINNED=(scipy==1.13.1 psutil)
 SPECS_RAW="$(python - "$REQ_FILE" "${WANTED[@]}" <<'PY'
 import re
 import sys
@@ -31,7 +32,8 @@ print(" ".join(found[norm(p)] for p in wanted))
 PY
 )"
 read -r -a PKGS <<<"$SPECS_RAW"
-echo "=== 目标版本（来自 .ci/docker/requirements-ci.txt） ==="
+PKGS+=("${PINNED[@]}")
+echo "=== 目标版本（来自 .ci/docker/requirements-ci.txt 及脚本内固定版本） ==="
 printf '  %s\n' "${PKGS[@]}"
 
 echo "=== 测试框架依赖自检 ==="
@@ -53,6 +55,13 @@ def pad(a: tuple[int, ...], b: tuple[int, ...]) -> tuple[tuple[int, ...], tuple[
 
 unsatisfied = []
 for spec in sys.argv[1:]:
+    if re.fullmatch(r"[A-Za-z0-9._-]+", spec):
+        try:
+            print(f"  {spec} {version(spec)} (任意版本) OK")
+        except PackageNotFoundError:
+            print(f"  {spec} 未安装 (任意版本)")
+            unsatisfied.append(spec)
+        continue
     m = re.match(r"^([A-Za-z0-9._-]+)\s*(==|>=|<=|~=|<|>)\s*(.+)$", spec)
     if not m:
         unsatisfied.append(spec)

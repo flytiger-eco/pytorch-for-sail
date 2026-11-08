@@ -1,6 +1,7 @@
 """断点续跑 + hang + crash 的pytest执行器
 python3 /any/where/mulit_run_case.py test/test_ops.py
 可选 --crash-list <文件>：case白名单；预置case直接 deselect，新CRASH/HANG自动追加。
+可选 --failed-list <文件>：结束时把 FAILED/ERROR/CRASH/HANG 的 case 以 `nodeid<Tab>状态` 追加写入。
 """
 
 import os
@@ -19,6 +20,7 @@ CHILD_FLAG = "--resilient-child"
 CHILD_ROOT_FLAG = "--resilient-repo-root"
 ROOT_FLAG = "--repo-root"
 CRASH_LIST_FLAG = "--crash-list"
+FAILED_LIST_FLAG = "--failed-list"
 CRASH_LIST_ENV = "RESILIENT_CRASH_LIST"
 PLUGIN_MODULE = os.path.splitext(os.path.basename(__file__))[0]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,7 +35,7 @@ def _parse_cli(argv):
     while i < len(argv):
         a = argv[i]
         name, eq, value = a.partition("=")
-        if name in (ROOT_FLAG, CRASH_LIST_FLAG):
+        if name in (ROOT_FLAG, CRASH_LIST_FLAG, FAILED_LIST_FLAG):
             if not eq:
                 if i + 1 >= len(argv):
                     raise ValueError(f"{a} requires a value")
@@ -54,9 +56,11 @@ class Config:
     per_test_timeout: int
     pytest_args: tuple = ()
     crash_list: str = ""
+    failed_list: str = ""
 
     @classmethod
-    def from_env(cls, argv, repo_root, progress_file, crash_list=None):
+    def from_env(cls, argv, repo_root, progress_file, crash_list=None,
+                 failed_list=None):
         crash_list = crash_list or os.environ.get(CRASH_LIST_ENV, "")
         return cls(
             repo_root=os.path.abspath(repo_root or os.getcwd()),
@@ -64,6 +68,7 @@ class Config:
             per_test_timeout=int(os.environ.get("PER_TEST_TIMEOUT", "180")),
             pytest_args=tuple(argv),
             crash_list=os.path.abspath(crash_list) if crash_list else "",
+            failed_list=os.path.abspath(failed_list) if failed_list else "",
         )
 
 
@@ -119,6 +124,14 @@ class ProgressLog:
             if p[0] == self.TOTAL and len(p) >= 2:
                 total = int(p[1])
         return total
+
+    def results(self) -> dict:
+        """每个 nodeid 首次记录的结果，与 status_counts 口径一致。"""
+        results = {}
+        for p in self._lines():
+            if p[0] == self.RESULT and len(p) >= 3:
+                results.setdefault(p[1], p[2])
+        return results
 
     def status_counts(self) -> dict:
         counts, seen = {}, set()
@@ -393,6 +406,30 @@ def _print_summary(log: ProgressLog) -> dict:
     return counts
 
 
+def _write_failed_list(cfg: Config, log: ProgressLog, aborted_rc=None) -> None:
+    if not cfg.failed_list:
+        return
+    existing = CrashList(cfg.failed_list).nodeids()
+    new = [(nodeid, status) for nodeid, status in log.results().items()
+           if status not in OK_STATUSES and nodeid not in existing]
+    if not new and aborted_rc is None:
+        return
+    directory = os.path.dirname(cfg.failed_list)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(cfg.failed_list, "a") as f:
+        f.write(f"# {time.strftime('%Y-%m-%d %H:%M:%S')}  "
+                f"{' '.join(cfg.pytest_args)}\n")
+        # 无进度中止时没有可记录的 nodeid，只写注释行，避免被当作整文件 skip 条目
+        if aborted_rc is not None:
+            f.write(f"# ABORTED rc={aborted_rc} with no progress\n")
+        for nodeid, status in new:
+            f.write(f"{nodeid}\t{status}\n")
+        f.flush()
+        os.fsync(f.fileno())
+    print(f"appended {len(new)} failed case(s) to failed list {cfg.failed_list}")
+
+
 def orchestrate(cfg: Config) -> int:
     try:
         import pytest  # noqa: F401
@@ -408,6 +445,7 @@ def orchestrate(cfg: Config) -> int:
               f"({len(crash_list.nodeids())} exclusion entries)")
     newly_listed = []
     aborted = False
+    rc = None
     rounds = 0
     while True:
         rounds += 1
@@ -447,6 +485,7 @@ def orchestrate(cfg: Config) -> int:
               f"{cfg.crash_list} (deselected from next run on):")
         for nodeid, status in newly_listed:
             print(f"  {status:<6} {nodeid}")
+    _write_failed_list(cfg, log, aborted_rc=rc if aborted else None)
     if aborted:
         return 1
     return 1 if set(counts) - OK_STATUSES else 0
@@ -494,7 +533,8 @@ def main(argv=None) -> int:
         cfg = Config.from_env(user_args or ["test/test_ops.py"],
                               repo_root=opts.get(ROOT_FLAG),
                               progress_file=progress_file,
-                              crash_list=opts.get(CRASH_LIST_FLAG))
+                              crash_list=opts.get(CRASH_LIST_FLAG),
+                              failed_list=opts.get(FAILED_LIST_FLAG))
         return orchestrate(cfg)
     finally:
         ProgressLog(progress_file).remove()
