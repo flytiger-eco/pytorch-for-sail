@@ -1,4 +1,5 @@
-#pragma once
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/native/cuda/ppu_opt_index_scatter_kernels/PPUIndexScatter.h>
 
 #if defined(USE_PPU)
 
@@ -216,6 +217,23 @@ static bool try_launch_pair_atomic_add(
     }
   });
   return true;
+}
+
+bool try_launch_index_add_opt(
+    const Tensor& output,
+    int64_t dim,
+    const Tensor& index,
+    const Tensor& source,
+    const Scalar& alpha) {
+  return try_launch_pair_atomic_add<false>(output, dim, index, source, alpha);
+}
+
+bool try_launch_scatter_add_opt(
+    const Tensor& output,
+    int64_t dim,
+    const Tensor& index,
+    const Tensor& source) {
+  return try_launch_pair_atomic_add<true>(output, dim, index, source);
 }
 
 } // namespace at::native::ppu_index_scatter_opt

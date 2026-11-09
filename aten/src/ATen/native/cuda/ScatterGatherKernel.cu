@@ -12,7 +12,7 @@
 #include <ATen/native/cuda/KernelUtils.cuh>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #if defined(USE_PPU)
-#include <ATen/native/cuda/ppu_opt_index_scatter_kernels/PPUIndexScatter.cuh>
+#include <ATen/native/cuda/ppu_opt_index_scatter_kernels/PPUIndexScatter.h>
 #endif
 #include <ATen/cuda/detail/OffsetCalculator.cuh>
 #include <ATen/cuda/Atomic.cuh>
@@ -540,7 +540,7 @@ void scatter_fill_cuda_kernel(const Tensor& self, int64_t dim, const Tensor& ind
 
 void scatter_add_cuda_kernel(const Tensor& self, int64_t dim, const Tensor& index, const Tensor& src) {
 #if defined(USE_PPU)
-  if (ppu_index_scatter_opt::try_launch_pair_atomic_add<true>(self, dim, index, src)) {
+  if (ppu_index_scatter_opt::try_launch_scatter_add_opt(self, dim, index, src)) {
     return;
   }
 #endif
