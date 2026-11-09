@@ -1,7 +1,7 @@
-"""断点续跑 + hang + crash 的pytest执行器
+"""pytest runner with resume + hang/crash handling
 python3 /any/where/mulit_run_case.py test/test_ops.py
-可选 --crash-list <文件>：case白名单；预置case直接 deselect，新CRASH/HANG自动追加。
-可选 --failed-list <文件>：结束时把 FAILED/ERROR/CRASH/HANG 的 case 以 `nodeid<Tab>状态` 追加写入。
+Optional --crash-list <file>: case skip list; listed cases are deselected, new CRASH/HANG cases are appended.
+Optional --failed-list <file>: on exit, append FAILED/ERROR/CRASH/HANG cases as `nodeid<Tab>status`.
 """
 
 import os
@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
-# 1. 配置
+# 1. Config
 # ---------------------------------------------------------------------------
 CHILD_FLAG = "--resilient-child"
 CHILD_ROOT_FLAG = "--resilient-repo-root"
@@ -73,7 +73,7 @@ class Config:
 
 
 # ---------------------------------------------------------------------------
-# 2. 进度
+# 2. Progress
 # ---------------------------------------------------------------------------
 
 class ProgressLog:
@@ -126,7 +126,7 @@ class ProgressLog:
         return total
 
     def results(self) -> dict:
-        """每个 nodeid 首次记录的结果，与 status_counts 口径一致。"""
+        """First recorded result per nodeid, consistent with status_counts."""
         results = {}
         for p in self._lines():
             if p[0] == self.RESULT and len(p) >= 3:
@@ -167,7 +167,7 @@ class CrashList:
                 or any(pattern in item.nodeid for pattern in patterns)}
 
     def add(self, nodeid: str, status: str) -> bool:
-        """追加一条记录；未配置路径或完整 nodeid 已存在时返回 False。"""
+        """Append an entry; return False if no path is set or the full nodeid already exists."""
         if not self.path or nodeid in self.nodeids():
             return False
         directory = os.path.dirname(self.path)
@@ -181,7 +181,7 @@ class CrashList:
 
 
 # ---------------------------------------------------------------------------
-# 3. pytest 插件角色（子进程经 -p <本模块> 加载以下 hook）
+# 3. pytest plugin (child process loads these hooks via -p <this module>)
 # ---------------------------------------------------------------------------
 
 class _RepoSourceGuard:
@@ -256,7 +256,7 @@ def pytest_collection_modifyitems(config, items):
     if deselected:
         config.hook.pytest_deselected(items=deselected)
         items[:] = [it for it in items if it.nodeid not in skip]
-    # 只在首轮（尚无进度）提示一次，避免每轮重复刷屏
+    # Only notify on the first round (no progress yet) to avoid repeating every round
     if listed and not done:
         print(f"\n[resilient] crash list: deselected {len(listed)} listed "
               f"case(s) from {crash_list.path}", flush=True)
@@ -285,7 +285,7 @@ def pytest_runtest_logreport(report):
 
 
 # ---------------------------------------------------------------------------
-# 4. 监控
+# 4. Monitor
 # ---------------------------------------------------------------------------
 
 class Watchdog:
@@ -420,7 +420,7 @@ def _write_failed_list(cfg: Config, log: ProgressLog, aborted_rc=None) -> None:
     with open(cfg.failed_list, "a") as f:
         f.write(f"# {time.strftime('%Y-%m-%d %H:%M:%S')}  "
                 f"{' '.join(cfg.pytest_args)}\n")
-        # 无进度中止时没有可记录的 nodeid，只写注释行，避免被当作整文件 skip 条目
+        # No nodeid on a no-progress abort; write a comment line only so it isn't taken as a whole-file skip entry
         if aborted_rc is not None:
             f.write(f"# ABORTED rc={aborted_rc} with no progress\n")
         for nodeid, status in new:
