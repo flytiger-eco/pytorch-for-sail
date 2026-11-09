@@ -4,7 +4,7 @@
 #include <ATen/native/quantized/IndexKernel.h>
 #include <ATen/native/cuda/KernelUtils.cuh>
 #if defined(USE_PPU)
-#include <ATen/native/cuda/PPUIndexScatter.cuh>
+#include <ATen/native/cuda/ppu_opt_index_scatter_kernels/PPUIndexScatter.cuh>
 #endif
 
 #include <ATen/core/Tensor.h>
@@ -1169,7 +1169,7 @@ void index_add_cuda_impl(const Tensor& self, int64_t dim, const Tensor& index, c
     return;
   }
 #if defined(USE_PPU)
-  if (ppu::try_launch_bf16_pair_atomic_add<false>(result, dim, index, source, alpha)) {
+  if (ppu::try_launch_pair_atomic_add<false>(result, dim, index, source, alpha)) {
     return;
   }
 #endif
