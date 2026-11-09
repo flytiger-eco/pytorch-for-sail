@@ -12,7 +12,6 @@ NUM_TEST_SHARDS="${NUM_TEST_SHARDS:-1}"
 
 copy_log_to_nas() {
     local rc=$?
-    # 恢复原始输出并等待 tee 写完，保证本地日志完整后再复制
     exec 1>&3 2>&4
     wait "$TEE_PID" 2>/dev/null || true
     if mkdir -p "$NAS_LOG_DIR" && cp -- "$LOCAL_LOG_FILE" "$NAS_LOG_FILE"; then
