@@ -162,10 +162,7 @@ file(GLOB native_utils_h "native/utils/*.h")
 
 file(GLOB native_cuda_cu "native/cuda/*.cu")
 file(GLOB native_cuda_cpp "native/cuda/*.cpp")
-file(GLOB native_cuda_h
-  "native/cuda/*.h"
-  "native/cuda/*.cuh"
-  "native/cuda/ppu_opt_index_scatter_kernels/*.cuh")
+file(GLOB native_cuda_h "native/cuda/*.h" "native/cuda/*.cuh" "native/cuda/ppu_opt_index_scatter_kernels/*.cuh")
 file(GLOB native_cuda_linalg_cpp "native/cuda/linalg/*.cpp")
 file(GLOB native_hip_h "native/hip/*.h" "native/hip/*.cuh" "native/hip/bgemm_kernels/*.h")
 file(GLOB native_cudnn_cpp "native/cudnn/*.cpp")

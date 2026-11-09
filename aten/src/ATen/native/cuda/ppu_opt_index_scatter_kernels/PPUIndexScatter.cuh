@@ -17,7 +17,7 @@
 #include <algorithm>
 #include <cstdint>
 
-namespace at::native::ppu {
+namespace at::native::ppu_index_scatter_opt {
 
 inline constexpr int kPairAtomicThreads = 256;
 inline constexpr int kPairAtomicBlocksPerSM = 8;
@@ -218,6 +218,6 @@ static bool try_launch_pair_atomic_add(
   return true;
 }
 
-} // namespace at::native::ppu
+} // namespace at::native::ppu_index_scatter_opt
 
 #endif

@@ -540,7 +540,7 @@ void scatter_fill_cuda_kernel(const Tensor& self, int64_t dim, const Tensor& ind
 
 void scatter_add_cuda_kernel(const Tensor& self, int64_t dim, const Tensor& index, const Tensor& src) {
 #if defined(USE_PPU)
-  if (ppu::try_launch_pair_atomic_add<true>(self, dim, index, src)) {
+  if (ppu_index_scatter_opt::try_launch_pair_atomic_add<true>(self, dim, index, src)) {
     return;
   }
 #endif
