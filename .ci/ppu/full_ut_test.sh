@@ -55,31 +55,20 @@ else
 fi
 echo "[full_ut] Source dir: $(pwd)"
 
-NAS_LIST_DIR="${NAS_LIST_DIR:-/mnt/wl_nas/ut_test/pytorch}"
-NAS_UT_FILES="${NAS_UT_FILES:-$NAS_LIST_DIR/ut_files.txt}"
-NAS_SKIP_FILE="${NAS_SKIP_FILE:-$NAS_LIST_DIR/full_ut_skip.txt}"
-LOCAL_LIST_DIR=".ci/ppu/badcase_list"
-LOCAL_UT_FILES="$LOCAL_LIST_DIR/ut_files.txt"
-LOCAL_SKIP_FILE="$LOCAL_LIST_DIR/full_ut_skip.txt"
-UT_FILES="${UT_FILES:-$LOCAL_UT_FILES}"
+UT_FILES="${UT_FILES:-.ci/ppu/badcase_list/ut_files.txt}"
+NAS_SKIP_FILE="${NAS_SKIP_FILE:-/mnt/wl_nas/ut_test/pytorch/full_ut_skip.txt}"
+LOCAL_SKIP_FILE=".ci/ppu/badcase_list/full_ut_skip.txt"
 CRASH_LIST="${CRASH_LIST:-$LOCAL_SKIP_FILE}"
 
-copy_nas_list() {
-    local label="$1" src="$2" dst="$3"
-    if [[ ! -f "$src" || ! -r "$src" ]]; then
-        echo "::error::[full_ut] NAS ${label} missing or unreadable: ${src}" >&2
-        exit 1
-    fi
-    if ! cp -- "$src" "$dst"; then
-        echo "::error::[full_ut] Failed to copy NAS ${label}: ${src} -> ${dst}" >&2
-        exit 1
-    fi
-    echo "[full_ut] Copied NAS ${label}: ${src} -> ${dst}"
-}
-
-mkdir -p "$LOCAL_LIST_DIR"
-copy_nas_list "test file list" "$NAS_UT_FILES" "$LOCAL_UT_FILES"
-copy_nas_list "skip list" "$NAS_SKIP_FILE" "$LOCAL_SKIP_FILE"
+if [[ ! -f "$NAS_SKIP_FILE" || ! -r "$NAS_SKIP_FILE" ]]; then
+    echo "::error::[full_ut] NAS skip list missing or unreadable: ${NAS_SKIP_FILE}" >&2
+    exit 1
+fi
+if ! cp -- "$NAS_SKIP_FILE" "$LOCAL_SKIP_FILE"; then
+    echo "::error::[full_ut] Failed to copy NAS skip list: ${NAS_SKIP_FILE} -> ${LOCAL_SKIP_FILE}" >&2
+    exit 1
+fi
+echo "[full_ut] Copied NAS skip list: ${NAS_SKIP_FILE} -> ${LOCAL_SKIP_FILE}"
 
 TEST_FILES_RAW="$(python - "$UT_FILES" "$CRASH_LIST" "$SHARD_NUMBER" "$NUM_TEST_SHARDS" <<'PY'
 import re
