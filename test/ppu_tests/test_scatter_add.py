@@ -143,7 +143,9 @@ class TestPPUScatterAdd(TestCase):
         kernels = [event.name for event in prof.events()
                    if event.device_type == torch.autograd.DeviceType.CUDA]
         self.assertTrue(kernels, "CUDA profiling must capture device events")
-        hit = any("ppu_index_scatter_opt::pair_atomic_add_" in name for name in kernels)
+        self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
+                         "scatter_add must not launch index_add optimization kernels")
+        hit = any("ppu_scatter_add_opt::scatter_add_pair_" in name for name in kernels)
         self.assertFalse(hit)
         if not deterministic:
             self.assertTrue(any("scatter_gather" in name for name in kernels))
@@ -168,7 +170,9 @@ class TestPPUScatterAdd(TestCase):
         kernels = [event.name for event in prof.events()
                    if event.device_type == torch.autograd.DeviceType.CUDA]
         self.assertTrue(kernels, "CUDA profiling must capture device events")
-        self.assertFalse(any("ppu_index_scatter_opt::pair_atomic_add_" in name for name in kernels))
+        self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
+                         "scatter_add must not launch index_add optimization kernels")
+        self.assertFalse(any("ppu_scatter_add_opt::scatter_add_pair_" in name for name in kernels))
         self.assertTrue(any("scatter_gather" in name for name in kernels))
 
     @onlyCUDA
@@ -215,7 +219,9 @@ class TestPPUScatterAdd(TestCase):
         kernels = [event.name for event in prof.events()
                    if event.device_type == torch.autograd.DeviceType.CUDA]
         self.assertTrue(kernels, "CUDA profiling must capture device events")
-        paired = [name for name in kernels if "ppu_index_scatter_opt::pair_atomic_add_kernel" in name]
+        self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
+                         "scatter_add must not launch index_add optimization kernels")
+        paired = [name for name in kernels if "ppu_scatter_add_opt::scatter_add_pair_kernel" in name]
         hit = bool(paired)
         inner = reduce(operator.mul, shape[dim + 1:], 1)
         expected_hit = (dtype != torch.float32 and not deterministic and dim == 0 and inner % 2 == 0 and
@@ -223,7 +229,7 @@ class TestPPUScatterAdd(TestCase):
         self.assertEqual(hit, expected_hit)
         if paired:
             index_type = r"(?:int|int32_t)" if index_dtype == torch.int32 else r"(?:long(?: long)?|int64_t)"
-            self.assertRegex(" ".join(paired), rf"pair_atomic_add_kernel<[^,]+,\s*[^,]+,\s*{index_type}\s*,")
+            self.assertRegex(" ".join(paired), rf"scatter_add_pair_kernel<[^,]+,\s*[^,]+,\s*{index_type}\s*,")
         if not expected_hit and not deterministic:
             self.assertTrue(any("scatter_gather" in name for name in kernels))
 
@@ -254,11 +260,13 @@ class TestPPUScatterAdd(TestCase):
         kernels = [event.name for event in prof.events()
                    if event.device_type == torch.autograd.DeviceType.CUDA]
         self.assertTrue(kernels, "CUDA profiling must capture device events")
-        paired = [name for name in kernels if "ppu_index_scatter_opt::pair_atomic_add_kernel" in name]
+        self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
+                         "scatter_add must not launch index_add optimization kernels")
+        paired = [name for name in kernels if "ppu_scatter_add_opt::scatter_add_pair_kernel" in name]
         self.assertEqual(bool(paired), index_layout != "strided")
         if paired:
             index_type = r"(?:int|int32_t)" if index_dtype == torch.int32 else r"(?:long(?: long)?|int64_t)"
-            self.assertRegex(" ".join(paired), rf"pair_atomic_add_kernel<[^,]+,\s*[^,]+,\s*{index_type}\s*,")
+            self.assertRegex(" ".join(paired), rf"scatter_add_pair_kernel<[^,]+,\s*[^,]+,\s*{index_type}\s*,")
         else:
             self.assertTrue(any("scatter_gather" in name for name in kernels))
 
@@ -294,11 +302,13 @@ class TestPPUScatterAdd(TestCase):
         kernels = [event.name for event in prof.events()
                    if event.device_type == torch.autograd.DeviceType.CUDA]
         self.assertTrue(kernels, "CUDA profiling must capture device events")
-        paired = [name for name in kernels if "ppu_index_scatter_opt::pair_atomic_add_kernel" in name]
+        self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
+                         "scatter_add must not launch index_add optimization kernels")
+        paired = [name for name in kernels if "ppu_scatter_add_opt::scatter_add_pair_kernel" in name]
         self.assertTrue(paired)
         index_type = r"(?:int|int32_t)" if index_dtype == torch.int32 else r"(?:long(?: long)?|int64_t)"
         self.assertRegex(" ".join(paired),
-                         rf"pair_atomic_add_kernel<[^,]+,\s*(?:unsigned long(?: long)?|uint64_t),\s*{index_type}\s*,")
+                         rf"scatter_add_pair_kernel<[^,]+,\s*(?:unsigned long(?: long)?|uint64_t),\s*{index_type}\s*,")
 
 
 instantiate_device_type_tests(TestPPUScatterAdd, globals(), only_for="cuda")
