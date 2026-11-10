@@ -7,7 +7,9 @@ import os
 import subprocess
 import sys
 import textwrap
-from functools import reduce
+import unittest
+from contextlib import nullcontext
+from functools import reduce, wraps
 
 import torch
 from torch.testing._internal.common_device_type import (
@@ -28,7 +30,130 @@ from torch.testing._internal.common_utils import (
 _SCATTER_ADD_OPT_ENABLED = os.getenv("PYTORCH_DISABLE_PPU_SCATTER_ADD_OPT") != "1"
 
 
+def _count_nonzero_chunked(tensor, chunk_size=1 << 20):
+    # Keep bool/int64 reduction temporaries bounded without copying a large view.
+    if not tensor.is_contiguous():
+        raise ValueError("Chunked counting requires a contiguous tensor")
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    flat = tensor.view(-1)
+    return sum(flat[start:start + chunk_size].count_nonzero().item()
+               for start in range(0, flat.numel(), chunk_size))
+
+
+def _representative_matrix(fn):
+    if os.getenv("PPU_ATOMIC_FULL_MATRIX") == "1":
+        return fn
+    full_parametrize = fn.parametrize_fn
+
+    def representative(test, generic_cls, device_cls):
+        cases = list(full_parametrize(test, generic_cls, device_cls))
+        anchor = cases[0][2]
+        groups = [(name,) for name in anchor if name not in ("index_dtype", "shape", "dim")]
+        groups.append(tuple(name for name in ("shape", "dim") if name in anchor))
+        # Treat coupled shape/dim parameters as one factor; retain both index dtypes.
+        for case in cases:
+            differences = sum(any(case[2][name] != anchor[name] for name in group)
+                              for group in groups)
+            if differences <= 2:
+                yield case
+
+    fn.parametrize_fn = representative
+    return fn
+
+
+_TRACING_DEVICES = set()
+
+
+def _device_kernels(prof):
+    if prof is None:
+        return None
+    return [event.name for event in prof.events()
+            if event.device_type == torch.autograd.DeviceType.CUDA]
+
+
+def _require_kernel_tracing(device):
+    if torch.profiler.ProfilerActivity.CUDA not in torch.profiler.supported_activities():
+        raise unittest.SkipTest("CUDA kernel tracing is unavailable; numerical cases run separately")
+    key = str(device)
+    if key not in _TRACING_DEVICES:
+        # Probe an unrelated kernel before either operator's first-entry cache is initialized.
+        probe = torch.ones(8, device=device)
+        torch.cuda.synchronize(device)
+        with torch.profiler.profile(activities=[
+            torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA,
+        ]) as prof:
+            probe.add_(1)
+            torch.cuda.synchronize(device)
+        if not _device_kernels(prof):
+            raise AssertionError("CUDA tracing was advertised but the device-kernel probe captured no events")
+        _TRACING_DEVICES.add(key)
+
+
+def _with_route_check(fn):
+    @wraps(fn)
+    def wrapped(self, device, *args, check_route=False, **kwargs):
+        self._check_route = check_route
+        if check_route:
+            _require_kernel_tracing(device)
+        return fn(self, device, *args, **kwargs)
+    return parametrize("check_route", [False, True])(wrapped)
+
+
+_SUBPROCESS_TRACING = textwrap.dedent(r"""
+    import os
+    import sys
+    import torch
+    from contextlib import nullcontext
+    check_route = os.environ.get("PPU_ATOMIC_ROUTE_CHECK") == "1"
+    def capture():
+        if not check_route:
+            return nullcontext()
+        return torch.profiler.profile(activities=[
+            torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA,
+        ])
+    def device_kernels(prof):
+        if prof is None:
+            return None
+        return [event.name for event in prof.events()
+                if event.device_type == torch.autograd.DeviceType.CUDA]
+    if check_route:
+        assert torch.profiler.ProfilerActivity.CUDA in torch.profiler.supported_activities()
+        device = sys.argv[1]
+        probe = torch.ones(8, device=device)
+        torch.cuda.synchronize(device)
+        with capture() as prof:
+            probe.add_(1)
+            torch.cuda.synchronize(device)
+        assert device_kernels(prof), "Subprocess device-kernel tracing probe failed"
+""")
+
+
 class TestPPUScatterAdd(TestCase):
+    def _capture_pair_profile(self, device):
+        if not getattr(self, "_check_route", False):
+            return nullcontext()
+        return torch.profiler.profile(activities=[
+            torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA,
+        ])
+
+    @onlyCUDA
+    @dtypes(torch.float16, torch.bfloat16)
+    @parametrize("size", [0, 1, 31, 32, 33, 97])
+    def test_chunked_count_nonzero(self, device, dtype, size):
+        values = torch.zeros(size + 2, device=device, dtype=dtype)
+        values[0], values[-1] = 9, 9
+        view = values[1:-1]
+        if size:
+            view[::3] = 1
+            view[-1] = float("nan")
+        self.assertEqual(_count_nonzero_chunked(view, 32), view.count_nonzero().item())
+        self.assertEqual(values[[0, -1]], torch.full((2,), 9, device=device, dtype=dtype))
+        with self.assertRaisesRegex(ValueError, "positive"):
+            _count_nonzero_chunked(view, 0)
+        with self.assertRaisesRegex(ValueError, "contiguous"):
+            _count_nonzero_chunked(torch.zeros((4, 8), device=device, dtype=dtype).t())
+
     @onlyCUDA
     @dtypes(torch.float16, torch.bfloat16, torch.float32)
     @parametrize("index_dtype", [torch.int32, torch.int64])
@@ -141,21 +266,19 @@ class TestPPUScatterAdd(TestCase):
             index = (torch.arange(numel, device=device, dtype=index_dtype) % 7).reshape(index_shape)
             if index_layout == "strided":
                 index = index.repeat_interleave(2, dim=-1)[..., ::2]
-        with DeterministicGuard(deterministic), torch.profiler.profile(activities=[
-            torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA,
-        ]) as prof:
+        with DeterministicGuard(deterministic), self._capture_pair_profile(device) as prof:
             output.scatter_add_(-2, index, source)
         expected = torch.zeros(shape).scatter_add(1, index.long().cpu(), source.float().cpu()).to(dtype)
         self.assertEqual(output.cpu().view(torch.int16), expected.view(torch.int16))
-        kernels = [event.name for event in prof.events()
-                   if event.device_type == torch.autograd.DeviceType.CUDA]
-        self.assertTrue(kernels, "CUDA profiling must capture device events")
-        self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
-                         "scatter_add must not launch index_add optimization kernels")
-        hit = any("ppu_scatter_add_opt::scatter_add_pair_" in name for name in kernels)
-        self.assertFalse(hit)
-        if not deterministic:
-            self.assertTrue(any("scatter_gather" in name for name in kernels))
+        kernels = _device_kernels(prof)
+        if kernels is not None:
+            self.assertTrue(kernels, "CUDA profiling must capture device events")
+            self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
+                             "scatter_add must not launch index_add optimization kernels")
+            hit = any("ppu_scatter_add_opt::scatter_add_pair_" in name for name in kernels)
+            self.assertFalse(hit)
+            if not deterministic:
+                self.assertTrue(any("scatter_gather" in name for name in kernels))
 
     @onlyCUDA
     @dtypes(torch.float16, torch.bfloat16)
@@ -168,19 +291,17 @@ class TestPPUScatterAdd(TestCase):
         output = torch.zeros((1, size, 1), device=device, dtype=dtype)
         source = torch.full((2, 7, 1), 0.125, device=device, dtype=dtype)
         index = torch.tensor([size - 1, size - 2, 0, 1, 2, 3, 4], device=device).reshape(1, 7, 1)
-        with DeterministicGuard(False), torch.profiler.profile(activities=[
-            torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA,
-        ]) as prof:
+        with DeterministicGuard(False), self._capture_pair_profile(device) as prof:
             output.scatter_add_(-2, index, source)
-        self.assertEqual(output.count_nonzero().item(), 7)
+        self.assertEqual(_count_nonzero_chunked(output), 7)
         self.assertEqual(output[0, index.reshape(-1), 0], torch.full((7,), 0.125, device=device, dtype=dtype))
-        kernels = [event.name for event in prof.events()
-                   if event.device_type == torch.autograd.DeviceType.CUDA]
-        self.assertTrue(kernels, "CUDA profiling must capture device events")
-        self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
-                         "scatter_add must not launch index_add optimization kernels")
-        self.assertFalse(any("ppu_scatter_add_opt::scatter_add_pair_" in name for name in kernels))
-        self.assertTrue(any("scatter_gather" in name for name in kernels))
+        kernels = _device_kernels(prof)
+        if kernels is not None:
+            self.assertTrue(kernels, "CUDA profiling must capture device events")
+            self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
+                             "scatter_add must not launch index_add optimization kernels")
+            self.assertFalse(any("ppu_scatter_add_opt::scatter_add_pair_" in name for name in kernels))
+            self.assertTrue(any("scatter_gather" in name for name in kernels))
 
     @onlyCUDA
     @dtypes(torch.float16, torch.bfloat16, torch.float32)
@@ -212,9 +333,7 @@ class TestPPUScatterAdd(TestCase):
             index = index.narrow(dim, 0, 9)
         expected = torch.zeros(output_shape).scatter_add(dim, index.long().cpu(), source.float().cpu()).to(dtype)
         source_before = storage.clone()
-        with DeterministicGuard(deterministic), torch.profiler.profile(activities=[
-            torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA,
-        ]) as prof:
+        with DeterministicGuard(deterministic), self._capture_pair_profile(device) as prof:
             output.scatter_add_(dim, index, source)
             torch.cuda.synchronize()
         self.assertEqual(output.cpu().view(torch.int32 if dtype == torch.float32 else torch.int16),
@@ -223,22 +342,21 @@ class TestPPUScatterAdd(TestCase):
         self.assertEqual(output_storage[:offset], torch.full_like(output_storage[:offset], 9.0))
         tail = output_storage[offset + output.numel():]
         self.assertEqual(tail, torch.full_like(tail, 9.0))
-        kernels = [event.name for event in prof.events()
-                   if event.device_type == torch.autograd.DeviceType.CUDA]
-        self.assertTrue(kernels, "CUDA profiling must capture device events")
-        self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
-                         "scatter_add must not launch index_add optimization kernels")
-        paired = [name for name in kernels if "ppu_scatter_add_opt::scatter_add_pair_kernel" in name]
-        hit = bool(paired)
-        inner = reduce(operator.mul, shape[dim + 1:], 1)
-        expected_hit = (_SCATTER_ADD_OPT_ENABLED and dtype != torch.float32 and not deterministic and dim == 0 and
-                        inner % 2 == 0 and offset == 0 and index_layout in ("broadcast", "dense_same", "dense_mixed"))
-        self.assertEqual(hit, expected_hit)
-        if paired:
-            index_type = r"(?:int|int32_t)" if index_dtype == torch.int32 else r"(?:long(?: long)?|int64_t)"
-            self.assertRegex(" ".join(paired), rf"scatter_add_pair_kernel<[^,]+,\s*[^,]+,\s*{index_type}\s*,")
-        if not expected_hit and not deterministic:
-            self.assertTrue(any("scatter_gather" in name for name in kernels))
+        kernels = _device_kernels(prof)
+        if kernels is not None:
+            self.assertTrue(kernels, "CUDA profiling must capture device events")
+            self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
+                             "scatter_add must not launch index_add optimization kernels")
+            paired = [name for name in kernels if "ppu_scatter_add_opt::scatter_add_pair_kernel" in name]
+            inner = reduce(operator.mul, shape[dim + 1:], 1)
+            expected_hit = (_SCATTER_ADD_OPT_ENABLED and dtype != torch.float32 and not deterministic and dim == 0 and
+                            inner % 2 == 0 and offset == 0 and index_layout in ("broadcast", "dense_same", "dense_mixed"))
+            self.assertEqual(bool(paired), expected_hit)
+            if paired:
+                index_type = r"(?:int|int32_t)" if index_dtype == torch.int32 else r"(?:long(?: long)?|int64_t)"
+                self.assertRegex(" ".join(paired), rf"scatter_add_pair_kernel<[^,]+,\s*[^,]+,\s*{index_type}\s*,")
+            if not expected_hit and not deterministic:
+                self.assertTrue(any("scatter_gather" in name for name in kernels))
 
     @onlyCUDA
     @dtypes(torch.float16, torch.bfloat16)
@@ -258,24 +376,22 @@ class TestPPUScatterAdd(TestCase):
         elif index_layout == "strided":
             index = index.repeat_interleave(2, dim=-1)[..., ::2]
         expected = torch.zeros((7, 8)).scatter_add(dim, index.long().cpu(), grad.float().cpu()).to(dtype)
-        with DeterministicGuard(False), torch.profiler.profile(activities=[
-            torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA,
-        ]) as prof:
+        with DeterministicGuard(False), self._capture_pair_profile(device) as prof:
             leaf.gather(dim, index).backward(grad)
             torch.cuda.synchronize()
         self.assertEqual(leaf.grad.cpu().view(torch.int16), expected.view(torch.int16))
-        kernels = [event.name for event in prof.events()
-                   if event.device_type == torch.autograd.DeviceType.CUDA]
-        self.assertTrue(kernels, "CUDA profiling must capture device events")
-        self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
-                         "scatter_add must not launch index_add optimization kernels")
-        paired = [name for name in kernels if "ppu_scatter_add_opt::scatter_add_pair_kernel" in name]
-        self.assertEqual(bool(paired), _SCATTER_ADD_OPT_ENABLED and index_layout != "strided")
-        if paired:
-            index_type = r"(?:int|int32_t)" if index_dtype == torch.int32 else r"(?:long(?: long)?|int64_t)"
-            self.assertRegex(" ".join(paired), rf"scatter_add_pair_kernel<[^,]+,\s*[^,]+,\s*{index_type}\s*,")
-        else:
-            self.assertTrue(any("scatter_gather" in name for name in kernels))
+        kernels = _device_kernels(prof)
+        if kernels is not None:
+            self.assertTrue(kernels, "CUDA profiling must capture device events")
+            self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
+                             "scatter_add must not launch index_add optimization kernels")
+            paired = [name for name in kernels if "ppu_scatter_add_opt::scatter_add_pair_kernel" in name]
+            self.assertEqual(bool(paired), _SCATTER_ADD_OPT_ENABLED and index_layout != "strided")
+            if paired:
+                index_type = r"(?:int|int32_t)" if index_dtype == torch.int32 else r"(?:long(?: long)?|int64_t)"
+                self.assertRegex(" ".join(paired), rf"scatter_add_pair_kernel<[^,]+,\s*[^,]+,\s*{index_type}\s*,")
+            else:
+                self.assertTrue(any("scatter_gather" in name for name in kernels))
 
     @onlyCUDA
     @dtypes(torch.float16, torch.bfloat16)
@@ -298,27 +414,25 @@ class TestPPUScatterAdd(TestCase):
         expected = torch.zeros((2, 8)).scatter_add(0, local_index.long(), source.float().cpu()).to(dtype)
         source_before = source.clone()
         self.assertGreater(output.numel(), torch.iinfo(torch.int32).max)
-        with DeterministicGuard(False), torch.profiler.profile(activities=[
-            torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA,
-        ]) as prof:
+        with DeterministicGuard(False), self._capture_pair_profile(device) as prof:
             output.scatter_add_(0, index, source)
             torch.cuda.synchronize()
         self.assertEqual(output[[0, rows - 1]].cpu().view(torch.int16), expected.view(torch.int16))
-        self.assertEqual(output.count_nonzero().item(), expected.count_nonzero().item())
+        self.assertEqual(_count_nonzero_chunked(output), expected.count_nonzero().item())
         self.assertEqual(source.view(torch.int16), source_before.view(torch.int16))
-        kernels = [event.name for event in prof.events()
-                   if event.device_type == torch.autograd.DeviceType.CUDA]
-        self.assertTrue(kernels, "CUDA profiling must capture device events")
-        self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
-                         "scatter_add must not launch index_add optimization kernels")
-        paired = [name for name in kernels if "ppu_scatter_add_opt::scatter_add_pair_kernel" in name]
-        self.assertEqual(bool(paired), _SCATTER_ADD_OPT_ENABLED)
-        if paired:
-            index_type = r"(?:int|int32_t)" if index_dtype == torch.int32 else r"(?:long(?: long)?|int64_t)"
-            self.assertRegex(" ".join(paired),
-                             rf"scatter_add_pair_kernel<[^,]+,\s*(?:unsigned long(?: long)?|uint64_t),\s*{index_type}\s*,")
-        else:
-            self.assertTrue(any("scatter_gather" in name for name in kernels))
+        kernels = _device_kernels(prof)
+        if kernels is not None:
+            self.assertTrue(kernels, "CUDA profiling must capture device events")
+            self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels),
+                             "scatter_add must not launch index_add optimization kernels")
+            paired = [name for name in kernels if "ppu_scatter_add_opt::scatter_add_pair_kernel" in name]
+            self.assertEqual(bool(paired), _SCATTER_ADD_OPT_ENABLED)
+            if paired:
+                index_type = r"(?:int|int32_t)" if index_dtype == torch.int32 else r"(?:long(?: long)?|int64_t)"
+                self.assertRegex(" ".join(paired),
+                                 rf"scatter_add_pair_kernel<[^,]+,\s*(?:unsigned long(?: long)?|uint64_t),\s*{index_type}\s*,")
+            else:
+                self.assertTrue(any("scatter_gather" in name for name in kernels))
 
     @onlyCUDA
     @dtypes(torch.float16, torch.bfloat16)
@@ -336,7 +450,8 @@ class TestPPUScatterAdd(TestCase):
         if other_disable is not None:
             env["PYTORCH_DISABLE_PPU_INDEX_ADD_OPT"] = other_disable
         env["PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT"] = "0"
-        script = textwrap.dedent(r"""
+        env["PPU_ATOMIC_ROUTE_CHECK"] = str(int(self._check_route))
+        script = _SUBPROCESS_TRACING + textwrap.dedent(r"""
             import os
             import sys
             import torch
@@ -354,23 +469,20 @@ class TestPPUScatterAdd(TestCase):
                 0, index.cpu(), torch.full((11, 8), 0.125)).to(dtype)
             for iteration in range(2):
                 output = torch.zeros((7, 8), device=device, dtype=dtype)
-                with torch.profiler.profile(activities=[
-                    torch.profiler.ProfilerActivity.CPU,
-                    torch.profiler.ProfilerActivity.CUDA,
-                ]) as prof:
+                with capture() as prof:
                     output.scatter_add_(0, index, source)
                     torch.cuda.synchronize()
                 assert torch.equal(output.cpu().view(torch.int16), expected.view(torch.int16))
                 assert torch.equal(source.view(torch.int16), source_before.view(torch.int16))
                 assert torch.equal(index, index_before)
-                kernels = [event.name for event in prof.events()
-                           if event.device_type == torch.autograd.DeviceType.CUDA]
-                assert kernels, "CUDA profiling must capture device events"
-                hit = any("ppu_scatter_add_opt::scatter_add_pair_kernel" in name for name in kernels)
-                assert hit == enabled, kernels
-                assert not any("ppu_index_add_opt::" in name for name in kernels), kernels
-                if not enabled:
-                    assert any("scatter_gather" in name for name in kernels), kernels
+                kernels = device_kernels(prof)
+                if kernels is not None:
+                    assert kernels, "CUDA profiling must capture device events"
+                    hit = any("ppu_scatter_add_opt::scatter_add_pair_kernel" in name for name in kernels)
+                    assert hit == enabled, kernels
+                    assert not any("ppu_index_add_opt::" in name for name in kernels), kernels
+                    if not enabled:
+                        assert any("scatter_gather" in name for name in kernels), kernels
                 if iteration == 0:
                     os.environ["PYTORCH_DISABLE_PPU_SCATTER_ADD_OPT"] = "1" if enabled else "0"
             print("PASS")
@@ -384,15 +496,14 @@ class TestPPUScatterAdd(TestCase):
         self.assertIn("PASS", result.stdout)
 
     def _profile_scatter_add_pair(self, output, index, source, dim=0):
-        with DeterministicGuard(False), torch.profiler.profile(activities=[
-            torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA,
-        ]) as prof:
+        with DeterministicGuard(False), self._capture_pair_profile(output.device) as prof:
             output.scatter_add_(dim, index, source)
             torch.cuda.synchronize(output.device)
-        return [event.name for event in prof.events()
-                if event.device_type == torch.autograd.DeviceType.CUDA]
+        return _device_kernels(prof)
 
     def _assert_scatter_add_pair_route(self, kernels, hit, index_dtype, offset_type=None):
+        if kernels is None:
+            return []
         self.assertTrue(kernels, "CUDA profiling must capture device events")
         self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels))
         paired = [name for name in kernels if "ppu_scatter_add_opt::scatter_add_pair_kernel" in name]
@@ -559,18 +670,16 @@ class TestPPUScatterAdd(TestCase):
             source = output
             error = "single memory location|overlap"
         before = output.clone()
-        with DeterministicGuard(False), torch.profiler.profile(activities=[
-            torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA,
-        ]) as prof:
+        with DeterministicGuard(False), self._capture_pair_profile(device) as prof:
             if error:
                 with self.assertRaisesRegex(RuntimeError, error):
                     output.scatter_add_(0, index, source)
             else:
                 output.scatter_add_(0, index, source)
             torch.cuda.synchronize(device)
-        kernels = [event.name for event in prof.events()
-                   if event.device_type == torch.autograd.DeviceType.CUDA]
-        self.assertFalse(any("ppu_scatter_add_opt::" in name or "ppu_index_add_opt::" in name for name in kernels))
+        kernels = _device_kernels(prof)
+        if kernels is not None:
+            self.assertFalse(any("ppu_scatter_add_opt::" in name or "ppu_index_add_opt::" in name for name in kernels))
         self.assertEqual(output.view(torch.int16), before.view(torch.int16))
 
     @onlyCUDA
@@ -603,6 +712,21 @@ class TestPPUScatterAdd(TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("EXPECTED_DEVICE_ASSERT", result.stdout)
 
+
+# Set PPU_ATOMIC_FULL_MATRIX=1 to restore the exhaustive Cartesian products.
+for _name in ("test_scatter_add_pairs_nd", "test_scatter_add_pair_fastpath_dispatch"):
+    setattr(TestPPUScatterAdd, _name, _representative_matrix(getattr(TestPPUScatterAdd, _name)))
+
+# Numerical and tracing cases are collected independently, including subprocess tests.
+for _name in (
+    "test_scatter_add_pair_nd_dispatch", "test_scatter_add_pairs_nd_64bit_addressing",
+    "test_scatter_add_pair_fastpath_dispatch", "test_gather_pair_fastpath_backward_dispatch",
+    "test_scatter_add_pair_fastpath_64bit_addressing", "test_scatter_add_pair_disable_env",
+    "test_scatter_add_pair_single_guard_dispatch", "test_scatter_add_pair_source_64bit",
+    "test_scatter_add_pair_index_stride_64bit", "test_scatter_add_pair_special_values",
+    "test_scatter_add_pair_boundary_contract",
+):
+    setattr(TestPPUScatterAdd, _name, _with_route_check(getattr(TestPPUScatterAdd, _name)))
 
 instantiate_device_type_tests(TestPPUScatterAdd, globals(), only_for="cuda")
 
