@@ -369,7 +369,7 @@ static bool try_launch_pair_atomic_add(
     const Tensor& source,
     const Scalar& alpha = 1) {
   const bool index_supported = index.scalar_type() == at::kLong ||
-      (!Scatter && index.scalar_type() == at::kInt);
+      index.scalar_type() == at::kInt;
   if ((output.scalar_type() != at::kHalf && output.scalar_type() != at::kBFloat16) ||
       !index_supported || output.layout() != at::kStrided ||
       source.layout() != at::kStrided || index.layout() != at::kStrided) {
@@ -487,14 +487,10 @@ static bool try_launch_pair_atomic_add(
             use_iterator, &iterator, blocks, alpha);
       }
     };
-    if constexpr (Scatter) {
-      launch(int64_t{});
+    if (index.scalar_type() == at::kInt) {
+      launch(int32_t{});
     } else {
-      if (index.scalar_type() == at::kInt) {
-        launch(int32_t{});
-      } else {
-        launch(int64_t{});
-      }
+      launch(int64_t{});
     }
   });
   return true;
