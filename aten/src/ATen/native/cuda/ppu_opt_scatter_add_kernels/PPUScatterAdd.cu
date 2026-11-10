@@ -11,6 +11,7 @@
 #include <ATen/native/NonEmptyUtils.h>
 #include <ATen/native/cuda/KernelUtils.cuh>
 #include <c10/cuda/CUDAException.h>
+#include <c10/util/env.h>
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -164,6 +165,11 @@ bool try_launch_scatter_add_opt(
     int64_t dim,
     const Tensor& index,
     const Tensor& source) {
+  static const bool enabled =
+      !c10::utils::check_env("PYTORCH_DISABLE_PPU_SCATTER_ADD_OPT").value_or(false);
+  if (!enabled) {
+    return false;
+  }
   const bool index_supported = index.scalar_type() == at::kLong ||
       index.scalar_type() == at::kInt;
   if ((output.scalar_type() != at::kHalf && output.scalar_type() != at::kBFloat16) ||

@@ -8,21 +8,17 @@
 #include <ATen/core/Scalar.h>
 #include <ATen/core/Tensor.h>
 #include <ATen/cuda/CUDAContext.h>
-#include <ATen/cuda/detail/OffsetCalculator.cuh>
-#include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/native/CanUse32BitIndexMath.h>
 #include <ATen/native/NonEmptyUtils.h>
-#include <ATen/native/TensorIterator.h>
 #include <ATen/native/cuda/KernelUtils.cuh>
 #include <c10/cuda/CUDAException.h>
+#include <c10/util/env.h>
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
-#include <vector>
 
 namespace at::native::ppu_index_add_opt {
 
@@ -32,7 +28,6 @@ inline constexpr int kIndexAddBlocksPerSM = 8;
 enum class IndexAddPath {
   Native,
   Contiguous,
-  RankCompatibility,
 };
 
 // Keep performance admission separate from the public operator's supported layouts.
@@ -41,15 +36,9 @@ static IndexAddPath select_index_add_path(
     bool contiguous,
     int64_t dim,
     int64_t inner,
-    bool aligned,
-    int64_t rank) {
+    bool aligned) {
   if (contiguous && dim == 0 && inner % 2 == 0 && aligned) {
     return IndexAddPath::Contiguous;
-  }
-  // Native TensorInfo rejects rank == MAX_TENSORINFO_DIMS before collapsing singleton axes.
-  // Retain the existing ND implementation only as a compatibility route at that boundary.
-  if (rank == MAX_TENSORINFO_DIMS) {
-    return IndexAddPath::RankCompatibility;
   }
   return IndexAddPath::Native;
 }
@@ -139,160 +128,23 @@ static void launch_index_add_pair(
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-// Continuous index_add is represented as outer x indexed x inner, independently of tensor rank.
-template <typename offset_t>
-struct IndexAddOffsetCalculator {
-  offset_t inner;
-  offset_t source_dim_size;
-  offset_t output_dim_size;
-  offset_t index_stride;
-
-  C10_HOST_DEVICE std::array<offset_t, 3> get(offset_t linear) const {
-    const offset_t slice = linear / inner;
-    const offset_t indexed = slice % source_dim_size;
-    const offset_t outer = slice / source_dim_size;
-    return {outer * output_dim_size * inner + linear % inner,
-            linear, indexed * index_stride};
-  }
-};
-
-// A pair is only issued for two valid, adjacent, aligned destinations; tails use a single update.
-template <typename scalar_t, typename offset_t, typename index_t, typename calculator_t, bool Scale>
-__global__ void index_add_pair_nd_kernel(
-    scalar_t* output,
-    const scalar_t* source,
-    const index_t* index,
-    offset_t numel,
-    offset_t output_numel,
-    offset_t output_dim_size,
-    offset_t output_dim_stride,
-    calculator_t calculator,
-    scalar_t alpha,
-    bool fast_atomics) {
-  using native_t = typename IndexAddAtomicTraits<scalar_t>::native_type;
-  using pair_t = typename IndexAddAtomicTraits<scalar_t>::pair_type;
-  const offset_t pairs = numel / 2 + numel % 2;
-  const offset_t grid_stride = static_cast<offset_t>(blockDim.x) * gridDim.x;
-  for (offset_t q = static_cast<offset_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-       q < pairs; q += grid_stride) {
-    const offset_t linear = q * 2;
-    const auto offsets0 = calculator.get(linear);
-    const int64_t dst0 = index[offsets0[2]];
-    CUDA_KERNEL_ASSERT(dst0 >= 0 && dst0 < static_cast<int64_t>(output_dim_size));
-    const offset_t offset0 = offsets0[0] + static_cast<offset_t>(dst0) * output_dim_stride;
-    if (linear + 1 == numel) {
-      scalar_t value = source[offsets0[1]];
-      if constexpr (Scale) {
-        value = value * alpha;
-      }
-      fastAtomicAdd(output, offset0, output_numel, value, fast_atomics);
-      continue;
-    }
-    const auto offsets1 = calculator.get(linear + 1);
-    const int64_t dst1 = index[offsets1[2]];
-    CUDA_KERNEL_ASSERT(dst1 >= 0 && dst1 < static_cast<int64_t>(output_dim_size));
-    const offset_t offset1 = offsets1[0] + static_cast<offset_t>(dst1) * output_dim_stride;
-    pair_t value;
-    if (offsets1[1] == offsets0[1] + 1 &&
-        reinterpret_cast<std::uintptr_t>(source + offsets0[1]) % sizeof(uint32_t) == 0) {
-      value = *reinterpret_cast<const pair_t*>(source + offsets0[1]);
-    } else {
-      value.x = static_cast<native_t>(source[offsets0[1]]);
-      value.y = static_cast<native_t>(source[offsets1[1]]);
-    }
-    if constexpr (Scale) {
-      value.x = static_cast<native_t>(scalar_t(value.x) * alpha);
-      value.y = static_cast<native_t>(scalar_t(value.y) * alpha);
-    }
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
-    if (offset1 == offset0 + 1 &&
-        reinterpret_cast<std::uintptr_t>(output + offset0) % sizeof(uint32_t) == 0) {
-      atomicAdd(reinterpret_cast<pair_t*>(output + offset0), value);
-      continue;
-    }
-#endif
-    // Do not pad a strided destination's single update with an unrelated storage neighbor.
-    fastAtomicAdd(output, offset0, output_numel, scalar_t(value.x), fast_atomics);
-    fastAtomicAdd(output, offset1, output_numel, scalar_t(value.y), fast_atomics);
-  }
-}
-
-template <typename scalar_t, typename offset_t, typename index_t, typename calculator_t, bool Scale = false>
-static void launch_index_add_pair_nd(
-    const Tensor& output,
-    int64_t dim,
-    const Tensor& source,
-    const Tensor& index,
-    int64_t numel,
-    calculator_t calculator,
-    int blocks,
-    scalar_t alpha = scalar_t(1.0f)) {
-  const auto stream = at::cuda::getCurrentCUDAStream(output.get_device());
-  index_add_pair_nd_kernel<scalar_t, offset_t, index_t, calculator_t, Scale>
-      <<<blocks, kIndexAddThreads, 0, stream>>>(
-      output.mutable_data_ptr<scalar_t>(), source.const_data_ptr<scalar_t>(),
-      index.const_data_ptr<index_t>(), static_cast<offset_t>(numel),
-      static_cast<offset_t>(output.numel()),
-      static_cast<offset_t>(ensure_nonempty_size(output, dim)),
-      static_cast<offset_t>(ensure_nonempty_stride(output, dim)), calculator, alpha,
-      output.is_contiguous());
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
-}
-
 template <typename scalar_t, typename offset_t, typename index_t>
 static void dispatch_index_add(
     const Tensor& output,
-    int64_t dim,
     const Tensor& source,
     const Tensor& index,
     int64_t inner,
-    IndexAddPath path,
-    bool use_iterator,
-    const TensorIterator* iterator,
     int blocks,
     const Scalar& alpha) {
-  if (path == IndexAddPath::Contiguous) {
-    const auto pairs = static_cast<offset_t>(source.numel() / 2);
-    const auto half_width = static_cast<offset_t>(inner / 2);
-    if (!alpha.isSymbolic() && alpha.equal(1)) {
-      launch_index_add_pair<scalar_t, offset_t, index_t, false>(
-          output, source, index, pairs, half_width, ensure_nonempty_stride(index, 0), blocks);
-    } else {
-      launch_index_add_pair<scalar_t, offset_t, index_t, true>(
-          output, source, index, pairs, half_width, ensure_nonempty_stride(index, 0), blocks,
-          alpha.to<scalar_t>());
-    }
-    return;
-  }
-  if (use_iterator) {
-    std::array<const int64_t*, 3> strides;
-    std::array<int64_t, 3> element_sizes;
-    for (int arg = 0; arg < 3; ++arg) {
-      strides[arg] = iterator->strides(arg).data();
-      element_sizes[arg] = iterator->element_size(arg);
-    }
-    const OffsetCalculator<3, offset_t> calculator(
-        iterator->ndim(), iterator->shape().data(), strides.data(), element_sizes.data());
-    if (!alpha.isSymbolic() && alpha.equal(1)) {
-      launch_index_add_pair_nd<scalar_t, offset_t, index_t, decltype(calculator), false>(
-          output, dim, source, index, iterator->numel(), calculator, blocks);
-    } else {
-      launch_index_add_pair_nd<scalar_t, offset_t, index_t, decltype(calculator), true>(
-          output, dim, source, index, iterator->numel(), calculator, blocks, alpha.to<scalar_t>());
-    }
-    return;
-  }
-  const IndexAddOffsetCalculator<offset_t> calculator{
-      static_cast<offset_t>(inner),
-      static_cast<offset_t>(ensure_nonempty_size(source, dim)),
-      static_cast<offset_t>(ensure_nonempty_size(output, dim)),
-      static_cast<offset_t>(ensure_nonempty_stride(index, 0))};
+  const auto pairs = static_cast<offset_t>(source.numel() / 2);
+  const auto half_width = static_cast<offset_t>(inner / 2);
   if (!alpha.isSymbolic() && alpha.equal(1)) {
-    launch_index_add_pair_nd<scalar_t, offset_t, index_t, decltype(calculator), false>(
-        output, dim, source, index, source.numel(), calculator, blocks);
+    launch_index_add_pair<scalar_t, offset_t, index_t, false>(
+        output, source, index, pairs, half_width, ensure_nonempty_stride(index, 0), blocks);
   } else {
-    launch_index_add_pair_nd<scalar_t, offset_t, index_t, decltype(calculator), true>(
-        output, dim, source, index, source.numel(), calculator, blocks, alpha.to<scalar_t>());
+    launch_index_add_pair<scalar_t, offset_t, index_t, true>(
+        output, source, index, pairs, half_width, ensure_nonempty_stride(index, 0), blocks,
+        alpha.to<scalar_t>());
   }
 }
 
@@ -304,6 +156,11 @@ bool try_launch_index_add_opt(
     const Tensor& index,
     const Tensor& source,
     const Scalar& alpha) {
+  static const bool enabled =
+      !c10::utils::check_env("PYTORCH_DISABLE_PPU_INDEX_ADD_OPT").value_or(false);
+  if (!enabled) {
+    return false;
+  }
   const bool index_supported = index.scalar_type() == at::kLong ||
       index.scalar_type() == at::kInt;
   if ((output.scalar_type() != at::kHalf && output.scalar_type() != at::kBFloat16) ||
@@ -337,40 +194,11 @@ bool try_launch_index_add_opt(
   const bool aligned =
       reinterpret_cast<std::uintptr_t>(output.const_data_ptr()) % sizeof(uint32_t) == 0 &&
       reinterpret_cast<std::uintptr_t>(source.const_data_ptr()) % sizeof(uint32_t) == 0;
-  const auto path = select_index_add_path(contiguous, dim, inner, aligned, output.dim());
+  const auto path = select_index_add_path(contiguous, dim, inner, aligned);
   if (path == IndexAddPath::Native) {
     return false;
   }
-  // Iterator setup is reserved for the explicit rank-boundary compatibility route.
-  const bool use_iterator = path == IndexAddPath::RankCompatibility && !contiguous;
-  TensorIterator iterator;
-  Tensor output_restrided;
-  Tensor source_restrided;
-  Tensor index_restrided;
-  if (use_iterator) {
-    // Preserve true source/output strides; the destination's indexed axis is supplied by index values.
-    auto sizes = ensure_nonempty_vec(source.sizes().vec());
-    auto output_strides = ensure_nonempty_vec(output.strides().vec());
-    output_strides[dim] = 0;
-    output_restrided = output.as_strided(sizes, output_strides);
-    source_restrided = source.as_strided(sizes, ensure_nonempty_vec(source.strides().vec()));
-    std::vector<int64_t> index_strides(sizes.size(), 0);
-    index_strides[dim] = ensure_nonempty_stride(index, 0);
-    index_restrided = index.as_strided(sizes, index_strides);
-    iterator = TensorIteratorConfig()
-        .set_check_mem_overlap(false)
-        .check_all_same_dtype(false)
-        .resize_outputs(false)
-        .add_output(output_restrided)
-        .add_const_input(source_restrided)
-        .add_const_input(index_restrided)
-        .build();
-    // Use the native offset calculator's coalesced-dimension limit, not an original-rank restriction.
-    if (iterator.ndim() > MAX_DIMS) {
-      return false;
-    }
-  }
-  const int64_t numel = use_iterator ? iterator.numel() : source.numel();
+  const int64_t numel = source.numel();
   const int64_t pairs = numel / 2 + numel % 2;
   const int blocks = static_cast<int>(std::min<int64_t>(
       (pairs + kIndexAddThreads - 1) / kIndexAddThreads,
@@ -386,10 +214,10 @@ bool try_launch_index_add_opt(
       using index_t = decltype(index_type);
       if (use_32bit) {
         dispatch_index_add<scalar_t, uint32_t, index_t>(
-            output, dim, source, index, inner, path, use_iterator, &iterator, blocks, alpha);
+            output, source, index, inner, blocks, alpha);
       } else {
         dispatch_index_add<scalar_t, uint64_t, index_t>(
-            output, dim, source, index, inner, path, use_iterator, &iterator, blocks, alpha);
+            output, source, index, inner, blocks, alpha);
       }
     };
     if (index.scalar_type() == at::kInt) {
