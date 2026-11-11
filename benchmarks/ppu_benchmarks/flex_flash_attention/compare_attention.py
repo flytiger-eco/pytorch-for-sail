@@ -22,9 +22,9 @@ ESTIMATOR = {"name": "middle2_mean", "sample_count": 6, "drop_fastest": 2, "drop
 ACCURACY_POLICY = {
     "version": 1, "scope": "full", "forward_reference": "same_dtype_math",
     "gradient_reference": "fp64_math_cast_to_input_dtype",
-    "tolerances": {"fp32": {"atol": 1e-4, "rtol": 1e-4},
-                   "bf16": {"atol": 2e-2, "rtol": 2e-2},
-                   "fp16": {"atol": 5e-3, "rtol": 5e-3}},
+    "tolerances": {"fp32": {"atol": 2e-5, "rtol": 2e-5},
+                   "bf16": {"atol": 1.8e-2, "rtol": 1.8e-2},
+                   "fp16": {"atol": 4e-3, "rtol": 4e-3}},
     "max_query_chunk": 1024, "max_score_elements": 8 * 1024 * 1024,
 }
 
