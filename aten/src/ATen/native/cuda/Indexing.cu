@@ -3,6 +3,9 @@
 #include <ATen/native/IndexingUtils.h>
 #include <ATen/native/quantized/IndexKernel.h>
 #include <ATen/native/cuda/KernelUtils.cuh>
+#if defined(USE_PPU)
+#include <ATen/native/cuda/ppu_opt_index_add_kernels/PPUIndexAdd.h>
+#endif
 
 #include <ATen/core/Tensor.h>
 #include <ATen/ceil_div.h>
@@ -1174,6 +1177,11 @@ void index_add_cuda_impl(const Tensor& self, int64_t dim, const Tensor& index, c
   if (sliceSize == 0) {
     return;
   }
+#if defined(USE_PPU)
+  if (ppu_index_add_opt::try_launch_index_add_opt(result, dim, index, source, alpha)) {
+    return;
+  }
+#endif
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   const bool indContig = index.is_contiguous();
 
