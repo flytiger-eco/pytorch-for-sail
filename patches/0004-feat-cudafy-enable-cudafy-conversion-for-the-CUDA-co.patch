@@ -1,0 +1,848 @@
+From a7fdf624060d49f97399e6f10aef49122b1690c6 Mon Sep 17 00:00:00 2001
+From: Flytiger Eco <dev@flytiger-eco.com>
+Date: Sat, 7 Nov 2026 19:55:03 +0800
+Subject: [PATCH 4/4] feat(cudafy): enable cudafy conversion for the
+ CUDA-compat mode
+
+Restore the cudafy pre-build conversion hooks (flash-attention and
+actlize) and the --cudafy-compat CLI in the sailify pipeline, and move
+the conversion out of tools/sailify into its own module carrying the
+patch set (cutlass platform numeric-limits and arch aliases,
+flash-attention namespace config and num-splits guard).
+---
+ tools/cudafy_compat/__init__.py               |  14 +
+ tools/cudafy_compat/__main__.py               |  66 +++
+ tools/cudafy_compat/convert.py                | 417 ++++++++++++++++++
+ ...form_numeric_limits_and_arch_aliases.patch | 135 ++++++
+ .../flash_attention_namespace_config.patch    |  73 +++
+ .../flash_attention_num_splits_guard.patch    |  16 +
+ tools/sailify/__main__.py                     |  32 ++
+ tools/sailify/convert.py                      |   2 +
+ 8 files changed, 755 insertions(+)
+ create mode 100644 tools/cudafy_compat/__init__.py
+ create mode 100644 tools/cudafy_compat/__main__.py
+ create mode 100644 tools/cudafy_compat/convert.py
+ create mode 100644 tools/cudafy_compat/patches/cutlass_platform_numeric_limits_and_arch_aliases.patch
+ create mode 100644 tools/cudafy_compat/patches/flash_attention_namespace_config.patch
+ create mode 100644 tools/cudafy_compat/patches/flash_attention_num_splits_guard.patch
+
+diff --git a/tools/cudafy_compat/__init__.py b/tools/cudafy_compat/__init__.py
+new file mode 100644
+index 00000000000..2eeb545f145
+--- /dev/null
++++ b/tools/cudafy_compat/__init__.py
+@@ -0,0 +1,14 @@
++# Copyright (c) 2026 Zhejiang Runhe Cloud Intelligence Technology Co., Ltd.
++"""CUDA-compatible (compat) third-party conversion tool.
++
++Converts the PPU third-party forks (flash-attention-for-sail, actlize and
++flex-flash-attention) into CUDA-compilable sources under an out-of-place
++derived tree, applies the compat-owned patch set and fixes the C++ standard
++flags of the generated build files.
++
++This package is the standalone counterpart of ``tools.sailify``: sailify
++owns the SAIL whole-tree conversion, while this package owns the
++CUDA-compatible third-party conversion.  The top-level CMakeLists.txt
++invokes it automatically at configure time for the compat build mode
++(USE_PPU=ON, USE_SAIL=OFF).
++"""
+diff --git a/tools/cudafy_compat/__main__.py b/tools/cudafy_compat/__main__.py
+new file mode 100644
+index 00000000000..5176e88961f
+--- /dev/null
++++ b/tools/cudafy_compat/__main__.py
+@@ -0,0 +1,66 @@
++# Copyright (c) 2026 Zhejiang Runhe Cloud Intelligence Technology Co., Ltd.
++"""CLI entry point: ``python -m tools.cudafy_compat``."""
++
++from __future__ import annotations
++
++import argparse
++import sys
++from pathlib import Path
++
++from tools.cudafy_compat.convert import run_compat_conversion
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(
++        description=(
++            "Convert the PPU third-party forks (flash-attention-for-sail, "
++            "actlize, flex-flash-attention) to CUDA-compatible sources "
++            "under an out-of-place derived tree."
++        )
++    )
++    parser.add_argument(
++        "--output-dir",
++        required=True,
++        help="Write the converted third-party tree to this directory.",
++    )
++    parser.add_argument(
++        "--force",
++        action="store_true",
++        help="Force re-conversion even if the tree is up to date.",
++    )
++    parser.add_argument(
++        "--patch-dir",
++        default=None,
++        help=(
++            "Directory holding the compat-owned patch set. "
++            "Defaults to the patches shipped with this module."
++        ),
++    )
++    parser.add_argument(
++        "--source-root",
++        default=None,
++        help="Path to the PyTorch source tree. Defaults to CWD.",
++    )
++    args = parser.parse_args()
++
++    source_root = str(Path(args.source_root) if args.source_root else Path.cwd())
++    try:
++        run_compat_conversion(
++            source_root,
++            args.output_dir,
++            force=args.force,
++            patch_dir=args.patch_dir,
++        )
++    except Exception as e:
++        print(f"error: {e}", file=sys.stderr)
++        return 1
++    print(
++        f"CUDA-compat third-party conversion complete. Point "
++        f"TORCH_FLASH_ATTENTION_ROOT / TORCH_CUTLASS_ROOT / "
++        f"FLEX_FLASH_ATTENTION_ROOT at {args.output_dir}/third_party/*."
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tools/cudafy_compat/convert.py b/tools/cudafy_compat/convert.py
+new file mode 100644
+index 00000000000..32bdc7e3a4d
+--- /dev/null
++++ b/tools/cudafy_compat/convert.py
+@@ -0,0 +1,417 @@
++# Copyright (c) 2026 Zhejiang Runhe Cloud Intelligence Technology Co., Ltd.
++"""CUDA-compatible third-party conversion and patch application.
++
++Converts the PPU third-party forks (flash-attention-for-sail, actlize and
++flex-flash-attention) into CUDA-compilable sources under an out-of-place
++derived tree, applies the compat-owned patch set and fixes the C++ standard
++flags of the generated build files.
++
++This module is the standalone counterpart of ``tools.sailify.convert``:
++sailify owns the SAIL whole-tree conversion, while this module owns
++the CUDA-compatible (compat) third-party conversion.  The top-level
++CMakeLists.txt invokes it automatically at configure time for the compat
++build mode (USE_PPU=ON, USE_SAIL=OFF).
++
++The compat patch set is managed here (``patches/`` next to this file) and
++is intentionally independent from the SAIL patch assets under
++``third_party/*.patch``: adapt the patches in this package as the compat
++build requires, without affecting the SAIL pipeline.
++"""
++
++from __future__ import annotations
++
++import os
++import re
++import shutil
++import subprocess
++import sys
++from pathlib import Path
++
++
++# ---------------------------------------------------------------------------
++# Helpers
++# ---------------------------------------------------------------------------
++
++def _missing_submodule_error(
++    torch_root: str, submodule_path: str
++) -> FileNotFoundError:
++    return FileNotFoundError(
++        "Required third-party source is missing: "
++        f"{os.path.join(torch_root, submodule_path)}\n"
++        "Please fetch it with git submodule, for example:\n"
++        f"  git submodule update --init --recursive {submodule_path}\n"
++        "Or initialize all required submodules with:\n"
++        "  git submodule update --init --recursive"
++    )
++
++
++# ---------------------------------------------------------------------------
++# Patch application (compat-owned patch set)
++# ---------------------------------------------------------------------------
++
++def _apply_patch(patch_file: str, target_root: str) -> None:
++    if not os.path.isfile(patch_file):
++        raise FileNotFoundError(f"The patch file doesn't exist: {patch_file}")
++
++    command = ["patch", "--batch", "-p1", "-i", patch_file]
++    dry_run = subprocess.run(
++        [*command, "--dry-run"],
++        cwd=target_root,
++        capture_output=True,
++        text=True,
++    )
++    combined_output = (dry_run.stdout or "") + (dry_run.stderr or "")
++    if re.search(
++        "already exists|Reversed|previously applied",
++        combined_output,
++        re.IGNORECASE,
++    ):
++        print("Patch already applied, skipping.")
++        return
++    if dry_run.returncode != 0:
++        print(f"error_output: {combined_output}")
++        raise RuntimeError(
++            f"Failed to validate patch before applying: {patch_file}"
++        )
++    subprocess.run(command, cwd=target_root, check=True)
++    print(f"Apply patch: {patch_file}")
++
++
++def _apply_cutlass_compat_patch(patch_file: str, target_root: str) -> None:
++    """Apply the CUTLASS compat patch as one logical unit."""
++    markers = {
++        "include/cutlass/bfloat16.h": (
++            "struct numeric_limits<cutlass::bfloat16_t>",
++            "namespace platform",
++        ),
++        "include/cutlass/half.h": (
++            "struct numeric_limits<cutlass::half_t>",
++            "namespace cutlass {\nnamespace platform {",
++        ),
++        "include/cutlass/arch/arch.h": ("using Sm80 = PPU0010;",),
++        "include/cutlass/epilogue/threadblock/fusion/visitor_2x.hpp": (
++            "using Sm80EVT = PPU0010EVT<NodeOp, ChildOps...>;",
++        ),
++    }
++    already_applied = True
++    for relative_path, required_markers in markers.items():
++        content = Path(target_root, relative_path).read_text(
++            encoding="utf-8", errors="replace"
++        )
++        if not all(marker in content for marker in required_markers):
++            already_applied = False
++            break
++    if already_applied:
++        print("CUTLASS compat patch already applied, skipping.")
++        return
++    _apply_patch(patch_file, target_root)
++
++
++def _apply_fa_patches(
++    namespace_patch: str, num_splits_patch: str, fa_root: str
++) -> None:
++    """Apply the flash-attention patches idempotently."""
++    namespace_header = Path(
++        fa_root, "csrc", "flash_attn", "src", "namespace_config.h"
++    )
++    if namespace_header.is_file() and "FLASH_NAMESPACE_CONFIG_H" in namespace_header.read_text(
++        encoding="utf-8", errors="replace"
++    ):
++        print("flash-attention namespace patch already applied, skipping.")
++    else:
++        _apply_patch(namespace_patch, fa_root)
++
++    flash_api = Path(fa_root, "csrc", "flash_attn", "flash_api.cpp")
++    if flash_api.is_file() and "num_splits is not supported on PPU" in flash_api.read_text(
++        encoding="utf-8", errors="replace"
++    ):
++        print("flash-attention num_splits guard already applied, skipping.")
++    else:
++        _apply_patch(num_splits_patch, fa_root)
++
++
++def apply_compat_patches(patch_dir: str, derived_root: str) -> None:
++    """Apply the compat-owned patch set to the cudafy derived tree.
++
++    Only the patches required by the CUDA-compatible build are applied;
++    the SAIL patch assets under ``third_party/*.patch`` are not
++    used here.
++    """
++    cutlass_root = os.path.join(derived_root, "third_party", "actlize")
++    if not os.path.isdir(cutlass_root):
++        raise _missing_submodule_error(derived_root, "third_party/actlize")
++    _apply_cutlass_compat_patch(
++        os.path.join(
++            patch_dir, "cutlass_platform_numeric_limits_and_arch_aliases.patch"
++        ),
++        cutlass_root,
++    )
++
++    fa_root = os.path.join(
++        derived_root, "third_party", "flash-attention-for-sail"
++    )
++    if not os.path.isdir(fa_root):
++        raise _missing_submodule_error(
++            derived_root, "third_party/flash-attention-for-sail"
++        )
++    _apply_fa_patches(
++        os.path.join(patch_dir, "flash_attention_namespace_config.patch"),
++        os.path.join(patch_dir, "flash_attention_num_splits_guard.patch"),
++        fa_root,
++    )
++
++
++# ---------------------------------------------------------------------------
++# Cudafy (CUDA-compatible conversion)
++# ---------------------------------------------------------------------------
++
++def _cudafy_stamp_path(target_root: str, command: str, version: str) -> str:
++    safe_version = version.replace("/", "_")
++    return os.path.join(
++        target_root, ".cudafy-for-sail", f"{command}-{safe_version}.stamp"
++    )
++
++
++def _write_cudafy_stamp(
++    target_root: str,
++    command: str,
++    version: str,
++    *,
++    source_mtime: float = 0.0,
++) -> None:
++    stamp_path = _cudafy_stamp_path(target_root, command, version)
++    os.makedirs(os.path.dirname(stamp_path), exist_ok=True)
++    with open(stamp_path, "w") as f:
++        f.write(f"command={command}\nversion={version}\n")
++        if source_mtime:
++            f.write(f"source_mtime={source_mtime!r}\n")
++
++
++def _stamp_matches(stamp_path: str, source_mtime: float) -> bool:
++    if not os.path.exists(stamp_path):
++        return False
++    try:
++        with open(stamp_path, encoding="utf-8") as f:
++            for line in f:
++                if line.startswith("source_mtime="):
++                    return float(line.split("=", 1)[1]) == source_mtime
++    except (OSError, ValueError):
++        return False
++    return False
++
++
++def _file_contains(path: str, needle: str) -> bool:
++    if not os.path.isfile(path):
++        return False
++    try:
++        with open(path, encoding="utf-8", errors="ignore") as f:
++            return needle in f.read()
++    except OSError:
++        return False
++
++
++def _tree_contains_any(root: str, markers: tuple[str, ...]) -> bool:
++    source_suffixes = (
++        ".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".inl",
++        ".py", ".txt", ".cmake", ".md",
++    )
++    for dirpath, dirnames, filenames in os.walk(root):
++        dirnames[:] = [
++            d for d in dirnames
++            if d not in {".git", "build", "dist", "__pycache__"}
++        ]
++        for filename in filenames:
++            if not filename.endswith(source_suffixes):
++                continue
++            path = os.path.join(dirpath, filename)
++            try:
++                with open(path, encoding="utf-8", errors="ignore") as f:
++                    content = f.read()
++            except OSError:
++                continue
++            if any(marker in content for marker in markers):
++                return True
++    return False
++
++
++def _is_cudafy_converted(
++    command: str, version: str, target_root: str
++) -> bool:
++    if os.path.exists(_cudafy_stamp_path(target_root, command, version)):
++        return True
++    if command == "flash-attention":
++        return not _tree_contains_any(
++            target_root,
++            (
++                "hggc", "HGGC", "HGTX", "__HGGCCC__",
++                "PPU_", "PPU_CP_ASYNC", "CUTE_ARCH_CP_ASYNC_PPU_ENABLED",
++            ),
++        )
++    if command == "actlize":
++        return (
++            os.path.exists(
++                os.path.join(target_root, "cute", "hggc_arch_compat.h")
++            )
++            and _file_contains(
++                os.path.join(target_root, "cutlass", "arch", "mma_sm80.h"),
++                "File name compatibility shim",
++            )
++        )
++    return False
++
++
++def _run_cudafy_once(
++    torch_root: str,
++    command: str,
++    version: str,
++    target_root: str,
++) -> None:
++    cudafy_script = os.path.join(
++        torch_root, "third_party", "cudafy-for-sail", "cudafy.py"
++    )
++    if not os.path.isfile(cudafy_script):
++        raise _missing_submodule_error(
++            torch_root, "third_party/cudafy-for-sail"
++        )
++    if not os.path.isdir(target_root):
++        target_arg = os.path.relpath(target_root, torch_root)
++        raise _missing_submodule_error(torch_root, target_arg)
++    if _is_cudafy_converted(command, version, target_root):
++        print(f"Skip cudafy {command} {version}: already converted.")
++        return
++    target_arg = os.path.relpath(target_root, torch_root)
++    cudafy_arg = os.path.relpath(cudafy_script, torch_root)
++    cli_version = (
++        version[1:]
++        if command == "actlize" and version.startswith("v")
++        else version
++    )
++    cmd = [
++        sys.executable, cudafy_arg, command,
++        f"--version={cli_version}", target_arg,
++    ]
++    print(f"Run cudafy: {' '.join(cmd)}")
++    subprocess.run(cmd, cwd=torch_root, check=True)
++    _write_cudafy_stamp(target_root, command, version)
++
++
++# Cudafy targets consumed by the CUDA-compatible build.  Each entry maps
++# the third_party directory name to (cudafy command, cudafy version,
++# target sub-path).  actlize's converter operates on its include/
++# directory while the other two operate on the repository root.
++_CUDAFY_COMPAT_TARGETS: tuple[tuple[str, str, str, str], ...] = (
++    ("flash-attention-for-sail", "flash-attention", "2.7.2", ""),
++    ("actlize", "actlize", "v0.8.0", "include"),
++    ("flex-flash-attention", "flex-flash-attention", "2.8.2", ""),
++)
++
++
++def _tree_max_mtime(root: str) -> float:
++    """Return the newest file mtime under root (excluding VCS metadata)."""
++    max_mtime = 0.0
++    for dirpath, dirnames, filenames in os.walk(root):
++        dirnames[:] = [
++            d for d in dirnames if d not in {".git", "__pycache__"}
++        ]
++        for filename in filenames:
++            try:
++                stat = os.lstat(os.path.join(dirpath, filename))
++            except OSError:
++                continue
++            max_mtime = max(max_mtime, stat.st_mtime)
++    return max_mtime
++
++
++def _copy_cudafy_target(source_dir: str, dest_dir: str) -> None:
++    """Copy a pristine third-party tree into the compat derived tree."""
++    shutil.copytree(
++        source_dir,
++        dest_dir,
++        ignore=shutil.ignore_patterns(
++            ".git", "__pycache__", ".cudafy-for-sail"
++        ),
++        dirs_exist_ok=True,
++    )
++
++
++def _fix_cxx_standard(derived_root: str) -> None:
++    """Point generated build files at C++20 (ATen headers require it).
++
++    The cudafy output keeps ``-std=c++17`` hardcoded in the third-party
++    build files; fix it so host TUs that include ATen headers compile.
++    """
++    for dirpath, dirnames, filenames in os.walk(derived_root):
++        dirnames[:] = [
++            d for d in dirnames if d not in {".git", "__pycache__"}
++        ]
++        for name in filenames:
++            if name not in ("setup.py", "build_lib.py"):
++                continue
++            path = os.path.join(dirpath, name)
++            try:
++                with open(path, encoding="utf-8", errors="ignore") as f:
++                    content = f.read()
++            except OSError:
++                continue
++            if "-std=c++17" not in content:
++                continue
++            with open(path, "w", encoding="utf-8") as f:
++                f.write(content.replace("-std=c++17", "-std=c++20"))
++            print(f"C++ standard fix applied: {path}")
++
++
++def run_compat_conversion(
++    torch_root: str,
++    output_dir: str,
++    *,
++    force: bool = False,
++    patch_dir: str | None = None,
++) -> None:
++    """Convert the PPU third-party forks for the CUDA-compatible build.
++
++    The conversion is out-of-place by design: the source tree keeps the
++    PPU-original forks (required by the SAIL/sailify build), and the
++    converted copies land under ``<output_dir>/third_party/...``, which
++    CMake points TORCH_FLASH_ATTENTION_ROOT / TORCH_CUTLASS_ROOT /
++    FLEX_FLASH_ATTENTION_ROOT at for the CUDA-compatible build.
++
++    After conversion the compat-owned patch set (``patches/`` shipped
++    with this module, or ``patch_dir``) is applied to the derived tree,
++    followed by the C++ standard fix of the generated build files.
++    """
++    if not os.path.isdir(torch_root):
++        raise FileNotFoundError(f"Source tree not found: {torch_root}")
++    if patch_dir is None:
++        patch_dir = os.path.join(os.path.dirname(__file__), "patches")
++    if not os.path.isdir(patch_dir):
++        raise FileNotFoundError(
++            f"Compat patch directory not found: {patch_dir}"
++        )
++
++    for name, command, version, sub in _CUDAFY_COMPAT_TARGETS:
++        source_dir = os.path.join(torch_root, "third_party", name)
++        if not os.path.isdir(source_dir) or not any(os.scandir(source_dir)):
++            raise _missing_submodule_error(
++                torch_root, f"third_party/{name}"
++            )
++        dest_dir = os.path.join(output_dir, "third_party", name)
++        target_root = os.path.join(dest_dir, sub) if sub else dest_dir
++        stamp_path = _cudafy_stamp_path(target_root, command, version)
++        source_mtime = _tree_max_mtime(source_dir)
++        if not force and _stamp_matches(stamp_path, source_mtime):
++            print(
++                f"Skip cudafy {command} {version}: "
++                f"already converted at {dest_dir}."
++            )
++            continue
++        if os.path.isdir(dest_dir):
++            shutil.rmtree(dest_dir)
++        _copy_cudafy_target(source_dir, dest_dir)
++        _run_cudafy_once(torch_root, command, version, target_root)
++        _write_cudafy_stamp(
++            target_root, command, version, source_mtime=source_mtime
++        )
++
++    apply_compat_patches(patch_dir, output_dir)
++    _fix_cxx_standard(output_dir)
++    print(f"CUDA-compat third-party conversion complete: {output_dir}")
+diff --git a/tools/cudafy_compat/patches/cutlass_platform_numeric_limits_and_arch_aliases.patch b/tools/cudafy_compat/patches/cutlass_platform_numeric_limits_and_arch_aliases.patch
+new file mode 100644
+index 00000000000..c5034aa76be
+--- /dev/null
++++ b/tools/cudafy_compat/patches/cutlass_platform_numeric_limits_and_arch_aliases.patch
+@@ -0,0 +1,135 @@
++diff --git a/include/cutlass/bfloat16.h b/include/cutlass/bfloat16.h
++--- a/include/cutlass/bfloat16.h
+++++ b/include/cutlass/bfloat16.h
++@@ -382,6 +382,75 @@
++ 
++ } // namespace std
++ 
+++namespace cutlass {
+++namespace platform {
+++
+++/// Forward Declaration
+++template <class T>
+++struct numeric_limits;
+++
+++/// Numeric limits
+++template <>
+++struct numeric_limits<cutlass::bfloat16_t> {
+++  static bool const is_specialized = true;
+++  static bool const is_signed = true;
+++  static bool const is_integer = false;
+++  static bool const is_exact = false;
+++  static bool const has_infinity = true;
+++  static bool const has_quiet_NaN = true;
+++  static bool const has_signaling_NaN = false;
+++#if !defined(__CUDACC_RTC__)
+++  static std::float_denorm_style const has_denorm = std::denorm_present;
+++#endif
+++  static bool const has_denorm_loss = true;
+++#if !defined(__CUDACC_RTC__)
+++  static std::float_round_style const round_style = std::round_to_nearest;
+++#endif
+++  static bool const is_iec559 = false;
+++  static bool const is_bounded = true;
+++  static bool const is_modulo = false;
+++  static int const digits = 7;
+++
+++  /// Least positive value
+++  CUTLASS_HOST_DEVICE
+++  static cutlass::bfloat16_t min() { return cutlass::bfloat16_t::bitcast(0x01); }
+++
+++  /// Minimum finite value
+++  CUTLASS_HOST_DEVICE
+++  static cutlass::bfloat16_t lowest() { return cutlass::bfloat16_t::bitcast(0xff7f); }
+++
+++  /// Maximum finite value
+++  CUTLASS_HOST_DEVICE
+++  static cutlass::bfloat16_t max() { return cutlass::bfloat16_t::bitcast(0x7f7f); }
+++
+++  /// Returns smallest finite value
+++  CUTLASS_HOST_DEVICE
+++  static cutlass::bfloat16_t epsilon() { return cutlass::bfloat16_t::bitcast(0x1000); }
+++
+++  /// Returns smallest finite value
+++  CUTLASS_HOST_DEVICE
+++  static cutlass::bfloat16_t round_error() { return cutlass::bfloat16_t(0.5f); }
+++
+++  /// Returns smallest finite value
+++  CUTLASS_HOST_DEVICE
+++  static cutlass::bfloat16_t infinity() { return cutlass::bfloat16_t::bitcast(0x7f80); }
+++
+++  /// Returns smallest finite value
+++  CUTLASS_HOST_DEVICE
+++  static cutlass::bfloat16_t quiet_NaN() { return cutlass::bfloat16_t::bitcast(0x7fff); }
+++
+++  /// Returns smallest finite value
+++  CUTLASS_HOST_DEVICE
+++  static cutlass::bfloat16_t signaling_NaN() { return cutlass::bfloat16_t::bitcast(0x7fff); }
+++
+++  /// Returns smallest finite value
+++  CUTLASS_HOST_DEVICE
+++  static cutlass::bfloat16_t denorm_min() { return cutlass::bfloat16_t::bitcast(0x1); }
+++};
+++
+++} // namespace platform
+++} // namespace cutlass
+++
++ ///////////////////////////////////////////////////////////////////////////////////////////////////
++ //
++ // Arithmetic operators
++diff --git a/include/cutlass/half.h b/include/cutlass/half.h
++--- a/include/cutlass/half.h
+++++ b/include/cutlass/half.h
++@@ -594,6 +594,7 @@
++ }  // namespace std
++ #endif
++ 
+++namespace cutlass {
++ namespace platform {
++ 
++ /// std::numeric_limits
++@@ -659,6 +660,7 @@
++   static cutlass::half_t denorm_min() { return cutlass::half_t::bitcast(0x0001); }
++ };
++ }  // namespace platform 
+++}  // namespace cutlass
++ 
++ ///////////////////////////////////////////////////////////////////////////////////////////////////
++ //
++diff --git a/include/cutlass/arch/arch.h b/include/cutlass/arch/arch.h
++--- a/include/cutlass/arch/arch.h
+++++ b/include/cutlass/arch/arch.h
++@@ -70,7 +70,19 @@
++ struct PPU0015 {
++   static int const kMinComputeCapability = 89;
++ };
+++
+++// CUDA-compatible architecture aliases for source-level portability
+++using Sm50 = PPU0010;
+++using Sm60 = PPU0010;
+++using Sm61 = PPU0010;
+++using Sm70 = PPU0010;
+++using Sm72 = PPU0010;
+++using Sm75 = PPU0010;
+++using Sm80 = PPU0010;
+++using Sm86 = PPU0010;
+++using Sm89 = PPU0015;
+++using Sm90 = PPU0015;
++ 
++ CUTLASS_DEVICE
++ void device_breakpoint() {
++   __brkpt();
++diff --git a/include/cutlass/epilogue/threadblock/fusion/visitor_2x.hpp b/include/cutlass/epilogue/threadblock/fusion/visitor_2x.hpp
++--- a/include/cutlass/epilogue/threadblock/fusion/visitor_2x.hpp
+++++ b/include/cutlass/epilogue/threadblock/fusion/visitor_2x.hpp
++@@ -317,6 +317,10 @@
++ template <class NodeOp, class... ChildOps>
++ using PPU0010EVT = TreeVisitor2x<NodeOp, ChildOps...>;
++ 
+++// CUDA-compatible alias for source-level portability
+++template <class NodeOp, class... ChildOps>
+++using Sm80EVT = PPU0010EVT<NodeOp, ChildOps...>;
+++
++ template<
++   class ElementCompute,
++   class EdgeTuple,
+diff --git a/tools/cudafy_compat/patches/flash_attention_namespace_config.patch b/tools/cudafy_compat/patches/flash_attention_namespace_config.patch
+new file mode 100644
+index 00000000000..6fcc842cdc1
+--- /dev/null
++++ b/tools/cudafy_compat/patches/flash_attention_namespace_config.patch
+@@ -0,0 +1,73 @@
++diff --git a/csrc/flash_attn/src/namespace_config.h b/csrc/flash_attn/src/namespace_config.h
++new file mode 100644
++index 0000000..a6fad57
++--- /dev/null
+++++ b/csrc/flash_attn/src/namespace_config.h
++@@ -0,0 +1,67 @@
+++/**
+++ * @file flash_namespace_config.h
+++ * @brief Configuration file for Flash namespace management and isolation
+++ *
+++ * This header provides configuration macros for managing the Flash namespace
+++ * across a codebase. It allows for flexible namespace naming and provides
+++ * utilities for namespace declaration and scoping.
+++ *
+++ * Usage Examples:
+++ *
+++ * 1. Basic namespace wrapping:
+++ * @code
+++ *   BEGIN_FLASH_NAMESPACE
+++ *   class FlashDevice {
+++ *     // Implementation
+++ *   };
+++ *   END_FLASH_NAMESPACE
+++ * @endcode
+++ *
+++ * 2. Accessing types within the namespace:
+++ * @code
+++ *   FLASH_NAMESPACE_ALIAS(FlashDevice) device;
+++ * @endcode
+++ *
+++ * 3. Defining content within namespace scope:
+++ * @code
+++ *   FLASH_NAMESPACE_SCOPE(
+++ *     struct Configuration {
+++ *       uint32_t size;
+++ *       bool enabled;
+++ *     };
+++ *   )
+++ * @endcode
+++ *
+++ * 4. Custom namespace name:
+++ * @code
+++ *   #define FLASH_NAMESPACE custom_flash
+++ *   #include "flash_namespace_config.h"
+++ * @endcode
+++ *
+++ * Configuration:
+++ * - The default namespace is 'flash' if FLASH_NAMESPACE is not defined
+++ * - Define FLASH_NAMESPACE before including this header to customize the
+++ * namespace name
+++ *
+++ * Best Practices:
+++ * - Include this header in all files that need access to the Flash namespace
+++ *
+++ */
+++#pragma once
+++
+++#ifndef FLASH_NAMESPACE_CONFIG_H
+++#define FLASH_NAMESPACE_CONFIG_H
+++
+++// Set default namespace to flash
+++#ifndef FLASH_NAMESPACE
+++#define FLASH_NAMESPACE flash
+++#endif
+++
+++#define FLASH_NAMESPACE_ALIAS(name) FLASH_NAMESPACE::name
+++
+++#define FLASH_NAMESPACE_SCOPE(content)                                         \
+++  namespace FLASH_NAMESPACE {                                                  \
+++  content                                                                      \
+++  }
+++
+++#endif // FLASH_NAMESPACE_CONFIG_H
+diff --git a/tools/cudafy_compat/patches/flash_attention_num_splits_guard.patch b/tools/cudafy_compat/patches/flash_attention_num_splits_guard.patch
+new file mode 100644
+index 00000000000..5156c0847c6
+--- /dev/null
++++ b/tools/cudafy_compat/patches/flash_attention_num_splits_guard.patch
+@@ -0,0 +1,16 @@
++diff --git a/csrc/flash_attn/flash_api.cpp b/csrc/flash_attn/flash_api.cpp
++--- a/csrc/flash_attn/flash_api.cpp
+++++ b/csrc/flash_attn/flash_api.cpp
++@@ -595,7 +595,11 @@ mha_varlen_fwd(const at::Tensor &q_,  // total_q x num_heads x head_size, total_
++                int window_size_right,
++                const float softcap,
++                const bool return_softmax,
++-               std::optional<at::Generator> gen_) {
+++               std::optional<at::Generator> gen_,
+++               int num_splits) {
+++    TORCH_CHECK(num_splits == 0,
+++        "num_splits is not supported on PPU platform. "
+++        "Please use num_splits=0 (default) for PPU builds.");
++ #else
++ std::vector<at::Tensor>
++ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
+diff --git a/tools/sailify/__main__.py b/tools/sailify/__main__.py
+index af48a7387e3..f2c1b19d6df 100644
+--- a/tools/sailify/__main__.py
++++ b/tools/sailify/__main__.py
+@@ -20,6 +20,15 @@ def main() -> int:
+             "Omit to convert in place."
+         ),
+     )
++    parser.add_argument(
++        "--cudafy-compat",
++        action="store_true",
++        help=(
++            "Convert the PPU third-party forks (flash-attention-for-sail, "
++            "actlize, flex-flash-attention) to CUDA-compatible sources "
++            "under --output-dir instead of running the SAIL conversion."
++        ),
++    )
+     parser.add_argument(
+         "--force",
+         action="store_true",
+@@ -34,6 +43,29 @@ def main() -> int:
+ 
+     source_root = Path(args.source_root) if args.source_root else Path.cwd()
+ 
++    if args.cudafy_compat:
++        from tools.cudafy_compat.convert import run_compat_conversion
++
++        if not args.output_dir:
++            print(
++                "error: --cudafy-compat requires --output-dir",
++                file=sys.stderr,
++            )
++            return 1
++        try:
++            run_compat_conversion(
++                str(source_root), args.output_dir, force=args.force
++            )
++        except Exception as e:
++            print(f"error: {e}", file=sys.stderr)
++            return 1
++        print(
++            f"Cudafy conversion complete. Point TORCH_FLASH_ATTENTION_ROOT / "
++            f"TORCH_CUTLASS_ROOT / FLEX_FLASH_ATTENTION_ROOT at "
++            f"{args.output_dir}/third_party/*."
++        )
++        return 0
++
+     from tools.sailify.convert import run_full_sailify
+ 
+     try:
+diff --git a/tools/sailify/convert.py b/tools/sailify/convert.py
+index 48d037b0268..f99341a80f8 100644
+--- a/tools/sailify/convert.py
++++ b/tools/sailify/convert.py
+@@ -490,6 +490,8 @@ def apply_all_patches(source_root: Path) -> None:
+     """Apply all third-party patches required for SAIL builds."""
+     torch_root = str(source_root)
+     patch_root = os.path.join(torch_root, "third_party")
++    # PPU forks live in dedicated third-party slots; the upstream cutlass
++    # and flash-attention gitlinks stay pristine and never get patched.
+     cutlass_root = os.path.join(patch_root, "actlize")
+ 
+     if not os.path.exists(cutlass_root):

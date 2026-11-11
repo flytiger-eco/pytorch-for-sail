@@ -1,0 +1,17 @@
+pytorch-for-sail-cuda-compat
+Copyright (c) 2026 Zhejiang Runhe Cloud Intelligence Technology Co., Ltd.
+
+This repository is a deployment entry for the CUDA-compat form of
+PyTorch-for-SAIL.  It contains git-am patches, setup/build scripts and
+documentation, all distributed under the BSD 3-Clause License (see the
+LICENSE file).
+
+The patches are derived from the public repository
+https://github.com/t-head/pytorch-for-sail (branch v2.14.1, commit
+8b41b061e474), a derivative of PyTorch distributed under the
+BSD-3-Clause License.  Copyright and license notices from the upstream
+files are retained verbatim; new files introduced by the patches carry
+the copyright notice above.
+
+Upstream PyTorch: Copyright (c) Meta Platforms, Inc. and affiliates,
+distributed under the BSD-3-Clause License.

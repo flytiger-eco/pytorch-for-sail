@@ -1,0 +1,69 @@
+From 4e7c84e71cff53223c0569ad813ea31e07e693aa Mon Sep 17 00:00:00 2001
+From: Flytiger Eco <dev@flytiger-eco.com>
+Date: Tue, 3 Nov 2026 22:34:29 +0800
+Subject: [PATCH 1/4] feat(third-party): add the CUDA-compat PPU submodules
+
+Add the flex-flash-attention, xformers (flytiger-eco fork) and
+cudafy-for-sail submodules required by the CUDA-compatible PPU mode, on
+top of the SAIL third-party layout.
+---
+ .gitmodules                      | 15 +++++++++++++++
+ third_party/cudafy-for-sail      |  1 +
+ third_party/flex-flash-attention |  1 +
+ third_party/xformers             |  1 +
+ 4 files changed, 18 insertions(+)
+ create mode 160000 third_party/cudafy-for-sail
+ create mode 160000 third_party/flex-flash-attention
+ create mode 160000 third_party/xformers
+
+diff --git a/.gitmodules b/.gitmodules
+index 858ff16f977..4b6728e90c4 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -147,6 +147,11 @@
+ [submodule "third_party/mslk"]
+ 	path = third_party/mslk
+ 	url = https://github.com/meta-pytorch/MSLK.git
++[submodule "third_party/xformers"]
++    ignore = dirty
++    path = third_party/xformers
++    url = https://github.com/flytiger-eco/xformers-for-sail.git
++    branch = v0.0.27_for_pytorch
+ [submodule "third_party/xformers-for-sail"]
+     ignore = dirty
+     path = third_party/xformers-for-sail
+@@ -162,3 +167,13 @@
+     path = third_party/cmake-hgcc
+     url = https://github.com/t-head/cmake-hgcc.git
+     branch = master
++[submodule "third_party/cudafy-for-sail"]
++    ignore = dirty
++    path = third_party/cudafy-for-sail
++    url = https://github.com/flytiger-eco/cudafy-for-sail.git
++    branch = pytorch
++[submodule "third_party/flex-flash-attention"]
++    ignore = dirty
++    path = third_party/flex-flash-attention
++    url = https://github.com/t-head/flash-attention-for-sail.git
++    branch = flex-flash-attention
+diff --git a/third_party/cudafy-for-sail b/third_party/cudafy-for-sail
+new file mode 160000
+index 00000000000..fe5b4338bd3
+--- /dev/null
++++ b/third_party/cudafy-for-sail
+@@ -0,0 +1 @@
++Subproject commit fe5b4338bd37bcc142c7609a2b99af50b4345935
+diff --git a/third_party/flex-flash-attention b/third_party/flex-flash-attention
+new file mode 160000
+index 00000000000..13c2035677b
+--- /dev/null
++++ b/third_party/flex-flash-attention
+@@ -0,0 +1 @@
++Subproject commit 13c2035677b1340d03c2cb2cb89f479e77c10bae
+diff --git a/third_party/xformers b/third_party/xformers
+new file mode 160000
+index 00000000000..9fd717b4fc9
+--- /dev/null
++++ b/third_party/xformers
+@@ -0,0 +1 @@
++Subproject commit 9fd717b4fc93f60ed51704050c8f1a6c9ed74a68
