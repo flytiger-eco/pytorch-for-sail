@@ -6,10 +6,10 @@
 #include <ATen/Dispatch.h>
 #include <ATen/MemoryOverlap.h>
 #include <ATen/core/Tensor.h>
+#include <ATen/cuda/Atomic.cuh>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/native/CanUse32BitIndexMath.h>
 #include <ATen/native/NonEmptyUtils.h>
-#include <ATen/native/cuda/KernelUtils.cuh>
 #include <c10/cuda/CUDAException.h>
 #include <c10/util/env.h>
 
@@ -78,7 +78,6 @@ __global__ void scatter_add_pair_kernel(
     offset_t pairs,
     offset_t half_width,
     offset_t output_rows,
-    offset_t output_numel,
     offset_t index_row_stride,
     offset_t index_column_stride) {
   using pair_t = typename ScatterAddAtomicTraits<scalar_t>::pair_type;
@@ -100,15 +99,14 @@ __global__ void scatter_add_pair_kernel(
         static_cast<offset_t>(dst0) * (half_width * 2) + column;
     const offset_t offset1 =
         static_cast<offset_t>(dst1) * (half_width * 2) + column + 1;
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
     if (Broadcast || dst0 == dst1) {
       // Use the SDK pair overload without adding assembly or changing SDK gates.
       atomicAdd(reinterpret_cast<pair_t*>(output + offset0), value);
       continue;
     }
-#endif
-    fastAtomicAdd(output, offset0, output_numel, scalar_t(value.x), true);
-    fastAtomicAdd(output, offset1, output_numel, scalar_t(value.y), true);
+    // Split destinations must not add zero to an unselected neighboring lane.
+    gpuAtomicAddNoReturn(output + offset0, scalar_t(value.x));
+    gpuAtomicAddNoReturn(output + offset1, scalar_t(value.y));
   }
 }
 
@@ -132,7 +130,6 @@ static void launch_scatter_add_pair(
       pairs,
       half_width,
       static_cast<offset_t>(output.size(0)),
-      static_cast<offset_t>(output.numel()),
       static_cast<offset_t>(index_row_stride),
       static_cast<offset_t>(index_column_stride));
   C10_CUDA_KERNEL_LAUNCH_CHECK();
