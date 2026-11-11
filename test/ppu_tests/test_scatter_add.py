@@ -648,6 +648,42 @@ class TestPPUScatterAdd(TestCase):
 
     @onlyCUDA
     @dtypes(torch.float16, torch.bfloat16)
+    @parametrize("index_dtype", [torch.int32, torch.int64])
+    @parametrize("index_layout", ["broadcast", "dense_same", "dense_split", "dense_mixed"])
+    @parametrize("api", ["inplace", "functional", "out"])
+    def test_scatter_add_pair_unselected_negative_zero(self, device, dtype, index_dtype, index_layout, api):
+        if not getattr(torch.version, "ppu", None) or torch.cuda.get_device_capability(device) != (8, 9):
+            self.skipTest("PPU paired atomics require an SM89 device")
+        initial = torch.zeros((2, 4), dtype=dtype)
+        # These low lanes are never selected, even when their paired high lanes are.
+        initial[0, ::2] = -0.0
+        values = torch.tensor([[1.0, 2.0, 3.0, 4.0]], dtype=dtype)
+        ids = torch.ones((1, 4), dtype=index_dtype)
+        if index_layout == "dense_split":
+            ids[0, 1::2] = 0
+        elif index_layout == "dense_mixed":
+            ids[0, 1] = 0
+        expected = initial.clone()
+        for column in range(4):
+            expected[ids[0, column].item(), column] = values[0, column]
+        source, output = values.to(device), initial.to(device)
+        index = ids[:, :1].to(device).expand_as(source) if index_layout == "broadcast" else ids.to(device)
+        source_before, index_before = source.clone(), index.clone()
+        with DeterministicGuard(False), self._capture_pair_profile(device) as prof:
+            if api == "functional":
+                output = torch.scatter_add(output, 0, index, source)
+            elif api == "out":
+                torch.scatter_add(initial.to(device), 0, index, source, out=output)
+            else:
+                output.scatter_add_(0, index, source)
+            torch.cuda.synchronize(device)
+        self._assert_scatter_add_pair_route(_device_kernels(prof), _SCATTER_ADD_OPT_ENABLED, index_dtype)
+        self.assertEqual(output.cpu().view(torch.int16), expected.view(torch.int16))
+        self.assertEqual(source.view(torch.int16), source_before.view(torch.int16))
+        self.assertEqual(index, index_before)
+
+    @onlyCUDA
+    @dtypes(torch.float16, torch.bfloat16)
     @parametrize("case", ["empty_index", "empty_inner", "bad_shape", "bad_dtype", "overlap"])
     def test_scatter_add_pair_boundary_contract(self, device, dtype, case):
         if not getattr(torch.version, "ppu", None) or torch.cuda.get_device_capability(device) != (8, 9):
@@ -724,7 +760,7 @@ for _name in (
     "test_scatter_add_pair_fastpath_64bit_addressing", "test_scatter_add_pair_disable_env",
     "test_scatter_add_pair_single_guard_dispatch", "test_scatter_add_pair_source_64bit",
     "test_scatter_add_pair_index_stride_64bit", "test_scatter_add_pair_special_values",
-    "test_scatter_add_pair_boundary_contract",
+    "test_scatter_add_pair_boundary_contract", "test_scatter_add_pair_unselected_negative_zero",
 ):
     setattr(TestPPUScatterAdd, _name, _with_route_check(getattr(TestPPUScatterAdd, _name)))
 
