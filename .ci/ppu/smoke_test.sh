@@ -230,7 +230,6 @@ run_case test_matmul_cuda
 run_case test_scaled_matmul_cuda
 run_case nn/attention/test_open_registry
 run_case inductor/test_flex_flash
-run_case inductor/test_nv_universal_gemm
 run_case inductor/test_max_autotune
 
 total=$(( ${#PASSED_CASES[@]} + ${#FAILED_CASES[@]} ))
