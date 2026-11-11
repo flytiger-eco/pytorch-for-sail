@@ -70,7 +70,6 @@ __global__ void index_add_pair_kernel(
     offset_t pairs,
     offset_t half_width,
     offset_t output_rows,
-    offset_t output_numel,
     offset_t index_row_stride,
     scalar_t alpha) {
   using native_t = typename IndexAddAtomicTraits<scalar_t>::native_type;
@@ -91,14 +90,8 @@ __global__ void index_add_pair_kernel(
     }
     const offset_t offset0 =
         static_cast<offset_t>(dst0) * (half_width * 2) + column;
-    const offset_t offset1 = offset0 + 1;
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
     // Use the SDK pair overload without adding assembly or changing SDK gates.
     atomicAdd(reinterpret_cast<pair_t*>(output + offset0), value);
-    continue;
-#endif
-    fastAtomicAdd(output, offset0, output_numel, scalar_t(value.x), true);
-    fastAtomicAdd(output, offset1, output_numel, scalar_t(value.y), true);
   }
 }
 
@@ -122,7 +115,6 @@ static void launch_index_add_pair(
       pairs,
       half_width,
       static_cast<offset_t>(output.size(0)),
-      static_cast<offset_t>(output.numel()),
       static_cast<offset_t>(index_row_stride),
       alpha);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
