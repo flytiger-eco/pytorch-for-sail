@@ -8,6 +8,7 @@
 #include <ATen/core/Scalar.h>
 #include <ATen/core/Tensor.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/native/CanUse32BitIndexMath.h>
 #include <ATen/native/NonEmptyUtils.h>
 #include <ATen/native/cuda/KernelUtils.cuh>
@@ -151,6 +152,11 @@ bool try_launch_index_add_opt(
   static const bool enabled =
       !c10::utils::check_env("PYTORCH_DISABLE_PPU_INDEX_ADD_OPT").value_or(false);
   if (!enabled) {
+    return false;
+  }
+  if (output.dim() >= MAX_TENSORINFO_DIMS ||
+      source.dim() >= MAX_TENSORINFO_DIMS ||
+      index.dim() >= MAX_TENSORINFO_DIMS) {
     return false;
   }
   const bool index_supported = index.scalar_type() == at::kLong ||
