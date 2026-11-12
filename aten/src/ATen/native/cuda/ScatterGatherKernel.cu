@@ -11,6 +11,9 @@
 #include <ATen/native/cuda/Loops.cuh>
 #include <ATen/native/cuda/KernelUtils.cuh>
 #include <ATen/native/cuda/MemoryAccess.cuh>
+#if defined(USE_PPU)
+#include <ATen/native/cuda/ppu_opt_scatter_add_kernels/PPUScatterAdd.h>
+#endif
 #include <ATen/cuda/detail/OffsetCalculator.cuh>
 #include <ATen/cuda/Atomic.cuh>
 #include <ATen/cuda/CUDAContext.h>
@@ -536,6 +539,11 @@ void scatter_fill_cuda_kernel(const Tensor& self, int64_t dim, const Tensor& ind
 }
 
 void scatter_add_cuda_kernel(const Tensor& self, int64_t dim, const Tensor& index, const Tensor& src) {
+#if defined(USE_PPU)
+  if (ppu_scatter_add_opt::try_launch_scatter_add_opt(self, dim, index, src)) {
+    return;
+  }
+#endif
   cuda_scatter_gather_base_kernel</*is_scatter_like=*/true, /*cast_to_opaque=*/false>()(
     self, dim, index, src,
     "scatter_add_cuda_", reduce_add);
