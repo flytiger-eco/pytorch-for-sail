@@ -1228,7 +1228,7 @@ class TestPPUIndexAdd(TestCase):
             source = source.reshape(output.shape)
             if rank == 26:
                 error = "tensor has too many"
-            elif rank == 25 and not _INDEX_ADD_OPT_ENABLED:
+            elif rank == 25:
                 error = "CUDA Tensors cannot have more than 25 dimensions"
         before = output.clone()
         with DeterministicGuard(False), self._capture_pair_profile(device) as prof:
@@ -1239,7 +1239,7 @@ class TestPPUIndexAdd(TestCase):
                 output.index_add_(0, index, source)
             torch.cuda.synchronize(device)
         kernels = _device_kernels(prof)
-        hit = case in ("rank24", "rank25") and not error and _INDEX_ADD_OPT_ENABLED
+        hit = case == "rank24" and _INDEX_ADD_OPT_ENABLED
         if kernels is not None:
             if hit:
                 self.assertTrue(kernels, "CUDA profiling must capture device events")
@@ -1250,6 +1250,49 @@ class TestPPUIndexAdd(TestCase):
             self.assertEqual(output.view(torch.int16), before.view(torch.int16))
         else:
             self.assertEqual(output, torch.full_like(output, 0.125))
+
+    @onlyOn(["cuda"])
+    @dtypes(torch.float16, torch.bfloat16)
+    @parametrize("index_dtype", [torch.int32, torch.int64])
+    @parametrize("offsets", [(0, 0), (1, 0), (0, 1), (1, 1)])
+    @parametrize("api", ["inplace", "functional", "out"])
+    def test_index_add_pair_rank25_api_contract(
+        self, device, dtype, index_dtype, offsets, api
+    ):
+        if not getattr(torch.version, "ppu", None) or torch.cuda.get_device_capability(
+            device
+        ) != (8, 9):
+            self.skipTest("PPU paired atomics require an SM89 device")
+        shape = (2,) + (1,) * 23 + (8,)
+        output_offset, source_offset = offsets
+        output_storage = torch.zeros(18, device=device, dtype=dtype)
+        source_storage = torch.full((18,), 0.125, device=device, dtype=dtype)
+        output = output_storage[output_offset : output_offset + 16].reshape(shape)
+        source = source_storage[source_offset : source_offset + 16].reshape(shape)
+        index = torch.arange(2, device=device, dtype=index_dtype)
+        output_before = output_storage.clone()
+        source_before, index_before = source_storage.clone(), index.clone()
+        with DeterministicGuard(False), self._capture_pair_profile(device) as prof:
+            with self.assertRaisesRegex(
+                RuntimeError, "CUDA Tensors cannot have more than 25 dimensions"
+            ):
+                if api == "inplace":
+                    output.index_add_(0, index, source)
+                elif api == "functional":
+                    torch.index_add(output, 0, index, source)
+                else:
+                    torch.index_add(output, 0, index, source, out=output)
+            torch.cuda.synchronize(device)
+        kernels = _device_kernels(prof)
+        if kernels is not None:
+            self.assertFalse(any("ppu_index_add_opt::" in name for name in kernels))
+        self.assertEqual(
+            output_storage.view(torch.int16), output_before.view(torch.int16)
+        )
+        self.assertEqual(
+            source_storage.view(torch.int16), source_before.view(torch.int16)
+        )
+        self.assertEqual(index, index_before)
 
     @onlyOn(["cuda"])
     @dtypes(torch.float16, torch.bfloat16)
@@ -1415,6 +1458,7 @@ for _name in (
     "test_index_add_pair_index_stride_64bit",
     "test_index_add_pair_special_values",
     "test_index_add_pair_boundary_contract",
+    "test_index_add_pair_rank25_api_contract",
     "test_paired_atomic_env_initialization",
 ):
     setattr(TestPPUIndexAdd, _name, _with_route_check(getattr(TestPPUIndexAdd, _name)))
