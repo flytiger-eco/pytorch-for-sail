@@ -3,20 +3,14 @@ set -euo pipefail
 
 export SDK_INSTALL_DIR="${SDK_INSTALL_DIR:-/usr/local}"
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-echo "[smoke] 源码目录: $(pwd)"
+echo "[smoke] Source dir: $(pwd)"
 source .ci/ppu/sdk_env.sh
 source .ci/ppu/nccl_env.sh
 bash .ci/ppu/install_wheel.sh
 bash .ci/ppu/install_triton.sh
-
-echo "=== 环境自检 ==="
-echo "pr=${PR_NUMBER:-none} hostname=$(hostname) node=${NODE_NAME:-unknown}"
-echo "rank=${RANK:-0} nproc_per_node=${NPROC_PER_NODE:-1}"
-python --version
-(cd /tmp && python -c "import torch; print('torch', torch.__version__, torch.__file__); print('cuda_available', torch.cuda.is_available()); print('device_count', torch.cuda.device_count())")
-ppu-smi || echo "[warn] ppu-smi 不可用，请确认 pod 已分配 PPU 设备"
 bash .ci/ppu/install_test_deps.sh
-echo "=== CUDA 冒烟用例（run_test.py --include 精确过滤，仅 CUDA 相关） ==="
+
+echo "=== CUDA smoke cases (run_test.py --include, CUDA only) ==="
 
 K_SKIP_CASES="not test_benchmark_choice_fail_in_subproc \
 and not test_lazy_template_fusion_multiple_candidates_use_async_compile \
@@ -238,7 +232,7 @@ run_case inductor/test_nv_universal_gemm
 run_case inductor/test_max_autotune
 
 total=$(( ${#PASSED_CASES[@]} + ${#FAILED_CASES[@]} ))
-echo "=== 冒烟测试汇总（共 ${total} 个文件：通过 ${#PASSED_CASES[@]}，失败 ${#FAILED_CASES[@]}）==="
+echo "=== Smoke summary (${total} files: ${#PASSED_CASES[@]} passed, ${#FAILED_CASES[@]} failed) ==="
 if [ "${#PASSED_CASES[@]}" -ne 0 ]; then
     for case_label in "${PASSED_CASES[@]}"; do
         echo "  [pass] ${case_label}"
@@ -248,8 +242,8 @@ if [ "${#FAILED_CASES[@]}" -ne 0 ]; then
     for case_label in "${FAILED_CASES[@]}"; do
         echo "  [fail] ${case_label}"
     done
-    echo "::error::[smoke] ${#FAILED_CASES[@]} 个测试文件失败，详见上方各 [case] 段落的日志"
+    echo "::error::[smoke] ${#FAILED_CASES[@]} test files failed; see the [case] sections above"
     exit 1
 fi
 
-echo "[smoke] 完成，全部通过"
+echo "[smoke] Done, all passed"

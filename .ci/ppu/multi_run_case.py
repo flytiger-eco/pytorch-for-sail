@@ -1,6 +1,7 @@
-"""断点续跑 + hang + crash 的pytest执行器
+"""pytest runner with resume + hang/crash handling
 python3 /any/where/mulit_run_case.py test/test_ops.py
-可选 --crash-list <文件>：case白名单；预置case直接 deselect，新CRASH/HANG自动追加。
+Optional --crash-list <file>: case skip list; listed cases are deselected, new CRASH/HANG cases are appended.
+Optional --failed-list <file>: on exit, append FAILED/ERROR/CRASH/HANG cases as `nodeid<Tab>status`.
 """
 
 import os
@@ -13,12 +14,13 @@ import time
 from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
-# 1. 配置
+# 1. Config
 # ---------------------------------------------------------------------------
 CHILD_FLAG = "--resilient-child"
 CHILD_ROOT_FLAG = "--resilient-repo-root"
 ROOT_FLAG = "--repo-root"
 CRASH_LIST_FLAG = "--crash-list"
+FAILED_LIST_FLAG = "--failed-list"
 CRASH_LIST_ENV = "RESILIENT_CRASH_LIST"
 PLUGIN_MODULE = os.path.splitext(os.path.basename(__file__))[0]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,7 +35,7 @@ def _parse_cli(argv):
     while i < len(argv):
         a = argv[i]
         name, eq, value = a.partition("=")
-        if name in (ROOT_FLAG, CRASH_LIST_FLAG):
+        if name in (ROOT_FLAG, CRASH_LIST_FLAG, FAILED_LIST_FLAG):
             if not eq:
                 if i + 1 >= len(argv):
                     raise ValueError(f"{a} requires a value")
@@ -54,9 +56,11 @@ class Config:
     per_test_timeout: int
     pytest_args: tuple = ()
     crash_list: str = ""
+    failed_list: str = ""
 
     @classmethod
-    def from_env(cls, argv, repo_root, progress_file, crash_list=None):
+    def from_env(cls, argv, repo_root, progress_file, crash_list=None,
+                 failed_list=None):
         crash_list = crash_list or os.environ.get(CRASH_LIST_ENV, "")
         return cls(
             repo_root=os.path.abspath(repo_root or os.getcwd()),
@@ -64,11 +68,12 @@ class Config:
             per_test_timeout=int(os.environ.get("PER_TEST_TIMEOUT", "180")),
             pytest_args=tuple(argv),
             crash_list=os.path.abspath(crash_list) if crash_list else "",
+            failed_list=os.path.abspath(failed_list) if failed_list else "",
         )
 
 
 # ---------------------------------------------------------------------------
-# 2. 进度
+# 2. Progress
 # ---------------------------------------------------------------------------
 
 class ProgressLog:
@@ -120,6 +125,14 @@ class ProgressLog:
                 total = int(p[1])
         return total
 
+    def results(self) -> dict:
+        """First recorded result per nodeid, consistent with status_counts."""
+        results = {}
+        for p in self._lines():
+            if p[0] == self.RESULT and len(p) >= 3:
+                results.setdefault(p[1], p[2])
+        return results
+
     def status_counts(self) -> dict:
         counts, seen = {}, set()
         for p in self._lines():
@@ -154,7 +167,7 @@ class CrashList:
                 or any(pattern in item.nodeid for pattern in patterns)}
 
     def add(self, nodeid: str, status: str) -> bool:
-        """追加一条记录；未配置路径或完整 nodeid 已存在时返回 False。"""
+        """Append an entry; return False if no path is set or the full nodeid already exists."""
         if not self.path or nodeid in self.nodeids():
             return False
         directory = os.path.dirname(self.path)
@@ -168,7 +181,7 @@ class CrashList:
 
 
 # ---------------------------------------------------------------------------
-# 3. pytest 插件角色（子进程经 -p <本模块> 加载以下 hook）
+# 3. pytest plugin (child process loads these hooks via -p <this module>)
 # ---------------------------------------------------------------------------
 
 class _RepoSourceGuard:
@@ -243,7 +256,7 @@ def pytest_collection_modifyitems(config, items):
     if deselected:
         config.hook.pytest_deselected(items=deselected)
         items[:] = [it for it in items if it.nodeid not in skip]
-    # 只在首轮（尚无进度）提示一次，避免每轮重复刷屏
+    # Only notify on the first round (no progress yet) to avoid repeating every round
     if listed and not done:
         print(f"\n[resilient] crash list: deselected {len(listed)} listed "
               f"case(s) from {crash_list.path}", flush=True)
@@ -272,7 +285,7 @@ def pytest_runtest_logreport(report):
 
 
 # ---------------------------------------------------------------------------
-# 4. 监控
+# 4. Monitor
 # ---------------------------------------------------------------------------
 
 class Watchdog:
@@ -393,6 +406,30 @@ def _print_summary(log: ProgressLog) -> dict:
     return counts
 
 
+def _write_failed_list(cfg: Config, log: ProgressLog, aborted_rc=None) -> None:
+    if not cfg.failed_list:
+        return
+    existing = CrashList(cfg.failed_list).nodeids()
+    new = [(nodeid, status) for nodeid, status in log.results().items()
+           if status not in OK_STATUSES and nodeid not in existing]
+    if not new and aborted_rc is None:
+        return
+    directory = os.path.dirname(cfg.failed_list)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(cfg.failed_list, "a") as f:
+        f.write(f"# {time.strftime('%Y-%m-%d %H:%M:%S')}  "
+                f"{' '.join(cfg.pytest_args)}\n")
+        # No nodeid on a no-progress abort; write a comment line only so it isn't taken as a whole-file skip entry
+        if aborted_rc is not None:
+            f.write(f"# ABORTED rc={aborted_rc} with no progress\n")
+        for nodeid, status in new:
+            f.write(f"{nodeid}\t{status}\n")
+        f.flush()
+        os.fsync(f.fileno())
+    print(f"appended {len(new)} failed case(s) to failed list {cfg.failed_list}")
+
+
 def orchestrate(cfg: Config) -> int:
     try:
         import pytest  # noqa: F401
@@ -408,6 +445,7 @@ def orchestrate(cfg: Config) -> int:
               f"({len(crash_list.nodeids())} exclusion entries)")
     newly_listed = []
     aborted = False
+    rc = None
     rounds = 0
     while True:
         rounds += 1
@@ -447,6 +485,7 @@ def orchestrate(cfg: Config) -> int:
               f"{cfg.crash_list} (deselected from next run on):")
         for nodeid, status in newly_listed:
             print(f"  {status:<6} {nodeid}")
+    _write_failed_list(cfg, log, aborted_rc=rc if aborted else None)
     if aborted:
         return 1
     return 1 if set(counts) - OK_STATUSES else 0
@@ -494,7 +533,8 @@ def main(argv=None) -> int:
         cfg = Config.from_env(user_args or ["test/test_ops.py"],
                               repo_root=opts.get(ROOT_FLAG),
                               progress_file=progress_file,
-                              crash_list=opts.get(CRASH_LIST_FLAG))
+                              crash_list=opts.get(CRASH_LIST_FLAG),
+                              failed_list=opts.get(FAILED_LIST_FLAG))
         return orchestrate(cfg)
     finally:
         ProgressLog(progress_file).remove()
