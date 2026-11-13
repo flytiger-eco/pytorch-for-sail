@@ -11,7 +11,7 @@ ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 ARG SAIL_PIP_INDEX=https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
 ARG SAIL_PACKAGES="\
     triton==3.6.0+v0.4.0.ppu2.2.0 \
-    # torch gotag commit: 0c38fe5546deb804872ee834ac6d9d31d3c58c83
+    # torch gotag commit: 0c38fe5546deb804872ee834ac6d9d31d3c58c83,ppu2.2.1
     torch==2.11.0+v0.2.0.ppu2.2.0"
 
 ARG PCCL_VERSION=2.2.2
