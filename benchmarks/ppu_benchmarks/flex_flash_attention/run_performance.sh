@@ -34,7 +34,7 @@ Options:
 Set the PYTHON environment variable to select a Python interpreter.
 Every case validates all output/dQ/dK/dV elements after timing; failures or missing accuracy results fail the run.
 Forward reference: same-dtype MATH. Gradient reference: FP64 MATH, cast back to the input dtype.
-Tolerances (atol/rtol): fp32=0.01/0.02, bf16=0.02/0.02, fp16=0.005/0.01.
+Tolerances (atol/rtol): fp32=2e-5/2e-5, bf16=1.8e-2/1.8e-2, fp16=4e-3/4e-3.
 References are batch/query-chunked without sampling; accuracy errors and elapsed_ms are stored in performance.json.
 Accuracy adds runtime outside performance samples; existing timing-only golden files remain compatible.
 Fixed golden path (relative to the PyTorch repository root):
