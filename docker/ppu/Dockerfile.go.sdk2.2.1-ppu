@@ -20,7 +20,7 @@ ARG PCCL_TARBALL=nccl-2.27.3-v13_${PCCL_OS}_sdk-v${PCCL_VERSION}.tar.gz
 ARG PCCL_URL=https://pkg.flytiger-eco.com/artifactory/generic-local/NCCL/v${PCCL_VERSION}/${PCCL_TARBALL}
 
 LABEL org.opencontainers.image.title="PyTorch-for-SAIL SDK v2.2.1 runtime" \
-      org.opencontainers.image.description="PyTorch-for-SAIL 2.10 with triton and PCCL ${PCCL_VERSION} (SAIL / nccl)"
+      org.opencontainers.image.description="PyTorch-for-SAIL 2.11 with triton and PCCL ${PCCL_VERSION} (SAIL / nccl)"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
