@@ -17,9 +17,8 @@
 # cudafied in place by setup.py as well.
 #
 # Build flow:
-#   1. flex_flash_attention/build_lib.py (torch-import-free, nvcc/g++
-#      direct) compiles libflex_flash_attention.so from the converted
-#      submodule tree;
+#   1. 普通 CMake SHARED target 按子模块清单逐 TU 编译，复用主构建的
+#      launcher、depfile 和并行调度；build_lib.py 仅在配置期提供清单与参数；
 #   2. the so is installed next to libtorch and loaded at runtime via
 #      dlopen/dlsym from aten/src/ATen/native/transformers/
 #      flex_flash_attention_loader.h.  It is deliberately NOT linked into
@@ -48,6 +47,14 @@ endif()
 
 if(NOT USE_CUDA)
   message(STATUS "USE_FLEX_FLASH_ATTENTION requires USE_CUDA; skipping")
+  return()
+endif()
+
+# 使用与普通 CUDA 算子相同的目标解析结果；仅 8.0a 时不构建无用的 8.9 库。
+# 包含 8.9 时，FFA target 仍固定只生成 compute_89/sm_89。
+torch_cuda_get_nvcc_gencode_flag(_fa_arch_flags)
+if(NOT "${_fa_arch_flags}" MATCHES "arch=compute_89,")
+  message(STATUS "USE_FLEX_FLASH_ATTENTION requires an sm_89 target; skipping")
   return()
 endif()
 
@@ -98,61 +105,9 @@ if(NOT EXISTS
 endif()
 
 set(FLEX_FLASH_ATTENTION_SO "${CMAKE_BINARY_DIR}/lib/libflex_flash_attention.so")
-set(FLEX_FLASH_ATTENTION_OBJS "${CMAKE_BINARY_DIR}/flex_flash_attention_objs")
-
-# Torch headers for the library build: reuse the exact include set
-# torch_cpu compiles with (aten/src + codegen output dirs).  Note: do NOT
-# use Caffe2_CPU_INCLUDE here — ATen_CPU_INCLUDE is appended into it early
-# in caffe2/CMakeLists.txt before it is populated.
-set(_fa_include_args "")
-foreach(_inc ${ATen_CPU_INCLUDE})
-  list(APPEND _fa_include_args "--include" "${_inc}")
-endforeach()
-# Repo root: c10/ and torch/ headers live there (aten/src alone only
-# covers ATen/...).  torch/nn (torch::nn::functional) headers used by the
-# library API TU come from torch/csrc/api/include.
-list(APPEND _fa_include_args "--include" "${TORCH_ROOT}")
-list(APPEND _fa_include_args "--include" "${TORCH_SRC_DIR}/csrc/api/include")
-# Generated headers (cmake_macros.h under torch/headeronly/macros/, codegen
-# output) live in the build tree, not the source tree.
-list(APPEND _fa_include_args "--include" "${CMAKE_BINARY_DIR}")
-# CUDA runtime headers (cuda_runtime_api.h) for the host-side API TU;
-# ATen_CPU_INCLUDE only covers CPU headers.
-if(CUDA_TOOLKIT_INCLUDE)
-  list(APPEND _fa_include_args "--include" "${CUDA_TOOLKIT_INCLUDE}")
-endif()
-# Shell-quoted copy for the bash -c wrapper below.
-set(_fa_quoted_includes "")
-foreach(_arg ${_fa_include_args})
-  string(APPEND _fa_quoted_includes " '${_arg}'")
-endforeach()
-
-# Rebuild the so when library sources change.  Globbed at configure time:
-# add/remove files in the library then re-run cmake configure.
-file(GLOB_RECURSE _fa_src_files
-     "${_fa_module_dir}/csrc/*"
-     "${_fa_module_dir}/instantiations/*"
-     "${_fa_module_dir}/include/*")
-
-# PPU_SDK must NOT reach build_lib.py: it prepends
-# $PPU_SDK/targets/x86_64-linux/include (hggc_math_forward_declares.h) to
-# the kernel include path, whose __device__ math declarations collide with
-# GCC's constexpr overloads in <cmath> pulled in through torch headers.
-# The PPU toolchain finds its own runtime headers without it.  (env -u is
-# wrapped in bash because `cmake -E env -u` needs cmake >= 3.22.)
-add_custom_command(
-    OUTPUT "${FLEX_FLASH_ATTENTION_SO}"
-    COMMAND bash -c "env -u PPU_SDK '${Python_EXECUTABLE}' '${FLEX_FLASH_ATTENTION_BUILD_SCRIPT}' --out '${FLEX_FLASH_ATTENTION_SO}' --obj-dir '${FLEX_FLASH_ATTENTION_OBJS}' --nvcc '${CMAKE_CUDA_COMPILER}' --cxx '${CMAKE_CXX_COMPILER}' ${_fa_quoted_includes} --define '_GLIBCXX_USE_CXX11_ABI=1'"
-    # build_lib.py compiles against headers and never links libtorch; we
-    # only need the generated headers from both ATen (Register/DispatchKey)
-    # and torch (variable_factories.h etc.) to exist before our TU runs.
-    DEPENDS ATEN_CPU_FILES_GEN_TARGET ATEN_CUDA_FILES_GEN_TARGET
-            generate-torch-sources
-            "${FLEX_FLASH_ATTENTION_BUILD_SCRIPT}" ${_fa_src_files}
-    WORKING_DIRECTORY "${FLEX_FLASH_ATTENTION_ROOT}"
-    COMMENT "Building libflex_flash_attention.so (arbitrary-mask SDPA library)")
-
-add_custom_target(flex_flash_attention_lib ALL DEPENDS "${FLEX_FLASH_ATTENTION_SO}")
+# 子目录只对 FFA 隔离全局架构与 CUDA 宏，普通 torch_cuda 配置保持不变。
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/flex_flash_attention"
+                 "${CMAKE_BINARY_DIR}/flex_flash_attention")
 
 # No target_link_libraries here on purpose: see the build-flow note at
 # the top.  The call sites (attention.cpp, cuda/sdp_utils.cpp) obtain the
@@ -163,7 +118,8 @@ add_dependencies(torch_cuda flex_flash_attention_lib)
 target_compile_definitions(torch_cuda PRIVATE USE_FLEX_FLASH_ATTENTION)
 target_compile_definitions(torch_cpu PRIVATE USE_FLEX_FLASH_ATTENTION)
 
-install(FILES "${FLEX_FLASH_ATTENTION_SO}" DESTINATION "${TORCH_INSTALL_LIB_DIR}")
+install(TARGETS flex_flash_attention_lib
+        LIBRARY DESTINATION "${TORCH_INSTALL_LIB_DIR}")
 
 message(STATUS
         "USE_FLEX_FLASH_ATTENTION: building ${FLEX_FLASH_ATTENTION_SO} "
