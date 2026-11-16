@@ -114,7 +114,7 @@ class TestFFABuildMetadata(unittest.TestCase):
     def test_sources_and_flags_have_one_truth_source(self):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)
-            (root / 'kernel.cu').write_text('// 测试清单\n')
+            (root / 'kernel.cu').write_text('// Test manifest\n')
             (root / 'build_lib.py').write_text('''from pathlib import Path
 NVCC_FLAGS = ['-mllvm', 'first', '-mllvm', 'second']
 GENCODE = ['-gencode', 'arch=compute_89,code=sm_89']

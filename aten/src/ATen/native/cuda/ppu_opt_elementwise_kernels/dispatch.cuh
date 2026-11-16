@@ -9,14 +9,14 @@
 #include "cast_elementwise/include.cuh"
 #include "cast_contiguous_unrolled/include.cuh"
 
-// 仅编译 8.0a 时，host 也不实例化特化 launcher 或生成其注册桩。
-// 架构列表是编译器提供的整数列表，单架构与多架构都可作为初始化列表。
+// For 8.0a-only builds, do not instantiate specialized host launchers or their registration stubs.
+// The compiler-provided integer architecture list supports both single- and multi-target initializers.
 inline constexpr bool elementwise_ppu_has_sm89_target() {
 #if defined(__CUDA_ARCH__)
 #if defined(PPU_ELEMENTWISE_SM89_ONLY)
   return __CUDA_ARCH__ == 890;
 #else
-  // 未接入配套 launcher 时，设备与 host 保留原有完整注册行为。
+  // Preserve complete device and host registration when the paired launcher is not enabled.
   return true;
 #endif
 #elif defined(__CUDA_ARCH_LIST__)
@@ -28,7 +28,7 @@ inline constexpr bool elementwise_ppu_has_sm89_target() {
   }
   return false;
 #else
-  // 不提供目标列表的 host 编译器保留原有行为。
+  // Preserve the existing behavior for host compilers without a target architecture list.
   return true;
 #endif
 }

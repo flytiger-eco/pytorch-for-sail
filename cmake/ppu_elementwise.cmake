@@ -1,4 +1,4 @@
-# 架构裁剪必须与 SDK host 注册修复同时启用，不能仅设置预处理宏。
+# Enable architecture pruning together with the SDK host-registration fix, not through a standalone macro.
 function(torch_ppu_elementwise_launcher target)
   if(NOT USE_PPU OR NOT USE_ELEMENTWISE_OPT)
     return()
@@ -14,7 +14,7 @@ function(torch_ppu_elementwise_launcher target)
   endif()
   set_property(TARGET ${target} PROPERTY CUDA_COMPILER_LAUNCHER
     "${Python_EXECUTABLE};${_script};--;${_launcher}")
-  # launcher 修改也必须使 Ninja 重新生成对象，而不只是缓存失效。
+  # Launcher changes must also rebuild Ninja objects, not just invalidate the compiler cache.
   get_target_property(_sources ${target} SOURCES)
   foreach(_source IN LISTS _sources)
     if(_source MATCHES "\\.cu$")

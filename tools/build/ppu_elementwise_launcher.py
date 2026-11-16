@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""在 PPU 双架构编译中裁剪 sm80a 特化，并保留 sm89 的完整 host 注册。"""
+"""Prune sm80a PPU specializations while preserving complete sm89 host registration."""
 import os
 from pathlib import Path
 import re
@@ -46,30 +46,30 @@ def parse_plan(text):
             inputs, output = payload[len('-- Merge Dependencies -- '):].split(' --> ')
             plan.append(('dependencies', (shlex.split(inputs), shlex.split(output)[0])))
             continue
-        # dryrun 赋值不是命令；任何未知的实际命令都拒绝执行。
+        # Dry-run assignments are not commands; reject unknown executable stages.
         if re.match(r'^[A-Za-z_][A-Za-z_0-9]*=', payload):
             continue
         args = shlex.split(payload)
         if not args or not (Path(args[0]).is_absolute() or Path(args[0]).name in ('g++', 'gcc')):
-            raise RuntimeError(f'未知的 PPU dryrun 阶段: {payload}')
+            raise RuntimeError(f'Unknown PPU dry-run stage: {payload}')
         plan.append(('command', args))
     devices = [args for kind, args in plan if kind == 'command' and '-fcuda-is-device' in args]
     if [option(args, '-target-cpu') for args in devices] != ['ppu001', 'ppu0015']:
-        raise RuntimeError('PPU SDK 设备编译计划已变化，拒绝生成缺少注册的对象')
+        raise RuntimeError('PPU SDK device compilation plan changed; refusing to generate objects with missing registrations')
     if not any(kind == 'command' and '-split-host-code' in args for kind, args in plan):
-        raise RuntimeError('缺少 PPU host splitter')
+        raise RuntimeError('Missing PPU host splitter')
     if not any(kind == 'command' and Path(args[0]).name == 'hgfatbinary' for kind, args in plan):
-        raise RuntimeError('缺少 PPU fatbinary 阶段')
+        raise RuntimeError('Missing PPU fatbinary stage')
     sm89 = devices[1]
     if '-ppu-arch-list' not in sm89:
-        raise RuntimeError('PPU SDK 缺少独立注册上下文参数')
+        raise RuntimeError('PPU SDK is missing the independent registration-context option')
     sm89[sm89.index('-ppu-arch-list') + 1] = 'ppu0015'
-    # SDK 两种设备预处理默认共用一个 .d；必须在覆盖前保留每份依赖。
+    # Both device preprocessing passes share one .d file; preserve each dependency set before it is overwritten.
     return plan
 
 
 def run_staged(command):
-    # 每个 TU 使用独立临时目录，兼容同名源文件并行编译。
+    # Use a separate temporary directory per TU for parallel compilation of identically named sources.
     with tempfile.TemporaryDirectory(prefix='ppu_elementwise_') as work:
         args = list(command)
         if not any(arg == '--keep-dir' or arg.startswith('--keep-dir=') for arg in args):
@@ -88,7 +88,7 @@ def run_staged(command):
                 for source in dict.fromkeys(sources):
                     contents.extend(dependencies[source] if source in dependencies
                                     else [Path(source).read_text()])
-                # 多个相同 target 的 make 规则可由 Ninja/CMake 正常合并。
+                # Ninja/CMake can merge multiple make rules for the same target.
                 Path(destination).write_text('\n'.join(dict.fromkeys(contents)))
                 continue
             status = subprocess.run(stage)
@@ -103,7 +103,7 @@ def run_staged(command):
 def launch(args, inner=False):
     args = expand_response(args)
     if not args:
-        raise RuntimeError('未提供 CUDA 编译命令')
+        raise RuntimeError('No CUDA compilation command provided')
     if inner:
         if requested_arches(args) == {'80a', '89'} and is_compile(args):
             return run_staged(args)
@@ -111,14 +111,14 @@ def launch(args, inner=False):
     cached = Path(args[0]).name == 'ccache'
     compiler_index = 1 if cached else 0
     if compiler_index >= len(args) or Path(args[compiler_index]).name != 'nvcc':
-        # 自定义 launcher 无法可靠插入时保留原双架构生成，不启用头文件裁剪。
+        # Preserve both architectures without header pruning when a custom launcher cannot be wrapped reliably.
         return subprocess.call(args)
     flags = args[compiler_index + 1:]
     arches = requested_arches(flags)
     if not is_compile(flags) or not arches or not arches <= {'80a', '89'}:
         return subprocess.call(args)
     if cached and os.environ.get('CCACHE_PREFIX') and arches == {'80a', '89'}:
-        # 不覆盖用户已有 distcc 等 prefix；该路径不启用裁剪。
+        # Preserve existing prefixes such as distcc; do not enable pruning on this path.
         return subprocess.call(args)
     args.append(PRUNE_DEFINE)
     if arches != {'80a', '89'}:
@@ -126,14 +126,14 @@ def launch(args, inner=False):
     if cached and not any(char.isspace() for char in str(Path(__file__).resolve())) and any(
             flag in flags for flag in ('-MD', '-MMD', '--generate-dependencies-with-compile')):
         env = dict(os.environ)
-        # host 预处理不能代表条件设备头；依赖模式以实际三阶段 depfile 为缓存键。
+        # Host preprocessing misses conditional device headers; use all three actual depfiles for the cache key.
         env['CCACHE_DEPEND'] = '1'
         script = str(Path(__file__).resolve())
         env['CCACHE_PREFIX'] = script
         env['PPU_ELEMENTWISE_CACHE_MISS'] = '1'
         extras = env.get('CCACHE_EXTRAFILES', '')
         env['CCACHE_EXTRAFILES'] = script + (os.pathsep + extras if extras else '')
-        # nvcc 仍是 ccache 的 compiler；prefix 只在缓存未命中时执行分阶段编译。
+        # Keep nvcc as the ccache compiler; the prefix executes staged compilation only on cache misses.
         return subprocess.call(args, env=env)
     return run_staged(args[compiler_index:])
 

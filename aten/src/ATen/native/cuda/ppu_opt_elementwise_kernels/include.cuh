@@ -18,8 +18,8 @@ constexpr auto calc_io_size();
 // recognizes them by this namespace and keeps them out of the runtime registry
 // while disabled.
 namespace ppu_elementwise_opt {
-// 构建 launcher 配套启用裁剪；未使用 launcher 时保留原双架构模板与注册。
-// 裁剪时 host 保留入口，只有 8.9 设备解析特化模板树，普通内核不受影响。
+// Enable pruning with the paired build launcher; preserve both architectures and registrations without it.
+// Keep host entry points while only sm89 devices parse specialization templates; ordinary kernels are unchanged.
 #if !defined(PPU_ELEMENTWISE_SM89_ONLY) || !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 890
 #include "dispatch.cuh"
 #else

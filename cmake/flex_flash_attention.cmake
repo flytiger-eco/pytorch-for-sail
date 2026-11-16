@@ -17,8 +17,9 @@
 # cudafied in place by setup.py as well.
 #
 # Build flow:
-#   1. 普通 CMake SHARED target 按子模块清单逐 TU 编译，复用主构建的
-#      launcher、depfile 和并行调度；build_lib.py 仅在配置期提供清单与参数；
+#   1. a normal CMake SHARED target compiles each TU from the submodule
+#      manifest, reusing launchers, depfiles, and parallel scheduling;
+#      build_lib.py only supplies the manifest and flags at configure time;
 #   2. the so is installed next to libtorch and loaded at runtime via
 #      dlopen/dlsym from aten/src/ATen/native/transformers/
 #      flex_flash_attention_loader.h.  It is deliberately NOT linked into
@@ -50,8 +51,8 @@ if(NOT USE_CUDA)
   return()
 endif()
 
-# 使用与普通 CUDA 算子相同的目标解析结果；仅 8.0a 时不构建无用的 8.9 库。
-# 包含 8.9 时，FFA target 仍固定只生成 compute_89/sm_89。
+# Use the ordinary CUDA target resolution; skip the unused sm89 library for 8.0a-only builds.
+# When 8.9 is requested, the FFA target still emits only compute_89/sm_89.
 torch_cuda_get_nvcc_gencode_flag(_fa_arch_flags)
 if(NOT "${_fa_arch_flags}" MATCHES "arch=compute_89,")
   message(STATUS "USE_FLEX_FLASH_ATTENTION requires an sm_89 target; skipping")
@@ -105,7 +106,7 @@ if(NOT EXISTS
 endif()
 
 set(FLEX_FLASH_ATTENTION_SO "${CMAKE_BINARY_DIR}/lib/libflex_flash_attention.so")
-# 子目录只对 FFA 隔离全局架构与 CUDA 宏，普通 torch_cuda 配置保持不变。
+# Isolate global architectures and CUDA macros in the FFA subdirectory without changing torch_cuda.
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/flex_flash_attention"
                  "${CMAKE_BINARY_DIR}/flex_flash_attention")
 
