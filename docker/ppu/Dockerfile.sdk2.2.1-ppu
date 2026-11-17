@@ -59,7 +59,6 @@ RUN python3 -m pip install --no-cache-dir \
         "setuptools>=70.1.0" \
         wheel \
         packaging \
-        "numpy==1.26.1" \
         "typing-extensions>=4.15" \
         "sympy>=1.13.3" \
         "networkx>=2.5.1" \
@@ -67,6 +66,7 @@ RUN python3 -m pip install --no-cache-dir \
         fsspec \
         filelock \
         "scipy==1.13.1" \
+        "numpy==2.1.0" \
         "expecttest==0.3.0" \
         "hypothesis==6.56.4" \
         psutil \
