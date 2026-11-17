@@ -1,4 +1,4 @@
-# Enable architecture pruning together with the SDK host-registration fix, not through a standalone macro.
+# Require the compiler launcher to preserve sm89 host registration during architecture pruning.
 function(torch_ppu_elementwise_launcher target)
   if(NOT USE_PPU OR NOT USE_ELEMENTWISE_OPT)
     return()
@@ -8,6 +8,9 @@ function(torch_ppu_elementwise_launcher target)
   endif()
   get_filename_component(_script
     "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/build/ppu_elementwise_launcher.py" ABSOLUTE)
+  if(NOT EXISTS "${_script}")
+    message(FATAL_ERROR "PPU elementwise build requires ${_script}")
+  endif()
   get_target_property(_launcher ${target} CUDA_COMPILER_LAUNCHER)
   if(NOT _launcher)
     set(_launcher "")

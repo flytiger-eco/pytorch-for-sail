@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Prune sm80a PPU specializations while preserving complete sm89 host registration."""
+"""CUDA compiler launcher for PPU elementwise architecture pruning.
+
+dispatch.cuh instantiates the specialized kernels only for sm89, but the PPU
+SDK splitter derives host registrations from the first device pass (ppu001).
+For dual-target builds this launcher replays the nvcc stages with the sm89
+registration context repaired, so pruning never drops sm89 host registrations.
+
+Routing (see launch):
+  - non-compilation phases and single-target builds pass through unchanged;
+  - dual-target builds with ccache re-enter this script on cache misses;
+  - every other dual-target compile runs the staged replay (run_staged).
+"""
 import os
 from pathlib import Path
 import re
@@ -10,10 +21,16 @@ import tempfile
 
 
 SUPPORTED_ARCHES = frozenset(('80a', '89'))
-PRUNE_DEFINE = '-DPPU_ELEMENTWISE_SM89_ONLY=1'
+NON_COMPILE_FLAGS = ('-E', '-M', '-MM', '--preprocess', '--dryrun', '-dlink', '--device-link')
+DEPENDENCY_FLAGS = ('-MD', '-MMD', '--generate-dependencies-with-compile')
 
+
+# ---------------------------------------------------------------------------
+# Command inspection
+# ---------------------------------------------------------------------------
 
 def expand_response(args):
+    """Inline @response files so every flag is visible to the checks below."""
     result = []
     for arg in args:
         if arg.startswith('@'):
@@ -21,6 +38,11 @@ def expand_response(args):
         else:
             result.append(arg)
     return result
+
+
+def is_compile(args):
+    return ('-c' in args or '--compile' in args) and not any(
+        flag in args for flag in NON_COMPILE_FLAGS)
 
 
 def requested_arches(args):
@@ -32,15 +54,19 @@ def requested_arches(args):
     return arches
 
 
-def is_compile(args):
-    return ('-c' in args or '--compile' in args) and not any(
-        flag in args for flag in ('-E', '-M', '-MM', '--preprocess', '--dryrun',
-                                  '-dlink', '--device-link'))
-
-
 def option(args, name):
     return args[args.index(name) + 1] if name in args else None
 
+
+def ccache_supported(flags):
+    """ccache can wrap the replay only with depfile-based keys and a space-free script path."""
+    return (not any(char.isspace() for char in str(Path(__file__).resolve()))
+            and any(flag in flags for flag in DEPENDENCY_FLAGS))
+
+
+# ---------------------------------------------------------------------------
+# SDK dry-run plan: validate the stage layout, repair the sm89 context
+# ---------------------------------------------------------------------------
 
 def parse_plan(text):
     plan = []
@@ -59,20 +85,27 @@ def parse_plan(text):
         if not args or not (Path(args[0]).is_absolute() or Path(args[0]).name in ('g++', 'gcc')):
             raise RuntimeError(f'Unknown PPU dry-run stage: {payload}')
         plan.append(('command', args))
+
     devices = [args for kind, args in plan if kind == 'command' and '-fcuda-is-device' in args]
     if [option(args, '-target-cpu') for args in devices] != ['ppu001', 'ppu0015']:
         raise RuntimeError('PPU SDK device compilation plan changed; refusing to generate objects with missing registrations')
-    if not any(kind == 'command' and '-split-host-code' in args for kind, args in plan):
+    if not any('-split-host-code' in args for kind, args in plan if kind == 'command'):
         raise RuntimeError('Missing PPU host splitter')
-    if not any(kind == 'command' and Path(args[0]).name == 'hgfatbinary' for kind, args in plan):
+    if not any(Path(args[0]).name == 'hgfatbinary' for kind, args in plan if kind == 'command'):
         raise RuntimeError('Missing PPU fatbinary stage')
+
+    # Registrations follow the first device pass; point the sm89 pass at its
+    # own architecture so the pruned ppu001 pass cannot drop them.
     sm89 = devices[1]
     if '-ppu-arch-list' not in sm89:
         raise RuntimeError('PPU SDK is missing the independent registration-context option')
     sm89[sm89.index('-ppu-arch-list') + 1] = 'ppu0015'
-    # Both device preprocessing passes share one .d file; preserve each dependency set before it is overwritten.
     return plan
 
+
+# ---------------------------------------------------------------------------
+# Staged replay
+# ---------------------------------------------------------------------------
 
 def run_staged(command):
     # Use a separate temporary directory per TU for parallel compilation of identically named sources.
@@ -86,6 +119,9 @@ def run_staged(command):
             sys.stderr.write(dry.stderr)
             return dry.returncode
         plan = parse_plan(dry.stdout + '\n' + dry.stderr)
+
+        # Both device passes share one .d file; snapshot each dependency set
+        # before the next pass overwrites it, then merge them per destination.
         dependencies = {}
         for kind, stage in plan:
             if kind == 'dependencies':
@@ -107,50 +143,64 @@ def run_staged(command):
 
 
 def _run_with_ccache(args):
+    # Keep nvcc as the cache compiler; cache misses re-enter this script (see
+    # main) and take the staged path. Host preprocessing misses device-only
+    # headers, so the cache key must come from the actual depfiles.
     env = dict(os.environ)
-    # Host preprocessing misses device-only headers; use the actual depfiles for the cache key.
-    env['CCACHE_DEPEND'] = '1'
     script = str(Path(__file__).resolve())
+    env['CCACHE_DEPEND'] = '1'
     env['CCACHE_PREFIX'] = script
     env['PPU_ELEMENTWISE_CACHE_MISS'] = '1'
     extras = env.get('CCACHE_EXTRAFILES', '')
     env['CCACHE_EXTRAFILES'] = script + (os.pathsep + extras if extras else '')
-    # Keep nvcc as the cache compiler; run staged compilation only on cache misses.
     return subprocess.call(args, env=env)
 
+
+# ---------------------------------------------------------------------------
+# Routing
+# ---------------------------------------------------------------------------
 
 def launch(args, inner=False):
     args = expand_response(args)
     if not args:
         raise RuntimeError('No CUDA compilation command provided')
-    if inner:
-        if requested_arches(args) == SUPPORTED_ARCHES and is_compile(args):
-            return run_staged(args)
+
+    # 1. Only real compilations need the registration fix.
+    if not is_compile(args):
         return subprocess.call(args)
 
-    cached = Path(args[0]).name == 'ccache'
+    # 2. The compiler must be nvcc, optionally wrapped by ccache. `inner` is
+    #    the ccache-miss re-entry, which always starts at nvcc directly.
+    cached = not inner and Path(args[0]).name == 'ccache'
     compiler_index = 1 if cached else 0
     if compiler_index >= len(args) or Path(args[compiler_index]).name != 'nvcc':
-        # Unknown launchers must bypass pruning to preserve registration.
-        return subprocess.call(args)
+        raise RuntimeError('PPU elementwise compilation requires nvcc, optionally preceded by ccache')
     flags = args[compiler_index + 1:]
-    arches = requested_arches(flags)
-    if not is_compile(flags) or not arches or not arches <= SUPPORTED_ARCHES:
-        return subprocess.call(args)
-    if cached and os.environ.get('CCACHE_PREFIX') and arches == SUPPORTED_ARCHES:
-        # Preserve existing prefixes; pruning requires our own prefix.
-        return subprocess.call(args)
 
-    args.append(PRUNE_DEFINE)
+    # 3. Pruning is unconditional in dispatch.cuh, so unsupported targets must
+    #    fail loudly instead of silently producing objects without registrations.
+    arches = requested_arches(flags)
+    if not arches or not arches <= SUPPORTED_ARCHES:
+        raise RuntimeError('PPU elementwise compilation requires explicit compute_80a, compute_89, or compute_80 targets')
+
+    # 4. Single-target builds need no fix: the only device pass generates the
+    #    registrations (sm89), or there are no specializations at all (80a).
     if arches != SUPPORTED_ARCHES:
         return subprocess.call(args)
-    if cached and not any(char.isspace() for char in str(Path(__file__).resolve())) and any(
-            flag in flags for flag in ('-MD', '-MMD', '--generate-dependencies-with-compile')):
+
+    # 5. Dual-target builds must repair the sm89 registration context.
+    if inner:
+        return run_staged(args)
+    if cached and os.environ.get('CCACHE_PREFIX'):
+        raise RuntimeError('PPU elementwise dual-target compilation requires its own CCACHE_PREFIX; unset the existing prefix')
+    if cached and ccache_supported(flags):
         return _run_with_ccache(args)
     return run_staged(args[compiler_index:])
 
 
 def main():
+    # CMake invokes: python launcher.py -- <original compiler command>.
+    # ccache invokes the prefix as: launcher.py <nvcc command> (no '--').
     inner = os.environ.get('PPU_ELEMENTWISE_CACHE_MISS') == '1' and '--' not in sys.argv
     args = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else sys.argv[1:]
     try:

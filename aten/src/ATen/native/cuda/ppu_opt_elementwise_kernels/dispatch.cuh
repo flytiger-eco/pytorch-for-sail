@@ -13,12 +13,7 @@
 // The compiler-provided integer architecture list supports both single- and multi-target initializers.
 inline constexpr bool elementwise_ppu_has_sm89_target() {
 #if defined(__CUDA_ARCH__)
-#if defined(PPU_ELEMENTWISE_SM89_ONLY)
   return __CUDA_ARCH__ == 890;
-#else
-  // Preserve complete device and host registration when the paired launcher is not enabled.
-  return true;
-#endif
 #elif defined(__CUDA_ARCH_LIST__)
   constexpr int architectures[] = {__CUDA_ARCH_LIST__};
   for (const int architecture : architectures) {
