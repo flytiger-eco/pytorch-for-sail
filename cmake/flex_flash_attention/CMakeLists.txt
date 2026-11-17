@@ -1,35 +1,8 @@
 # Isolate PyTorch's global CUDA architectures, half macros, and optimization flags in this directory.
 # Read flags from the submodule build_lib.py; CMake manages compilation, depfiles, caching, and parallelism.
-set(_fa_metadata_script "${TORCH_ROOT}/tools/build/ffa_build_metadata.py")
-execute_process(
-  COMMAND "${Python_EXECUTABLE}" "${_fa_metadata_script}" "${_fa_module_dir}"
-  RESULT_VARIABLE _fa_metadata_status
-  OUTPUT_VARIABLE _fa_metadata
-  ERROR_VARIABLE _fa_metadata_error)
-if(NOT _fa_metadata_status EQUAL 0)
-  message(FATAL_ERROR "Cannot read FFA build metadata: ${_fa_metadata_error}")
-endif()
+torch_ffa_build_metadata("${_fa_module_dir}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-  "${_fa_metadata_script}" "${_fa_module_dir}/build_lib.py"
-  "${_fa_module_dir}/sources.py")
-
-function(_fa_read_list key output)
-  string(JSON _length LENGTH "${_fa_metadata}" "${key}")
-  set(_items "")
-  if(_length GREATER 0)
-    math(EXPR _last "${_length} - 1")
-    foreach(_index RANGE 0 ${_last})
-      string(JSON _item GET "${_fa_metadata}" "${key}" ${_index})
-      list(APPEND _items "${_item}")
-    endforeach()
-  endif()
-  set(${output} "${_items}" PARENT_SCOPE)
-endfunction()
-
-_fa_read_list(sources _fa_sources)
-_fa_read_list(includes _fa_kernel_includes)
-_fa_read_list(cuda_flags _fa_cuda_flags)
-_fa_read_list(cxx_flags _fa_cxx_flags)
+  "${_fa_module_dir}/build_lib.py" "${_fa_module_dir}/sources.py")
 
 # Limit these settings to this directory; preserve torch_cuda architectures and language standards.
 foreach(_language CXX CUDA)
