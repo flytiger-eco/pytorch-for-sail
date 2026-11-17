@@ -1,9 +1,9 @@
 name: ppu-890-base-api-nightly
 
 on:
-  schedule:
-    # 20:00
-    - cron: '0 12 * * *'
+  # schedule:
+  #   # 20:00
+  #   - cron: '0 12 * * *'
   workflow_dispatch:
 
 concurrency:

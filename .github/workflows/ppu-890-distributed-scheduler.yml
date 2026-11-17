@@ -2,8 +2,8 @@ name: ppu-890-distributed-scheduler
 
 on:
   schedule:
-    # 02:00
-    - cron: '0 18 * * *'
+    # 20:00
+    - cron: '0 12 * * *'
   workflow_dispatch:
 
 permissions:

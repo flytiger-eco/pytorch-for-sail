@@ -2,8 +2,8 @@ name: ppu-890-accuracy-scheduler
 
 on:
   schedule:
-    # 04:00
-    - cron: '0 20 * * *'
+    # 22:00
+    - cron: '0 14 * * *'
   workflow_dispatch:
 
 permissions:
