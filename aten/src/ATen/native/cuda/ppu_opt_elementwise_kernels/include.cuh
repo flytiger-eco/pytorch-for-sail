@@ -18,29 +18,7 @@ constexpr auto calc_io_size();
 // recognizes them by this namespace and keeps them out of the runtime registry
 // while disabled.
 namespace ppu_elementwise_opt {
-// Enable pruning with the paired build launcher; preserve both architectures and registrations without it.
-// Keep host entry points while only sm89 devices parse specialization templates; ordinary kernels are unchanged.
-#if !defined(PPU_ELEMENTWISE_SM89_ONLY) || !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 890
 #include "dispatch.cuh"
-#else
-template <typename func_t, typename array_t>
-static inline bool try_launch_ppu_nocast_elementwise_kernel(
-    TensorIteratorBase&, const func_t&, array_t) {
-  return false;
-}
-
-template <typename func_t, typename array_t>
-static inline bool try_launch_ppu_cast_elementwise_kernel(
-    TensorIteratorBase&, const func_t&, array_t) {
-  return false;
-}
-
-template <typename func_t, typename array_t>
-static inline bool try_launch_ppu_cast_contiguous_unrolled_kernel(
-    TensorIteratorBase&, const func_t&, array_t) {
-  return false;
-}
-#endif
 } // namespace ppu_elementwise_opt
 
 using ppu_elementwise_opt::try_launch_ppu_cast_contiguous_unrolled_kernel;
