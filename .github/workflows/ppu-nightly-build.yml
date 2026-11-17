@@ -105,6 +105,7 @@ jobs:
         ${{ inputs.build_command || 'unset PIP_INDEX_URL
         source /usr/local/PPU_SDK/envsetup.sh || true
         pip install setuptools-scm==9.2.2
+        pip install numpy==2.1.0
         pip install --upgrade setuptools wheel typing_extensions
         python3 -m pip show setuptools setuptools-scm packaging wheel typing_extensions
         export NCCL_INCLUDE_DIR="/usr/local/pccl/nccl_wrapper/include"
