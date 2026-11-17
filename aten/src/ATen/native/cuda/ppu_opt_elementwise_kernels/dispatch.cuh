@@ -23,8 +23,7 @@ inline constexpr bool elementwise_ppu_has_sm89_target() {
   }
   return false;
 #else
-  // Preserve the existing behavior for host compilers without a target architecture list.
-  return true;
+#error "PPU elementwise host compilation requires __CUDA_ARCH_LIST__"
 #endif
 }
 
