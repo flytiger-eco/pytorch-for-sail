@@ -9,6 +9,7 @@ import sys
 import tempfile
 
 
+SUPPORTED_ARCHES = frozenset(('80a', '89'))
 PRUNE_DEFINE = '-DPPU_ELEMENTWISE_SM89_ONLY=1'
 
 
@@ -100,41 +101,47 @@ def run_staged(command):
         return 0
 
 
+def _run_with_ccache(args):
+    env = dict(os.environ)
+    # Host preprocessing misses device-only headers; use the actual depfiles for the cache key.
+    env['CCACHE_DEPEND'] = '1'
+    script = str(Path(__file__).resolve())
+    env['CCACHE_PREFIX'] = script
+    env['PPU_ELEMENTWISE_CACHE_MISS'] = '1'
+    extras = env.get('CCACHE_EXTRAFILES', '')
+    env['CCACHE_EXTRAFILES'] = script + (os.pathsep + extras if extras else '')
+    # Keep nvcc as the cache compiler; run staged compilation only on cache misses.
+    return subprocess.call(args, env=env)
+
+
 def launch(args, inner=False):
     args = expand_response(args)
     if not args:
         raise RuntimeError('No CUDA compilation command provided')
     if inner:
-        if requested_arches(args) == {'80a', '89'} and is_compile(args):
+        if requested_arches(args) == SUPPORTED_ARCHES and is_compile(args):
             return run_staged(args)
         return subprocess.call(args)
+
     cached = Path(args[0]).name == 'ccache'
     compiler_index = 1 if cached else 0
     if compiler_index >= len(args) or Path(args[compiler_index]).name != 'nvcc':
-        # Preserve both architectures without header pruning when a custom launcher cannot be wrapped reliably.
+        # Unknown launchers must bypass pruning to preserve registration.
         return subprocess.call(args)
     flags = args[compiler_index + 1:]
     arches = requested_arches(flags)
-    if not is_compile(flags) or not arches or not arches <= {'80a', '89'}:
+    if not is_compile(flags) or not arches or not arches <= SUPPORTED_ARCHES:
         return subprocess.call(args)
-    if cached and os.environ.get('CCACHE_PREFIX') and arches == {'80a', '89'}:
-        # Preserve existing prefixes such as distcc; do not enable pruning on this path.
+    if cached and os.environ.get('CCACHE_PREFIX') and arches == SUPPORTED_ARCHES:
+        # Preserve existing prefixes; pruning requires our own prefix.
         return subprocess.call(args)
+
     args.append(PRUNE_DEFINE)
-    if arches != {'80a', '89'}:
+    if arches != SUPPORTED_ARCHES:
         return subprocess.call(args)
     if cached and not any(char.isspace() for char in str(Path(__file__).resolve())) and any(
             flag in flags for flag in ('-MD', '-MMD', '--generate-dependencies-with-compile')):
-        env = dict(os.environ)
-        # Host preprocessing misses conditional device headers; use all three actual depfiles for the cache key.
-        env['CCACHE_DEPEND'] = '1'
-        script = str(Path(__file__).resolve())
-        env['CCACHE_PREFIX'] = script
-        env['PPU_ELEMENTWISE_CACHE_MISS'] = '1'
-        extras = env.get('CCACHE_EXTRAFILES', '')
-        env['CCACHE_EXTRAFILES'] = script + (os.pathsep + extras if extras else '')
-        # Keep nvcc as the ccache compiler; the prefix executes staged compilation only on cache misses.
-        return subprocess.call(args, env=env)
+        return _run_with_ccache(args)
     return run_staged(args[compiler_index:])
 
 
