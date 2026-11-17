@@ -24,7 +24,12 @@ def expand_response(args):
 
 
 def requested_arches(args):
-    return set(re.findall(r'arch=compute_(\w+)', ' '.join(args)))
+    arches = set(re.findall(r'arch=compute_(\w+)', ' '.join(args)))
+    # PPU compute_80 expands to both targets; leave the compiler arguments unchanged.
+    if '80' in arches:
+        arches.remove('80')
+        arches.update(SUPPORTED_ARCHES)
+    return arches
 
 
 def is_compile(args):

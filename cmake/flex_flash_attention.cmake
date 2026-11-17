@@ -51,10 +51,10 @@ if(NOT USE_CUDA)
   return()
 endif()
 
-# Use the ordinary CUDA target resolution; skip the unused sm89 library for 8.0a-only builds.
-# When 8.9 is requested, the FFA target still emits only compute_89/sm_89.
+# PPU compute_80 expands to both targets; compute_80a alone does not include sm89.
+# When sm89 is included, the FFA target still emits only compute_89/sm_89.
 torch_cuda_get_nvcc_gencode_flag(_fa_arch_flags)
-if(NOT "${_fa_arch_flags}" MATCHES "arch=compute_89,")
+if(NOT "${_fa_arch_flags}" MATCHES "arch=compute_(80|89),")
   message(STATUS "USE_FLEX_FLASH_ATTENTION requires an sm_89 target; skipping")
   return()
 endif()
