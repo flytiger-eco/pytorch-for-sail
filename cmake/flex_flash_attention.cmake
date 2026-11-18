@@ -38,7 +38,7 @@
 # and the USE_FLEX_FLASH_ATTENTION hunks in native_functions.yaml /
 # attention.cpp / sdp_utils.cpp.
 
-# 只解析子模块的声明式清单子集，不执行 Python；结构变化必须显式报错。
+# Parse only the submodule's declarative manifest subset without executing Python; reject structural changes.
 function(_fa_tokens text output)
   set(_code "")
   set(_strings "")
@@ -47,7 +47,7 @@ function(_fa_tokens text output)
   set(_indent 0)
   set(_depth 0)
   while(NOT "${text}" STREQUAL "")
-    # 记录逻辑语句缩进；括号内换行和 docstring 不改变控制流。
+    # Track logical statement indentation; bracketed newlines and docstrings do not change control flow.
     if(_line_start AND NOT text MATCHES "^([ \t\r\n#]|\"\"\"|''')")
       if(_depth EQUAL 0)
         list(APPEND _layout "${_indent}")
@@ -92,7 +92,7 @@ function(_fa_tokens text output)
         message(FATAL_ERROR "Unsupported FFA manifest literal (escape, semicolon, or bracket)")
       endif()
       list(LENGTH _strings _index)
-      # 空字符串也必须保留一个列表槽位。
+      # Preserve a list slot even for an empty string.
       list(APPEND _strings "literal:${_literal}")
       if(_formatted)
         string(APPEND _code "F${_index}")
@@ -219,7 +219,7 @@ function(torch_ffa_build_metadata module_dir)
   file(REAL_PATH "${module_dir}" _module)
   file(READ "${_module}/build_lib.py" _build)
   file(READ "${_module}/sources.py" _manifest)
-  # 检查 import 阶段的骨架；防止常量在稍后被重赋值或动态修改。
+  # Validate the import-time skeleton to reject later reassignment or dynamic mutation of constants.
   set(_build_globals "${_build}")
   foreach(_name kernel_include_dirs sources header_stamp compile_one main)
     _fa_block("${_build}" "${_name}" _block)
@@ -242,7 +242,7 @@ function(torch_ffa_build_metadata module_dir)
   if(NOT _source_module STREQUAL "sources.py" OR NOT _main STREQUAL "__main__")
     message(FATAL_ERROR "Unsupported FFA source module import")
   endif()
-  # 清单的全局声明只有目录和 head-dim；不接受额外的顶层变更逻辑。
+  # Manifest globals contain only the directory and head dimensions; reject extra top-level mutation logic.
   set(_globals "${_manifest}")
   foreach(_name _sources _sources_f32 flex_flash_sources)
     _fa_block("${_manifest}" "${_name}" _block)
@@ -258,7 +258,7 @@ function(torch_ffa_build_metadata module_dir)
   string(REPLACE "," ";" _fa_head_dimensions "${CMAKE_MATCH_1}")
   list(FILTER _fa_head_dimensions EXCLUDE REGEX "^$")
   _fa_literal(_tokens_strings S0 _fa_instantiations)
-  # 支持 flattened 以及以 THIS_DIR.parent 定位 repo root 的 nested 布局。
+  # Support flattened layouts and nested layouts that locate the repository root through THIS_DIR.parent.
   string(REGEX MATCH "(^|\n)THIS_DIR[ \t]*=[^\n]*" _this_dir "${_build}")
   _fa_tokens("${_this_dir}" _this_dir)
   if(NOT _this_dir STREQUAL "THIS_DIR=Path(__file__).resolve().parent")
@@ -303,7 +303,7 @@ function(torch_ffa_build_metadata module_dir)
 
   _fa_block("${_build}" sources _block)
   _fa_tokens("${_block}" _tokens)
-  # 这里只检查结构，路径和排除前缀仍从子模块字面量读取。
+  # Validate only the structure here; read paths and exclusion prefixes from submodule literals.
   if(NOT _tokens MATCHES "^defsources\\(\\):srcs=\\[sforsinflex_flash_sources\\(\\)ifnots\\.startswith\\(S0\\)\\]srcs=\\[REPO_DIR/sforsinsrcs\\]srcs\\.append\\(THIS_DIR((/S[0-9]+)+)\\)returnsrcs$"
       OR NOT _tokens_layout STREQUAL "0;4;4;4;4")
     message(FATAL_ERROR "Unsupported FFA library sources structure")
@@ -336,7 +336,7 @@ function(torch_ffa_build_metadata module_dir)
 
   _fa_block("${_build}" kernel_include_dirs _block)
   _fa_tokens("${_block}" _tokens)
-  # 固定控制流门禁防止上游更改路径优先级后被静默忽略。
+  # Validate the control-flow skeleton so upstream path-priority changes cannot be silently ignored.
   _fa_tokens([=[
 def kernel_include_dirs():
     dirs = [str(THIS_DIR / ""), str(REPO_DIR)]
@@ -398,7 +398,7 @@ def kernel_include_dirs():
   if(NOT _found)
     message(FATAL_ERROR "actlize headers not found; set ACTLIZE_DIR or provide csrc/actlize")
   endif()
-  # 旧 metadata 包装器移除 PPU_SDK；SDK include 由父 CMake target 注入。
+  # The former metadata wrapper removed PPU_SDK; the parent CMake target supplies SDK includes.
   _fa_list("${_build}" NVCC_FLAGS _cuda_flags)
   _fa_list("${_build}" GENCODE _gencode)
   _fa_list("${_build}" CXX_FLAGS _cxx_flags)
