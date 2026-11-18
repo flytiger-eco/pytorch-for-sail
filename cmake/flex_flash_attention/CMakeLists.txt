@@ -1,28 +1,44 @@
-# Isolate PyTorch's global CUDA architectures, half macros, and optimization flags in this directory.
-# Read flags from the submodule build_lib.py; CMake manages compilation, depfiles, caching, and parallelism.
+# Read the standalone command contract from build_lib.py, without inheriting caffe2's directory flags.
+# These settings are local to this directory; torch_cuda's architectures, ABI and flags are unchanged.
 torch_ffa_build_metadata("${_fa_module_dir}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${_fa_module_dir}/build_lib.py" "${_fa_module_dir}/sources.py")
 
-# Limit these settings to this directory; preserve torch_cuda architectures and language standards.
+# Clearing language flags alone does not clear add_definitions/include_directories/add_compile_options.
+# The standalone oracle did not receive these directory properties (including system include prefixes).
+foreach(_property COMPILE_DEFINITIONS INCLUDE_DIRECTORIES COMPILE_OPTIONS LINK_OPTIONS LINK_DIRECTORIES)
+  set_property(DIRECTORY PROPERTY ${_property} "")
+endforeach()
 foreach(_language CXX CUDA)
   set(CMAKE_${_language}_FLAGS "")
+  unset(CMAKE_${_language}_STANDARD)
+  unset(CMAKE_${_language}_STANDARD_REQUIRED)
+  unset(CMAKE_${_language}_EXTENSIONS)
   foreach(_config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
     set(CMAKE_${_language}_FLAGS_${_config} "")
+    set_property(DIRECTORY PROPERTY COMPILE_DEFINITIONS_${_config} "")
   endforeach()
 endforeach()
+# Do not add a diagnostic-color flag or another -std option to the parsed oracle flags.
+unset(CMAKE_COLOR_DIAGNOSTICS)
 set(CMAKE_CUDA_ARCHITECTURES OFF)
-# Match the original standalone library: link with CXX only, without adding libtorch/CUDA dependencies.
+# The standalone link was only CXX -shared -Wl,-soname,<name> <objects> -o <library>.
+# Preserve Ninja's linker depfile bookkeeping, but do not inherit torch's link flags/RPATH/lwyu.
+set(CMAKE_SHARED_LINKER_FLAGS "")
+foreach(_config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+  set(CMAKE_SHARED_LINKER_FLAGS_${_config} "")
+endforeach()
+set(CMAKE_SHARED_LIBRARY_CXX_FLAGS "")
+set(CMAKE_SHARED_LIBRARY_LINK_CXX_FLAGS "")
 set(CMAKE_CUDA_IMPLICIT_LINK_LIBRARIES "")
 set(CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES "")
 add_library(flex_flash_attention_lib SHARED ${_fa_sources})
 set_target_properties(flex_flash_attention_lib PROPERTIES
-  OUTPUT_NAME flex_flash_attention
+  OUTPUT_NAME flex_flash_attention DEFINE_SYMBOL ""
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-  CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
-  CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF
   CUDA_ARCHITECTURES OFF CUDA_RUNTIME_LIBRARY None
-  POSITION_INDEPENDENT_CODE ON LINKER_LANGUAGE CXX)
+  POSITION_INDEPENDENT_CODE ON LINKER_LANGUAGE CXX
+  LINK_WHAT_YOU_USE FALSE SKIP_BUILD_RPATH TRUE SKIP_INSTALL_RPATH TRUE)
 foreach(_config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
   set_target_properties(flex_flash_attention_lib PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY_${_config} "${CMAKE_BINARY_DIR}/lib")
@@ -55,6 +71,7 @@ if(DEFINED GLIBCXX_USE_CXX11_ABI)
 else()
   target_compile_definitions(flex_flash_attention_lib PRIVATE _GLIBCXX_USE_CXX11_ABI=1)
 endif()
+# Explicit oracle include list, in the original order, without an inherited prefix.
 target_include_directories(flex_flash_attention_lib PRIVATE
   ${_fa_kernel_includes} ${ATen_CPU_INCLUDE} "${TORCH_ROOT}"
   "${TORCH_SRC_DIR}/csrc/api/include" "${CMAKE_BINARY_DIR}"
