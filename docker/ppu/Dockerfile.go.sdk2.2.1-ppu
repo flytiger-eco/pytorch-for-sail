@@ -11,6 +11,8 @@ ARG PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ARG SAIL_PIP_INDEX=https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
 ARG SAIL_PACKAGES="\
     triton==3.6.0+v0.4.0.ppu2.2.0 \
+    deep_ep==2.2.2+v0.1.0.ppu2.2.1 \
+    torchvision==0.26.0+v0.1.0.ppu2.2.0 \
     torch==2.11.0+v0.2.0.ppu2.2.0"
 
 ARG PCCL_VERSION=2.2.2
