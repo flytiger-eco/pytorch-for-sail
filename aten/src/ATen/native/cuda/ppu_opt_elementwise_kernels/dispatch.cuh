@@ -9,6 +9,24 @@
 #include "cast_elementwise/include.cuh"
 #include "cast_contiguous_unrolled/include.cuh"
 
+// For 8.0a-only builds, do not instantiate specialized host launchers or their registration stubs.
+// The compiler-provided integer architecture list supports both single- and multi-target initializers.
+inline constexpr bool elementwise_ppu_has_sm89_target() {
+#if defined(__CUDA_ARCH__)
+  return __CUDA_ARCH__ == 890;
+#elif defined(__CUDA_ARCH_LIST__)
+  constexpr int architectures[] = {__CUDA_ARCH_LIST__};
+  for (const int architecture : architectures) {
+    if (architecture == 890) {
+      return true;
+    }
+  }
+  return false;
+#else
+#error "PPU elementwise host compilation requires __CUDA_ARCH_LIST__"
+#endif
+}
+
 // ── Dispatch table macros ────────────────────────────────────
 // X-macro tables eliminate the manual if/else chain in each entry
 // function.  The helper expands to a single arity+ndim check.
@@ -47,24 +65,30 @@
 
 template <typename func_t, typename array_t>
 static inline bool try_launch_ppu_nocast_elementwise_kernel(TensorIteratorBase& iter, const func_t& f, array_t data) {
-  if (!elementwise_ppu_enabled()) return false;
-  using traits = function_traits<func_t>;
-  PPU_NOCAST_DISPATCH_TABLE(PPU_DISPATCH_ONE)
+  if constexpr (elementwise_ppu_has_sm89_target()) {
+    if (!elementwise_ppu_enabled()) return false;
+    using traits = function_traits<func_t>;
+    PPU_NOCAST_DISPATCH_TABLE(PPU_DISPATCH_ONE)
+  }
   return false;
 }
 
 template <typename func_t, typename array_t>
 static inline bool try_launch_ppu_cast_elementwise_kernel(TensorIteratorBase& iter, const func_t& f, array_t data) {
-  if (!elementwise_ppu_enabled()) return false;
-  using traits = function_traits<func_t>;
-  PPU_CAST_DISPATCH_TABLE(PPU_DISPATCH_ONE)
+  if constexpr (elementwise_ppu_has_sm89_target()) {
+    if (!elementwise_ppu_enabled()) return false;
+    using traits = function_traits<func_t>;
+    PPU_CAST_DISPATCH_TABLE(PPU_DISPATCH_ONE)
+  }
   return false;
 }
 
 template <typename func_t, typename array_t>
 static inline bool try_launch_ppu_cast_contiguous_unrolled_kernel(TensorIteratorBase& iter, const func_t& f, array_t data) {
-  if (!elementwise_ppu_enabled()) return false;
-  using traits = function_traits<func_t>;
-  PPU_CAST_CONTIG_DISPATCH_TABLE(PPU_DISPATCH_ONE)
+  if constexpr (elementwise_ppu_has_sm89_target()) {
+    if (!elementwise_ppu_enabled()) return false;
+    using traits = function_traits<func_t>;
+    PPU_CAST_CONTIG_DISPATCH_TABLE(PPU_DISPATCH_ONE)
+  }
   return false;
 }
