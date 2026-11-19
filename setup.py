@@ -1808,6 +1808,8 @@ def run_cudafy_once(
     cmd = [sys.executable, cudafy_arg, command, f"--version={cli_version}", target_arg]
     if command == "actlize" and cli_version in ("0.8.0", "1.0.0"):
         cmd.append("--compat")
+    if command == "flash-attention" and cli_version == "2.7.2":
+        cmd.append("--compat")
     print(f"Run cudafy: {' '.join(cmd)}")
     subprocess.run(cmd, cwd=torch_root, check=True)
 
@@ -1934,7 +1936,6 @@ def main() -> None:
                 )
 
             run_cudafy_once(torch_root, "flex-flash-attention", "2.8.2", fa_flex_root)
-            run_cudafy_once(torch_root, "actlize", "v1.0.0", actlize_include_root)
 
     install_requires = [
         "filelock",
