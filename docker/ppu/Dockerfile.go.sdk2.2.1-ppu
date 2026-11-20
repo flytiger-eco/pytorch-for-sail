@@ -1,6 +1,3 @@
-flytiger2.13
-# PyTorch-for-SAIL 2.13 runtime environment on Flytiger SDK v2.2.1.
-
 ARG BASE_IMAGE=pkg.flytiger-eco.com/docker_release/ppu:sdk2.2.1-cuda13.0-ubuntu24-py312-20261103
 FROM ${BASE_IMAGE}
 
@@ -8,14 +5,14 @@ USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+
 ARG SAIL_PIP_INDEX=https://pkg.flytiger-eco.com/artifactory/api/pypi/pypi_index/simple
 
-# torch==2.11.0+v0.2.0.gotag.ppu2.2.1, gotag commit==3fd732d726a5db1a36764480dfd096aea8086bac
 ARG SAIL_PACKAGES="\
-    triton==3.6.0+v0.4.0.ppu2.2.0 \
-    deep_ep==2.2.2+v0.1.0.ppu2.2.1 \
+    torch==2.13.0+v0.1.0.ppu2.2.0 \
     torchvision==0.28.0+v0.1.0.ppu2.2.0 \
-    torch==2.11.0+v0.2.0.ppu2.2.0"
+    triton==3.7.1+v0.1.0.ppu2.2.0 \
+    deep_ep==2.2.2+v0.1.0.ppu2.2.1"
 
 ARG PCCL_VERSION=2.2.2
 ARG PCCL_OS=ubuntu2404
@@ -60,6 +57,8 @@ RUN set -eux; \
     ls -l "${NCCL_LIB_DIR}"/libpccl.so*
 
 RUN python3 -m pip install --no-cache-dir \
+        --timeout 300 \
+        --retries 5 \
         --index-url "${PYPI_INDEX_URL}" \
         "absl-py==2.1.0" \
         "appdirs==1.4.4" \
@@ -96,7 +95,7 @@ RUN python3 -m pip install --no-cache-dir \
         "intel-openmp==2021.1.1" \
         "iopath==0.1.10" \
         "Jinja2==3.1.2" \
-        "joblib==1.4.0" \
+        "joblib==1.2.0" \
         "llvmlite==0.42.0" \
         "MarkupSafe==2.1.3" \
         "mkl==2021.1.1" \
@@ -106,7 +105,7 @@ RUN python3 -m pip install --no-cache-dir \
         "ninja==1.10.0" \
         "numpy==2.1.0" \
         "oauth2client==4.1.3" \
-        "packaging==21.3" \
+        "packaging==24.1" \
         "Pillow==10.1.0" \
         "pip==24.0" \
         "pooch==1.6.0" \
@@ -114,6 +113,7 @@ RUN python3 -m pip install --no-cache-dir \
         "protobuf==3.20.3" \
         "pyasn1==0.6.5" \
         "pyasn1_modules==0.4.0" \
+        "pybind11==3.1.0" \
         "pycparser==2.21" \
         "pyparsing==3.0.8" \
         "python-dateutil==2.8.2" \
@@ -122,11 +122,10 @@ RUN python3 -m pip install --no-cache-dir \
         "PyYAML==6.0.2" \
         "regex==2022.10.31" \
         "requests==2.27.1" \
-        "resampy==0.4.2" \
         "rsa==4.9" \
         "safetensors==0.4.0" \
         "scikit-learn==1.4.2" \
-        "scipy==1.11.3" \
+        "scipy==1.13.1" \
         "setuptools==75.8.0" \
         "six==1.16.0" \
         "sortedcontainers==2.4.0" \
@@ -153,6 +152,8 @@ RUN source "${PPU_SDK}/envsetup.sh" >/dev/null \
             --no-cache-dir \
             --no-deps \
             --no-build-isolation \
+            --timeout 300 \
+            --retries 5 \
             --index-url ${SAIL_PIP_INDEX} \
             "${spec}" \
         || exit 1; \
@@ -163,7 +164,7 @@ RUN source "${PPU_SDK}/envsetup.sh" >/dev/null \
 
 RUN source "${PPU_SDK}/envsetup.sh" >/dev/null \
     && source "${NCCL_HOME}/envsetup.sh" release >/dev/null \
-    && echo "nccl: $(nccl --version 2>&1 | head -1)" \
+    && echo "PCCL libs:" && ls -l "${NCCL_LIB_DIR}"/libpccl.so* \
     && python3 -c 'import torch, triton; print("torch", torch.__version__, "triton", triton.__version__, "distributed", torch.distributed.is_available())'
 
 WORKDIR /workspace
