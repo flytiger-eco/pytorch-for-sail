@@ -1693,6 +1693,8 @@ if(USE_CUDA)
     # registration through registration.cpp, which enables them only on M890
     # with PYTORCH_ENABLE_PPU_ELEMENTWISE_OPT="1" and always drops them on 810E.
     target_compile_definitions(torch_cuda PRIVATE USE_ELEMENTWISE_OPT)
+    include(${PROJECT_SOURCE_DIR}/cmake/ppu_elementwise.cmake)
+    torch_ppu_elementwise_launcher(torch_cuda)
     target_sources(torch_cuda PRIVATE
       ${PROJECT_SOURCE_DIR}/aten/src/ATen/native/cuda/ppu_opt_elementwise_kernels/registration.cpp)
     target_link_options(torch_cuda PRIVATE "LINKER:--wrap=__cudaRegisterFunction")
