@@ -1729,6 +1729,32 @@ def _restore_pristine(target_root: str) -> None:
     subprocess.run(["git", "-C", toplevel, "clean", "-fdx", "--", pathspec], check=True)
 
 
+def _cudafy_restore_roots(command: str, target_root: str) -> list[str]:
+    """Restore the explicit conversion target and repository-local util headers."""
+    target = os.path.abspath(target_root)
+    if os.path.realpath(target) != target:
+        raise RuntimeError(f"Refuse cudafy restore through symlink: {target}")
+    roots = [target]
+    if command == "actlize":
+        if os.path.basename(target) != "include":
+            return roots
+        include = target
+    elif command == "flex-flash-attention":
+        include = os.path.join(target, "csrc", "actlize", "include")
+        if not os.path.isdir(include):
+            raise RuntimeError(f"Missing repo-local ACTLIZE include: {include}")
+        roots.append(include)
+    else:
+        return roots
+    util = os.path.join(os.path.dirname(include), "tools", "util", "include")
+    if os.path.isdir(util):
+        roots.append(util)
+    for root in roots:
+        if os.path.realpath(root) != root:
+            raise RuntimeError(f"Refuse cudafy restore through symlink: {root}")
+    return roots
+
+
 def run_cudafy_once(
     torch_root: str,
     command: str,
@@ -1747,14 +1773,19 @@ def run_cudafy_once(
     # Always convert from pristine sources. Reset the target subtree first so a
     # previous build's conversion can never be re-converted (cudafy is not
     # idempotent) nor mistaken for up-to-date after a `git submodule update`.
-    _restore_pristine(target_root)
+    for restore_root in _cudafy_restore_roots(command, target_root):
+        _restore_pristine(restore_root)
 
     target_arg = os.path.relpath(target_root, torch_root)
     cudafy_arg = os.path.relpath(cudafy_script, torch_root)
     cli_version = (
         version[1:] if command == "actlize" and version.startswith("v") else version
     )
-    cmd = ["python3", cudafy_arg, command, f"--version={cli_version}", target_arg]
+    cmd = [sys.executable, cudafy_arg, command, f"--version={cli_version}", target_arg]
+    if command == "actlize" and cli_version in ("0.8.0", "1.0.0"):
+        cmd.append("--compat")
+    if command == "flash-attention" and cli_version == "2.7.2":
+        cmd.append("--compat")
     print(f"Run cudafy: {' '.join(cmd)}")
     subprocess.run(cmd, cwd=torch_root, check=True)
 
@@ -1886,7 +1917,6 @@ def main() -> None:
             run_cudafy_once(
                 torch_root, "flex-flash-attention", "2.8.2", fa_flex_root
             )
-            run_cudafy_once(torch_root, "actlize", "v1.0.0", actlize_include_root)
     install_requires = [
         "filelock",
         "typing-extensions>=4.10.0",
