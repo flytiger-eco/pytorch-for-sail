@@ -5,6 +5,7 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import statistics
 import subprocess
@@ -161,6 +162,33 @@ def full_math_result(case, tensors):
     return (output, *(g.to(q.dtype) for g in grads))
 
 
+expected_tolerances = {
+    "fp32": {"atol": 2e-5, "rtol": 2e-5},
+    "bf16": {"atol": 1.8e-2, "rtol": 1.8e-2},
+    "fp16": {"atol": 4e-3, "rtol": 4e-3},
+}
+assert bench.ACCURACY_POLICY["tolerances"] == expected_tolerances
+assert comparison.ACCURACY_POLICY == bench.ACCURACY_POLICY
+accuracy_tolerance_checks = 0
+for dtype, tolerance in expected_tolerances.items():
+    boundary = torch.tensor([tolerance["atol"]], dtype=torch.float64)
+    beyond = torch.nextafter(boundary, torch.full_like(boundary, float("inf")))
+    for actual_value, passed in ((boundary, True), (beyond, False)):
+        stats = dict(status="ok", numel=0, mismatched=0, nonfinite_actual=0,
+                     nonfinite_reference=0, max_abs_error=0.0, max_tolerance_ratio=0.0)
+        bench.update_accuracy_stats(torch, stats, actual_value, torch.zeros_like(boundary), tolerance)
+        assert (stats["status"] == "ok") is passed, (dtype, stats)
+        accuracy_tolerance_checks += 1
+    for reference_value in (-2.0, 2.0):
+        reference = torch.tensor([reference_value], dtype=torch.float64)
+        bound = tolerance["atol"] + tolerance["rtol"] * reference.abs()
+        for factor, passed in ((1 - 1e-8, True), (1 + 1e-8, False)):
+            stats = dict(status="ok", numel=0, mismatched=0, nonfinite_actual=0,
+                         nonfinite_reference=0, max_abs_error=0.0, max_tolerance_ratio=0.0)
+            bench.update_accuracy_stats(torch, stats, reference + bound * factor, reference, tolerance)
+            assert (stats["status"] == "ok") is passed, (dtype, reference_value, stats)
+            accuracy_tolerance_checks += 1
+
 accuracy_reference_checks = 0
 for index, mask in enumerate(BENCHMARK_MASKS):
     for dtype in bench.DTYPES:
@@ -203,7 +231,7 @@ comparison.canonical_json(stats)
 # Check timing-only workers using CPU operations and mocked timing, without device access.
 worker_case = bench.normalize_case(dict(mask="dense", b=1, hq=1, hkv=1, sq=2, sk=2, d=2, dtype="fp32"))
 worker_args = SimpleNamespace(worker="synthetic.job.json", worker_output="synthetic.worker.json", device=0,
-                              check_accuracy=False)
+                              check_accuracy=False, skip_timing=False)
 for scenario in ("ok", "nan", "inf", "runtime_error"):
     tensors, hashes = bench.make_inputs(torch, worker_case, "cpu")
     factor = float(scenario) if scenario in ("nan", "inf") else 1.0
@@ -427,7 +455,7 @@ for scenario in ("ok", "runtime_error", "timeout", "interrupt"):
         cases[1]["seed"] += 1
         job_args = SimpleNamespace(output=str(Path(directory) / "run.json"), rounds=1, label="synthetic-progress",
                                    mode="performance", samples=6, warmup=5, target_ms=200.0, timeout=25.0, device=0,
-                                   check_accuracy=False)
+                                   check_accuracy=False, skip_timing=False)
         def launch(command, **kwargs):
             result = deepcopy(golden["records"][0]["rounds"][0])
             if scenario in ("runtime_error", "timeout", "interrupt"):
@@ -550,6 +578,21 @@ def accuracy_candidate(ratio=1.0):
 
 assert comparison.check_golden(golden, accuracy_candidate(), require_accuracy=True)["passed"]
 assert not comparison.check_golden(golden, golden_candidate(1.0), require_accuracy=True)["passed"]
+legacy_policy = deepcopy(bench.ACCURACY_POLICY)
+legacy_policy["tolerances"] = {
+    "fp32": {"atol": 1e-4, "rtol": 1e-4},
+    "bf16": {"atol": 2e-2, "rtol": 2e-2},
+    "fp16": {"atol": 5e-3, "rtol": 5e-3},
+}
+for location in ("config", "round", "both"):
+    stale = accuracy_candidate()
+    if location in ("config", "both"):
+        stale["config"]["accuracy_policy"] = deepcopy(legacy_policy)
+    if location in ("round", "both"):
+        record = stale["records"][0]
+        record["rounds"][0]["accuracy"]["policy"] = deepcopy(legacy_policy)
+        assert comparison.accuracy_status(record, required=True) == "accuracy_incomplete"
+    assert not comparison.check_golden(golden, stale, require_accuracy=True)["passed"], location
 for failure in ("missing", "tensor_missing", "mismatch", "count", "policy", "nan", "reference_error", "timeout"):
     bad = accuracy_candidate()
     record = bad["records"][0]
@@ -582,7 +625,7 @@ for failure in ("missing", "tensor_missing", "mismatch", "count", "policy", "nan
 with tempfile.TemporaryDirectory(prefix="attention-accuracy-runner-") as directory:
     job_args = SimpleNamespace(output=str(Path(directory) / "run.json"), rounds=1, label="synthetic-accuracy",
                                mode="performance", samples=6, warmup=5, target_ms=200.0, timeout=25.0, device=0,
-                               check_accuracy=True)
+                               check_accuracy=True, skip_timing=False)
     def launch_accuracy(command, **kwargs):
         assert "--check-accuracy" in command
         result = deepcopy(accuracy_candidate()["records"][0]["rounds"][0])
@@ -596,6 +639,19 @@ with tempfile.TemporaryDirectory(prefix="attention-accuracy-runner-") as directo
     assert document["config"]["check_accuracy"] and document["status_counts"] == {"accuracy_failed": 1}
 
 here = Path(__file__).resolve().parent
+for name in ("run_correctness.sh", "run_performance.sh"):
+    help_run = subprocess.run(["bash", str(here / name), "--help"],
+                              capture_output=True, text=True, check=True)
+    tolerance_line = next(line for line in help_run.stdout.splitlines() if line.startswith("Tolerances (atol/rtol):"))
+    advertised = {dtype: {"atol": float(atol), "rtol": float(rtol)}
+                  for dtype, atol, rtol in re.findall(r"(fp32|bf16|fp16)=([0-9.eE+-]+)/([0-9.eE+-]+)", tolerance_line.removesuffix("."))}
+    assert advertised == bench.ACCURACY_POLICY["tolerances"], name
+    dry_run = subprocess.run(["bash", str(here / name), "--dry-run"],
+                             env={**os.environ, "PYTHON": sys.executable},
+                             capture_output=True, text=True, check=True)
+    dry_document = json.loads(dry_run.stdout)
+    assert dry_document["backends"] == ["flexflash"], name
+    assert dry_document["check_accuracy"] is True and len(dry_document["cases"]) == 150, name
 probe = (here / "run_performance.sh").read_text().split('"$PYTHON" - "$DEVICE" <<\'PY\'\n', 1)[1].split("\nPY", 1)[0]
 for device_name in ("SYNTHETIC Zhenwu M890", "SYNTHETIC H200", "SYNTHETIC OTHER"):
     with patch.object(sys, "argv", ["-", "1"]), \
@@ -684,6 +740,8 @@ with patch.object(sys, "argv", ["bench_attention.py"]):
 assert defaults.mode == "performance" and defaults.check_accuracy is False
 assert not hasattr(defaults, "accuracy_scope") and not hasattr(defaults, "reference_chunk")
 report = {"mask_definition_checks": mask_checks, "accuracy_reference_checks": accuracy_reference_checks,
+          "accuracy_tolerance_checks": accuracy_tolerance_checks, "legacy_accuracy_policy_checks": "passed",
+          "accuracy_help_and_dry_run_checks": "passed",
           "accuracy_fault_injection_checks": "passed", "accuracy_worker_and_runner_checks": "passed",
           "live_progress_checks": "passed", "worker_wait_timeout_checks": "passed",
           "progress_runner_checks": "passed",

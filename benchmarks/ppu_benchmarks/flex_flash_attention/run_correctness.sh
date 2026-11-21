@@ -26,7 +26,7 @@ Options:
 Set the PYTHON environment variable to select a Python interpreter.
 Each case runs one forward/backward pass, a finite check, then validates all output/dQ/dK/dV elements.
 Forward reference: same-dtype MATH. Gradient reference: FP64 MATH, cast back to the input dtype.
-Tolerances (atol/rtol): fp32=0.01/0.02, bf16=0.02/0.02, fp16=0.005/0.01.
+Tolerances (atol/rtol): fp32=2e-5/2e-5, bf16=1.8e-2/1.8e-2, fp16=4e-3/4e-3.
 References are batch/query-chunked without sampling; dK/dV are accumulated in FP64.
 No timing is collected and no golden file is read; per-case accuracy is stored in correctness.json.
 Print STATUS=pass/fail; pass exits with 0 and fail with a nonzero code.
