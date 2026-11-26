@@ -856,10 +856,7 @@ def _convert_element_type(x: TensorBox, dtype: torch.dtype):
     ):
         # Only move the terminal cast; producer type promotion and rounding stay put.
         converted = [to_dtype(inp, dtype, copy=True) for inp in pending.inputs]
-        with (
-            V.set_current_node(pending.node),
-            V.graph.set_current_node(pending.node),
-        ):
+        with V.graph.set_current_node(pending.node):
             return _create_shared_read_cat(converted, pending.dim)
     if dtype.is_complex or x.get_dtype().is_complex:
         if x.get_size():

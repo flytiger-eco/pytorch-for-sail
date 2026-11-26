@@ -348,6 +348,27 @@ class SharedReadCatTests(TestCase):
             )
         return result, "\n".join(code), metrics.generated_kernel_count
 
+    @requires_gpu_and_triton
+    def test_terminal_cast_padding(self):
+        for width in (1025, 1100):
+            for target in (torch.float16, torch.bfloat16):
+                for dim in (1, -1):
+                    with self.subTest(width=width, target=target, dim=dim):
+                        x = T(17, width)
+
+                        def fn(x):
+                            return torch.cat((x + 1, x * 2), dim).to(target)
+
+                        with config.patch(comprehensive_padding=True, pad_outputs=False):
+                            actual, code, kernels = self.compile_cat(fn, (x,))
+                            with patch.object(lowering, "_cat_inputs_share_read", return_value=False):
+                                expected, _, _ = self.compile_cat(fn, (x,))
+                        self.assert_same_bits(actual, expected)
+                        self.assertEqual(actual.stride(), fn(x).stride())
+                        self.assertEqual(kernels, 1)
+                        self.assertEqual(code.count("tl.load("), 1)
+                        self.assertEqual(code.count("tl.store("), 2)
+
     def test_non_cat_fx_inputs(self):
         graph = torch.fx.Graph()
         x = graph.placeholder("x")
