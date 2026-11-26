@@ -1,6 +1,6 @@
 # Builds PyTorch-for-SAIL 2.10 from source with the Flytiger PPU SDK v2.2 image.
 # The build context must be the repository root with all submodules initialized.
-ARG BASE_IMAGE=pkg.flytiger-eco.com/docker_release/ppu:sdk2.2.0-cuda13.0-ubuntu24-py312-20261001@sha256:f7b4a1c63ffb2f89f53aaa89c9445e46b2a2b8821fddebca3b396ee6bb324f3a
+ARG BASE_IMAGE=pkg.flytiger-eco.com/docker_release/ppu:sdk2.2.1-cuda13.0-ubuntu24-py312-20261103@sha256:f7b4a1c63ffb2f89f53aaa89c9445e46b2a2b8821fddebca3b396ee6bb324f3a
 FROM ${BASE_IMAGE} AS build
 
 USER root
