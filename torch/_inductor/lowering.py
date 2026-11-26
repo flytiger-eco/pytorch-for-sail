@@ -1894,7 +1894,7 @@ def _cat_inputs_share_read(inputs: Sequence[TensorBox]) -> bool:
         return False
     fx_inputs = V.current_node.args[0]
     # Padding can call cat while the current FX node still has a single tensor input.
-    if not isinstance(fx_inputs, (list, tuple)):
+    if not isinstance(fx_inputs, list):
         return False
     if not all(
         len(node.users) == 1
@@ -1932,7 +1932,12 @@ def _cat_inputs_share_read(inputs: Sequence[TensorBox]) -> bool:
 
     # Compare full dependencies (buffers, indices and iteration domains), not just buffer names.
     # Shared scalar or broadcast reads alone do not justify horizontal fusion.
-    common_reads = producers[0].get_reads() & producers[1].get_reads()
+    reads = [producer.get_reads() for producer in producers]
+    if config.max_fusion_unique_io_buffers is not None:
+        read_names = {dep.name for producer_reads in reads for dep in producer_reads}
+        if len(read_names) + len(producers) > config.max_fusion_unique_io_buffers:
+            return False
+    common_reads = reads[0] & reads[1]
     if not any(
         isinstance(dep, MemoryDep)
         and not dep.is_indirect()
