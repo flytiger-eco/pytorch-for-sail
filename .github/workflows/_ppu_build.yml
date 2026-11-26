@@ -16,7 +16,7 @@ on:
       docker-image:
         description: 编译用 PPU 镜像
         type: string
-        default: pkg.flytiger-eco.com/docker_release/ppu:sdk2.2.0-cuda13.0-ubuntu24-py312-20261001
+        default: pkg.flytiger-eco.com/docker_release/ppu:sdk2.2.1-cuda13.0-ubuntu24-py312-20261103
       source-ref:
         description: 要编译的 ref；留空 = PR head sha / 当前 ref。刷缓存时靠它指定目标分支
         type: string

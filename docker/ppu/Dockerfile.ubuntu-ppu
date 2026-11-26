@@ -13,7 +13,7 @@
 # path exercised by .github/workflows/_ppu_build.yml.
 
 # NOTE: Building this image requires docker version >= 23.0 (BuildKit).
-ARG BASE_IMAGE=pkg.flytiger-eco.com/docker_release/ppu:sdk2.2.0-cuda13.0-ubuntu24-py312-20261001
+ARG BASE_IMAGE=pkg.flytiger-eco.com/docker_release/ppu:sdk2.2.1-cuda13.0-ubuntu24-py312-20261103
 
 FROM ${BASE_IMAGE} AS build
 
