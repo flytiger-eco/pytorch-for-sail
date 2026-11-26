@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_NCCL_URL="https://pkg.flytiger-eco.com/artifactory/generic-local/NCCL/v2.2.0/nccl-2.27.3-v13_ubuntu2404_sdk-v2.2.0.tar.gz"
+DEFAULT_NCCL_URL="https://pkg.flytiger-eco.com/artifactory/generic-local/NCCL/v2.2.3/nccl-2.27.3-v13_ubuntu2404_sdk-v2.2.3.tar.gz"
 NCCL_URL="${NCCL_URL:-$DEFAULT_NCCL_URL}"
 SDK_INSTALL_DIR="${SDK_INSTALL_DIR:-/usr/local}"
 ENVSETUP="$SDK_INSTALL_DIR/pccl/envsetup.sh"
