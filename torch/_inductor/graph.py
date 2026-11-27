@@ -93,6 +93,7 @@ from .lowering import (
     make_fallback,
     maybe_layout_constraints,
     needs_realized_inputs,
+    PendingSharedReadCat,
     require_contiguous,
     tag_to_layout_constraint,
     unsupported_output_tensor,
@@ -532,6 +533,8 @@ class GraphLowering(torch.fx.Interpreter):
         # kernels.
         self.unaligned_buffers: OrderedSet[str] = OrderedSet()
         self.no_fuse_buffer_names: OrderedSet[str] = OrderedSet()
+        self.no_fuse_with_reduction: OrderedSet[str] = OrderedSet()
+        self.pending_shared_read_cats: dict[Node, PendingSharedReadCat] = {}
 
         # Layout constraints for Triton template buffers.
         # Maps buffer name -> expected FixedLayout (computed speculatively without freezing)
@@ -1808,6 +1811,9 @@ class GraphLowering(torch.fx.Interpreter):
                 debug("")
                 result = super().run_node(n)
 
+            # The cast may fall back; never keep a deferred cat record after consumption.
+            self.pending_shared_read_cats.pop(n, None)
+
             # require the same stride order for dense outputs,
             # 1. user-land view() will not throw because inductor
             # output different strides than eager
@@ -1976,8 +1982,24 @@ class GraphLowering(torch.fx.Interpreter):
                 # TODO(jansel): introduce a store vs inline choice
                 result.mark_reuse(len(n.users))
 
-            # Realize if the IRNode already has accumulated lots of reads
-            if isinstance(result, TensorBox) and result.has_exceeded_max_reads():
+            pending_cat = (
+                self.pending_shared_read_cats.get(next(iter(n.users)))
+                if len(n.users) == 1
+                else None
+            )
+            pending_shared_read_cat = (
+                pending_cat is not None and pending_cat.result is result
+            )
+
+            # Materialize when an IRNode accumulates too many reads.
+            # A pending shared-read cat is only a short-lived placeholder whose producers
+            # will be consumed by the terminal cast, so heuristic-only materialization must
+            # not apply; the forced materialization above still takes effect.
+            if (
+                not pending_shared_read_cat
+                and isinstance(result, TensorBox)
+                and result.has_exceeded_max_reads()
+            ):
                 # Prevent excessive accumulation in a computed buffer, when
                 # there are multiple branches each with small number of memory
                 # reads, but they converge to a user.
@@ -1986,7 +2008,11 @@ class GraphLowering(torch.fx.Interpreter):
 
             # Realize if a Pointwise has too much stuff to be inlined.
             # As this may cause RecursionError during Inductor's evaluation.
-            if isinstance(result, TensorBox) and isinstance(result.data, StorageBox):
+            if (
+                not pending_shared_read_cat
+                and isinstance(result, TensorBox)
+                and isinstance(result.data, StorageBox)
+            ):
                 curr = result.data.data
                 if isinstance(curr, Pointwise):
                     # Use inner fn as a rough proxy. Good enough.
