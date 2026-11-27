@@ -7,6 +7,10 @@
 #include <c10/cuda/CUDAGraphsC10Utils.h>
 #include <c10/util/TypeCast.h>
 
+#if defined(USE_PPU)
+#include <ATen/native/cuda/ppu_opt_chunk_cat_kernels/PPUChunkCat.h>
+#endif
+
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
 #include <ATen/NativeFunctions.h>
@@ -805,6 +809,11 @@ Tensor& _chunk_cat_out_cuda(
   TORCH_CHECK(
       tensors[0].device() == out.device(),
       "_chunk_cat_out_cuda: mismatch between input and out tensor devices");
+#if defined(USE_PPU)
+  if (ppu_chunk_cat_opt::try_launch_chunk_cat_opt(tensors, dim, num_chunks, out)) {
+    return out;
+  }
+#endif
   bool both_input_output_contiguous =
       detail::all_contiguous(tensors) && out.is_non_overlapping_and_dense();
   if (both_input_output_contiguous &&
