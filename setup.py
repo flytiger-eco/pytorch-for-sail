@@ -1892,6 +1892,10 @@ def main() -> None:
             patch_root, "cutlass_platform_numeric_limits.patch"
         )
         apply_patch(cutlass_patch_file, cutlass_root)
+        apply_patch(
+            os.path.join(patch_root, "cutlass_native_arch_alias.patch"),
+            cutlass_root,
+        )
 
         use_fa = os.environ.get("USE_FLASH_ATTENTION")
         if use_fa in ["True", "1", "TRUE"]:

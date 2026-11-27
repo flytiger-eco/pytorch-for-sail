@@ -122,11 +122,7 @@ struct FindDefaultMma<
     ElementAccumulator,
     layout::RowMajor,
     arch::OpClassTensorOp,
-#if defined(USE_PPU)
-    arch::PPU0010,
-#else
     arch::Sm80,
-#endif
     ThreadblockShape,
     WarpShape,
     InstructionShape,
@@ -135,11 +131,7 @@ struct FindDefaultMma<
     typename cutlass::platform::enable_if<(kAlignmentA > 1)>::type> {
   using LayoutC = layout::RowMajor;
   using OperatorClass = arch::OpClassTensorOp;
-#if defined(USE_PPU)
-  using ArchTag = arch::PPU0010;
-#else
   using ArchTag = arch::Sm80;
-#endif
 
   using DefaultMma_ = cutlass::gemm::threadblock::DefaultMma<
       ElementA_,

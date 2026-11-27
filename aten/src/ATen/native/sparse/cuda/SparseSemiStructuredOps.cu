@@ -55,11 +55,7 @@ void spgemm_cutlass(
     // alias for particular instantiation of this template.
     using LayoutOutput = cutlass::layout::RowMajor; // Result of the operation will be provided in row-major format.
     using MMAOp = cutlass::arch::OpClassTensorOp; // Tensor cores are to be used for maximum performance.
-#if defined(USE_PPU)
-    using ArchTag = cutlass::arch::PPU0010;
-#else
-    using ArchTag = cutlass::arch::Sm80;
-#endif
+    using SmArch = cutlass::arch::Sm80; // Only CC 8.x devices are supported at the moment.
     using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>; // This choice provides good performance across wide range of operand sizes.
     constexpr int NumStages = 3; // This choice provides good performance across wide range of operand sizes.
     constexpr int NumEVTEpilogueStages = 1;
@@ -162,7 +158,7 @@ void spgemm_cutlass(
         LayoutC,
         ElementAccumulator,
         MMAOp,
-        ArchTag,
+        SmArch,
         ThreadblockShape,
         WarpShape,
         InstructionShape,

@@ -100,19 +100,11 @@ template<typename TypeA, typename TypeB>
 struct MixedGemmArchTraits<
     TypeA,
     TypeB,
-#if defined(USE_PPU)
-    cutlass::arch::PPU0010,
-#else
     cutlass::arch::Sm80,
-#endif
     typename cutlass::platform::enable_if<cutlass::platform::is_same<TypeA, cutlass::half_t>::value
                                           || cutlass::platform::is_same<TypeA, cutlass::bfloat16_t>::value>::type> {
 private:
-#if defined(USE_PPU)
-    using LayoutDetails = LayoutDetailsB<TypeB, cutlass::arch::PPU0010>;
-#else
     using LayoutDetails = LayoutDetailsB<TypeB, cutlass::arch::Sm80>;
-#endif
 
 public:
     static constexpr int ThreadblockK = LayoutDetails::ThreadblockK;

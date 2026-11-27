@@ -46,11 +46,7 @@ mixed_dtypes_linear_cutlass(
 
   using ElementOutput = ElementInputA;
 
-#if defined(USE_PPU)
-  using ArchTag = cutlass::arch::PPU0010;
-#else
-  using ArchTag = cutlass::arch::Sm80;
-#endif
+  using SmArch = cutlass::arch::Sm80;
   using ThreadblockShape = cutlass::gemm::GemmShape<32, 128, 64>;
   using WarpShape = cutlass::gemm::GemmShape<32, 32, 64>;
   using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
@@ -97,7 +93,7 @@ mixed_dtypes_linear_cutlass(
       LayoutOutput,
       ElementAccumulator,
       cutlass::arch::OpClassTensorOp,
-      ArchTag,
+      SmArch,
       ThreadblockShape,
       WarpShape,
       InstructionShape,
@@ -110,7 +106,7 @@ mixed_dtypes_linear_cutlass(
       typename DefaultGemmKernel::Mma,
       typename DefaultGemmKernel::Epilogue,
       typename DefaultGemmKernel::ThreadblockSwizzle,
-      ArchTag,
+      SmArch,
       DefaultGemmKernel::kSplitKSerial>;
 
   using Gemm = cutlass::gemm::device::GemmUniversalBase<GemmKernel>;
