@@ -38,6 +38,14 @@
       F();                                  \
     }                                       \
   }
+#if defined(USE_PPU)
+#define DISPATCH_ARCHTAG(CC, func)                                   \
+  {                                                                 \
+    TORCH_CHECK(CC >= 80, "PPU attention requires PPU0010 or newer"); \
+    using ArchTag = cutlass::arch::PPU0010;                           \
+    func();                                                         \
+  }
+#else
 #define DISPATCH_ARCHTAG(CC, func)                                        \
   {                                                                       \
     if (CC >= 80) {                                                       \
@@ -58,6 +66,8 @@
           "Your device is too old. We require compute capability >= 50"); \
     }                                                                     \
   }
+
+#endif
 
 #define CHECK_NOSPARSE_CONTIGUOUS_CUDA(TENSOR)                            \
   TORCH_CHECK(TENSOR.is_cuda(), #TENSOR " must be a CUDA tensor");     \
@@ -142,11 +152,7 @@ struct DefaultGemmType<
 
 #if !defined(USE_PPU)
 // Specialization for tensorcores with f16 - Volta
-// PPU: arch::Sm70 aliases to PPU0010 (kMinComputeCapability==80), so this full
-// specialization would out-prioritize the Sm75+ partial specialization above and
-// hijack the half_t path to InstructionShape<8,8,4>. The PPU cutlass fork has no
-// Volta 32-thread/float-accum tensorop (arch::Mma<8,8,4, 32, half, ..., float, ...>
-// is undefined), so gate it out; half_t then uses the Sm75+ 16x8x8 path (defined).
+// PPU uses native PPU0010 and the generic 16x8x8 specialization, not Volta types.
 template <>
 struct DefaultGemmType<cutlass::arch::Sm70, cutlass::half_t, void> {
   static constexpr int ThreadK = 32;

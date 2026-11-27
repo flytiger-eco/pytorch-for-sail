@@ -488,7 +488,14 @@ struct GemmFpAIntB {
     CUTLASS_DEVICE
     void operator()(Params const& params, SharedStorage& shared_storage)
     {
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 700) && (__CUDA_ARCH__ < 750)
+#if defined(USE_PPU)
+#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ >= 100
+        static constexpr bool compile_needed = platform::is_same<KernelArch, arch::PPU0010>::value;
+        KernelRunner<compile_needed>::run_kernel(params, shared_storage);
+#else
+        CUTLASS_NOT_IMPLEMENTED();
+#endif
+#elif defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 700) && (__CUDA_ARCH__ < 750)
         static constexpr bool compile_needed = platform::is_same<KernelArch, arch::Sm70>::value;
         KernelRunner<compile_needed>::run_kernel(params, shared_storage);
 #elif defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 750) && (__CUDA_ARCH__ < 800)

@@ -1727,13 +1727,9 @@ def _missing_submodule_error(torch_root: str, submodule_path: str) -> FileNotFou
 def _restore_pristine(target_root: str) -> None:
     """Reset a cudafy target subtree back to its committed (pristine) state.
 
-    cudafy is not idempotent on an already-converted tree: besides the plain
-    hggc -> cuda text substitution it also *injects* content (SM75/SM80
-    wrappers, arch-map/shim headers, SM->PPU aliases). Re-running it on such a
-    tree would double-inject. To force a clean conversion on every build we
-    discard cudafy's tracked-file edits (git checkout) and drop the untracked
-    files it generated (git clean) for exactly this subtree, so cudafy always
-    sees pristine hggc sources.
+    General conversion updates SDK names and paths without adding aliases.
+    Restore the committed sources before each conversion so stale output or
+    patches cannot affect the build. Restore only the specified dependency trees.
     """
     try:
         toplevel = subprocess.run(
@@ -1763,7 +1759,7 @@ def _cudafy_restore_roots(command: str, target_root: str) -> list[str]:
         if os.path.basename(target) != "include":
             return roots
         include = target
-    elif command == "flex-flash-attention":
+    elif command in ("flash-attention", "flex-flash-attention"):
         include = os.path.join(target, "csrc", "actlize", "include")
         if not os.path.isdir(include):
             raise RuntimeError(f"Missing repo-local ACTLIZE include: {include}")
@@ -1794,23 +1790,14 @@ def run_cudafy_once(
         target_arg = os.path.relpath(target_root, torch_root)
         raise _missing_submodule_error(torch_root, target_arg)
 
-    # Always convert from pristine sources. Reset the target subtree first so a
-    # previous build's conversion can never be re-converted (cudafy is not
-    # idempotent) nor mistaken for up-to-date after a `git submodule update`.
+    # Convert the pristine dependencies before the caller applies integration patches.
     for restore_root in _cudafy_restore_roots(command, target_root):
         _restore_pristine(restore_root)
 
     target_arg = os.path.relpath(target_root, torch_root)
     cudafy_arg = os.path.relpath(cudafy_script, torch_root)
-    cli_version = (
-        version[1:] if command == "actlize" and version.startswith("v") else version
-    )
-    cmd = [sys.executable, cudafy_arg, command, f"--version={cli_version}", target_arg]
-    if command == "actlize" and cli_version in ("0.8.0", "1.0.0"):
-        cmd.append("--compat")
-    if command == "flash-attention" and cli_version == "2.7.2":
-        cmd.append("--compat")
-    print(f"Run cudafy: {' '.join(cmd)}")
+    cmd = [sys.executable, cudafy_arg, "general", target_arg]
+    print(f"Run cudafy ({command} {version}): {' '.join(cmd)}")
     subprocess.run(cmd, cwd=torch_root, check=True)
 
 
@@ -1936,6 +1923,10 @@ def main() -> None:
                 )
 
             run_cudafy_once(torch_root, "flex-flash-attention", "2.8.2", fa_flex_root)
+            apply_patch(
+                os.path.join(patch_root, "flex_flash_attention_native_names.patch"),
+                fa_flex_root,
+            )
 
     install_requires = [
         "filelock",

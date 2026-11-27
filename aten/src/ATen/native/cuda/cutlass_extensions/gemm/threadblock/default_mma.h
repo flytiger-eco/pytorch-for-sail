@@ -357,7 +357,11 @@ struct DefaultMma<half_t,
                   ElementAccumulator,
                   layout::RowMajor,
                   arch::OpClassTensorOp,
+#if defined(USE_PPU)
+                  arch::PPU0010,
+#else
                   arch::Sm80,
+#endif
                   ThreadblockShape,
                   WarpShape,
                   InstructionShape,

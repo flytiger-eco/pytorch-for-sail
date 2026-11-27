@@ -1,0 +1,268 @@
+diff --git a/csrc/flex_flash_attention_fwd_kernel_sm80.h b/csrc/flex_flash_attention_fwd_kernel_sm80.h
+--- a/csrc/flex_flash_attention_fwd_kernel_sm80.h
++++ b/csrc/flex_flash_attention_fwd_kernel_sm80.h
+@@ -211,10 +211,10 @@
+     static Params to_underlying_arguments(Arguments const& args) {
+-        int sm_count = args.hw_info.sm_count;
+-        if (sm_count <= 0) {
+-            sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(
++        int cu_count = args.hw_info.cu_count;
++        if (cu_count <= 0) {
++            cu_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(
+                 args.hw_info.device_id);
+         }
+-        cutlass::KernelHardwareInfo hw_info{args.hw_info.device_id, sm_count};
++        cutlass::KernelHardwareInfo hw_info{args.hw_info.device_id, cu_count};
+         return {
+             CollectiveMainloop::to_underlying_arguments(args.mainloop),
+             CollectiveEpilogue::to_underlying_arguments(args.epilogue),
+@@ -228,6 +228,6 @@
+     static dim3 get_grid_shape(Params const& params) {
+         return TileScheduler::get_grid_shape(
+-            params.scheduler, params.hw_info.sm_count * MinBlocksPerMultiprocessor);
++            params.scheduler, params.hw_info.cu_count * MinBlocksPerMultiprocessor);
+     }
+
+ #ifdef USE_PPU
+@@ -234,7 +234,7 @@
+     static dim3 get_grid_shape(Params const& params, int blocks_per_sm) {
+         return TileScheduler::get_grid_shape(
+             params.scheduler,
+-            params.hw_info.sm_count * (blocks_per_sm <= 1 ? MinBlocksPerMultiprocessor : blocks_per_sm));
++            params.hw_info.cu_count * (blocks_per_sm <= 1 ? MinBlocksPerMultiprocessor : blocks_per_sm));
+     }
+ #endif
+
+diff --git a/csrc/flex_flash_attention_fwd_kernel_sm80_f32.h b/csrc/flex_flash_attention_fwd_kernel_sm80_f32.h
+--- a/csrc/flex_flash_attention_fwd_kernel_sm80_f32.h
++++ b/csrc/flex_flash_attention_fwd_kernel_sm80_f32.h
+@@ -215,10 +215,10 @@
+     static Params to_underlying_arguments(Arguments const& args) {
+-        int sm_count = args.hw_info.sm_count;
+-        if (sm_count <= 0) {
+-            sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(
++        int cu_count = args.hw_info.cu_count;
++        if (cu_count <= 0) {
++            cu_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(
+                 args.hw_info.device_id);
+         }
+-        cutlass::KernelHardwareInfo hw_info{args.hw_info.device_id, sm_count};
++        cutlass::KernelHardwareInfo hw_info{args.hw_info.device_id, cu_count};
+         return {
+             CollectiveMainloop::to_underlying_arguments(args.mainloop),
+             CollectiveEpilogue::to_underlying_arguments(args.epilogue),
+@@ -232,6 +232,6 @@
+     static dim3 get_grid_shape(Params const& params) {
+         return TileScheduler::get_grid_shape(
+-            params.scheduler, params.hw_info.sm_count * MinBlocksPerMultiprocessor);
++            params.scheduler, params.hw_info.cu_count * MinBlocksPerMultiprocessor);
+     }
+
+ #ifdef USE_PPU
+@@ -238,7 +238,7 @@
+     static dim3 get_grid_shape(Params const& params, int blocks_per_sm) {
+         return TileScheduler::get_grid_shape(
+             params.scheduler,
+-            params.hw_info.sm_count * (blocks_per_sm <= 1 ? MinBlocksPerMultiprocessor : blocks_per_sm));
++            params.hw_info.cu_count * (blocks_per_sm <= 1 ? MinBlocksPerMultiprocessor : blocks_per_sm));
+     }
+ #endif
+
+diff --git a/csrc/flex_flash_attention_bwd_kernel_sm80.h b/csrc/flex_flash_attention_bwd_kernel_sm80.h
+--- a/csrc/flex_flash_attention_bwd_kernel_sm80.h
++++ b/csrc/flex_flash_attention_bwd_kernel_sm80.h
+@@ -222,10 +222,10 @@
+     static Params to_underlying_arguments(Arguments const& args) {
+-        int sm_count = args.hw_info.sm_count;
+-        if (sm_count <= 0) {
+-            sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(
++        int cu_count = args.hw_info.cu_count;
++        if (cu_count <= 0) {
++            cu_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(
+                 args.hw_info.device_id);
+         }
+-        cutlass::KernelHardwareInfo hw_info{args.hw_info.device_id, sm_count};
++        cutlass::KernelHardwareInfo hw_info{args.hw_info.device_id, cu_count};
+         return {
+             CollectiveMainloop::to_underlying_arguments(args.mainloop),
+             CollectiveEpilogue::to_underlying_arguments(args.epilogue),
+@@ -240,3 +240,3 @@
+     static dim3 get_grid_shape(Params const& params) {
+-        return TileScheduler::get_grid_shape(params.scheduler, params.hw_info.sm_count);
++        return TileScheduler::get_grid_shape(params.scheduler, params.hw_info.cu_count);
+     }
+diff --git a/csrc/flex_flash_attention_bwd_kernel_sm80_f32.h b/csrc/flex_flash_attention_bwd_kernel_sm80_f32.h
+--- a/csrc/flex_flash_attention_bwd_kernel_sm80_f32.h
++++ b/csrc/flex_flash_attention_bwd_kernel_sm80_f32.h
+@@ -222,10 +222,10 @@
+     static Params to_underlying_arguments(Arguments const& args) {
+-        int sm_count = args.hw_info.sm_count;
+-        if (sm_count <= 0) {
+-            sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(
++        int cu_count = args.hw_info.cu_count;
++        if (cu_count <= 0) {
++            cu_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(
+                 args.hw_info.device_id);
+         }
+-        cutlass::KernelHardwareInfo hw_info{args.hw_info.device_id, sm_count};
++        cutlass::KernelHardwareInfo hw_info{args.hw_info.device_id, cu_count};
+         return {
+             CollectiveMainloop::to_underlying_arguments(args.mainloop),
+             CollectiveEpilogue::to_underlying_arguments(args.epilogue),
+@@ -240,3 +240,3 @@
+     static dim3 get_grid_shape(Params const& params) {
+-        return TileScheduler::get_grid_shape(params.scheduler, params.hw_info.sm_count);
++        return TileScheduler::get_grid_shape(params.scheduler, params.hw_info.cu_count);
+     }
+diff --git a/hopper/utils.h b/hopper/utils.h
+--- a/hopper/utils.h
++++ b/hopper/utils.h
+@@ -322,5 +322,5 @@
+ void cp_async_wait() {
+-#if defined(CUTE_ARCH_CP_ASYNC_SM80_ENABLED)
+-    asm volatile("cp.async.wait_group %0;\n" :: "n"(N));
++#if defined(CUTE_ARCH_CP_ASYNC_PPU_ENABLED)
++    asm volatile("ppu.cp.async.wait_group %0;\n" :: "n"(N));
+ #endif
+ }
+diff --git a/hopper/pack_gqa.h b/hopper/pack_gqa.h
+--- a/hopper/pack_gqa.h
++++ b/hopper/pack_gqa.h
+@@ -30,7 +30,7 @@
+     // We assume threads loading the same row are in the same warp. This is for an optimization in PagedKV where
+     // these threads share the same page table entry and share the work of computing pointers to paged K and paged V.
+     static_assert(cutlass::NumThreadsPerWarp % kGmemThreadsPerRow == 0, "kGmemThreadsPerRow must divide NumThreadsPerWarp");
+-    using GmemCopyAtomCpAsync = cute::Copy_Atom<SM80_CP_ASYNC_CACHEGLOBAL_ZFILL<uint128_t>, Element>;
++    using GmemCopyAtomCpAsync = cute::Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL_ZFILL<uint128_t>, Element>;
+     using GmemLayoutAtom = Layout<Shape <Int<NumThreads / kGmemThreadsPerRow>, Int<kGmemThreadsPerRow>>,
+                                   Stride<Int<kGmemThreadsPerRow>, _1>>;
+     using GmemTiledCopyQCpAsync = decltype(
+diff --git a/hopper/paged_kv.h b/hopper/paged_kv.h
+--- a/hopper/paged_kv.h
++++ b/hopper/paged_kv.h
+@@ -44,7 +44,7 @@
+     // We assume threads loading the same row are in the same warp. This is for an optimization in PagedKV where
+     // these threads share the same page table entry and share the work of computing pointers to paged K and paged V.
+     static_assert(cutlass::NumThreadsPerWarp % kGmemThreadsPerRow == 0, "kGmemThreadsPerRow must divide NumThreadsPerWarp");
+-    using GmemCopyAtomCpAsync = cute::Copy_Atom<SM80_CP_ASYNC_CACHEGLOBAL_ZFILL<uint128_t>, Element>;
++    using GmemCopyAtomCpAsync = cute::Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL_ZFILL<uint128_t>, Element>;
+     using GmemLayoutAtomKVCpAsync = Layout<Shape <Int<NumThreads / kGmemThreadsPerRow>, Int<kGmemThreadsPerRow>>,
+                                            Stride<Int<kGmemThreadsPerRow>, _1>>;
+     using GmemTiledCopyKVCpAsync = decltype(
+diff --git a/hopper/mainloop_fwd_sm80.hpp b/hopper/mainloop_fwd_sm80.hpp
+--- a/hopper/mainloop_fwd_sm80.hpp
++++ b/hopper/mainloop_fwd_sm80.hpp
+@@ -209,8 +209,8 @@
+                                         Step<_2, _1, _3>{})));
+ #endif
+
+-    using SmemCopyAtom = Copy_Atom<SM75_U32x4_LDSM_N, Element>;
+-    using SmemCopyAtomTransposed = Copy_Atom<SM75_U16x8_LDSM_T, Element>;
++    using SmemCopyAtom = Copy_Atom<PPU_U32x4_LDSM_N, Element>;
++    using SmemCopyAtomTransposed = Copy_Atom<PPU_U16x8_LDSM_T, Element>;
+ #if defined(USE_PPU) && USE_AIU
+     using SmemCopyOpQ = std::conditional_t<
+         ArchTag::kMinComputeCapability >= 89,
+@@ -271,7 +271,7 @@
+     // from the same address by the same threadblock. This is slightly faster.
+     using GmemCopyAtom = Copy_Atom<std::conditional_t<
+         Has_cp_async,
+-        SM80_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>,
++        PPU_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>,
+         AutoVectorizingCopyWithAssumedAlignment<128>
+     >, Element>;
+
+diff --git a/hopper/mainloop_bwd_sm80.hpp b/hopper/mainloop_bwd_sm80.hpp
+--- a/hopper/mainloop_bwd_sm80.hpp
++++ b/hopper/mainloop_bwd_sm80.hpp
+@@ -474,7 +474,7 @@
+     using R2STiledCopydQaccum = decltype(make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{}, R2SLayoutAtomdQaccum{},
+                                                          Layout<Shape < _1>>{}));  // Val layout, 1 vals per store
+
+-    using SmemCopyAtom = Copy_Atom<SM75_U32x4_LDSM_N, Element>;
++    using SmemCopyAtom = Copy_Atom<PPU_U32x4_LDSM_N, Element>;
+ #if PPU1v0_R2S_SLICE_LAYOUT
+     // we purpose to pre-transpose P in share memory and load in non-transpose fashion
+     using SmemCopyAtomPdSt_AIU = Copy_Atom<PPU0010_TSM_LD_SWZL<Element, kBlockN, kBlockMGmem, false, false, kBlockM / kBlockMGmem>, Element>;
+@@ -493,11 +493,11 @@
+         PPU0015_TSM_LD_SWZL_CVT_LOCAL<Element, 8, 64, kBlockM, kBlockN_PdS_safe, dKV_swapAB, true, kBlockM / 8 * kBlockN_PdS_safe / 64, true, 128, 64>,
+         PPU0015_TSM_LD_SWZL<Element, kBlockM, kBlockNGmem, dKV_swapAB, true, kBlockN / kBlockNGmem>>, Element>;
+ #endif
+-    using SmemCopyAtomTransposed = Copy_Atom<SM75_U16x8_LDSM_T, Element>;
++    using SmemCopyAtomTransposed = Copy_Atom<PPU_U16x8_LDSM_T, Element>;
+     // For the case where the N dimension of MmaSdP is divisible by 8 but not by 16
+-    using SmemCopyAtomHalf = Copy_Atom<SM75_U32x2_LDSM_N, Element>;
++    using SmemCopyAtomHalf = Copy_Atom<PPU_U32x2_LDSM_N, Element>;
+     // For the case where the N dimension of MmadQ is divisible by 8 but not by 16
+-    using SmemCopyAtomTransposedHalf = Copy_Atom<SM75_U16x4_LDSM_T, Element>;
++    using SmemCopyAtomTransposedHalf = Copy_Atom<PPU_U16x4_LDSM_T, Element>;
+ #if defined(USE_PPU) && USE_AIU
+     // The CVT copy ops always address a headdim tile padded to 128 elements.
+     static constexpr int kHeadDimPadding = 128;
+@@ -548,7 +548,7 @@
+     // from the same address by the same threadblock. This is slightly faster.
+     using GmemCopyStruct = std::conditional_t<
+         Has_cp_async,
+-        SM80_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>,
++        PPU_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>,
+         AutoVectorizingCopyWithAssumedAlignment<128>
+     >;
+     using GmemCopyAtom = Copy_Atom<GmemCopyStruct, Element>;
+diff --git a/hopper/mainloop_fwd_sm80_f32.hpp b/hopper/mainloop_fwd_sm80_f32.hpp
+--- a/hopper/mainloop_fwd_sm80_f32.hpp
++++ b/hopper/mainloop_fwd_sm80_f32.hpp
+@@ -231,10 +231,10 @@
+     // use plain elementized copies (one float per op) instead.
+     using SmemCopyAtom = std::conditional_t<sizeof(Element) == 4,
+         Copy_Atom<UniversalCopy<uint32_t>, Element>,
+-        Copy_Atom<SM75_U32x4_LDSM_N, Element>>;
++        Copy_Atom<PPU_U32x4_LDSM_N, Element>>;
+     using SmemCopyAtomTransposed = std::conditional_t<sizeof(Element) == 4,
+         Copy_Atom<UniversalCopy<uint32_t>, Element>,
+-        Copy_Atom<SM75_U16x8_LDSM_T, Element>>;
++        Copy_Atom<PPU_U16x8_LDSM_T, Element>>;
+ #if defined(USE_PPU) && USE_AIU
+     using SmemCopyOpQ = std::conditional_t<
+         ArchTag::kMinComputeCapability >= 89,
+@@ -295,7 +295,7 @@
+     // from the same address by the same threadblock. This is slightly faster.
+     using GmemCopyAtom = Copy_Atom<std::conditional_t<
+         Has_cp_async,
+-        SM80_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>,
++        PPU_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>,
+         AutoVectorizingCopyWithAssumedAlignment<128>
+     >, Element>;
+
+diff --git a/hopper/mainloop_bwd_sm80_f32.hpp b/hopper/mainloop_bwd_sm80_f32.hpp
+--- a/hopper/mainloop_bwd_sm80_f32.hpp
++++ b/hopper/mainloop_bwd_sm80_f32.hpp
+@@ -515,16 +515,16 @@
+     // use plain elementized copies (one float per op), same as mainloop fwd.
+     using SmemCopyAtom = std::conditional_t<sizeof(Element) == 4,
+         Copy_Atom<UniversalCopy<uint32_t>, Element>,
+-        Copy_Atom<SM75_U32x4_LDSM_N, Element>>;
++        Copy_Atom<PPU_U32x4_LDSM_N, Element>>;
+     using SmemCopyAtomTransposed = std::conditional_t<sizeof(Element) == 4,
+         Copy_Atom<UniversalCopy<uint32_t>, Element>,
+-        Copy_Atom<SM75_U16x8_LDSM_T, Element>>;
++        Copy_Atom<PPU_U16x8_LDSM_T, Element>>;
+     using SmemCopyAtomHalf = std::conditional_t<sizeof(Element) == 4,
+         Copy_Atom<UniversalCopy<uint32_t>, Element>,
+-        Copy_Atom<SM75_U32x2_LDSM_N, Element>>;
++        Copy_Atom<PPU_U32x2_LDSM_N, Element>>;
+     using SmemCopyAtomTransposedHalf = std::conditional_t<sizeof(Element) == 4,
+         Copy_Atom<UniversalCopy<uint32_t>, Element>,
+-        Copy_Atom<SM75_U16x4_LDSM_T, Element>>;
++        Copy_Atom<PPU_U16x4_LDSM_T, Element>>;
+ #if defined(USE_PPU) && USE_AIU
+     // The CVT copy ops always address a headdim tile padded to 128 elements.
+     static constexpr int kHeadDimPadding = 128;
+@@ -633,7 +633,7 @@
+     // from the same address by the same threadblock. This is slightly faster.
+     using GmemCopyStruct = std::conditional_t<
+         Has_cp_async,
+-        SM80_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>,
++        PPU_CP_ASYNC_CACHEGLOBAL_ZFILL<cute::uint128_t>,
+         AutoVectorizingCopyWithAssumedAlignment<128>
+     >;
+     using GmemCopyAtom = Copy_Atom<GmemCopyStruct, Element>;

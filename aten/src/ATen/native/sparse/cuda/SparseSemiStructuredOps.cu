@@ -55,7 +55,11 @@ void spgemm_cutlass(
     // alias for particular instantiation of this template.
     using LayoutOutput = cutlass::layout::RowMajor; // Result of the operation will be provided in row-major format.
     using MMAOp = cutlass::arch::OpClassTensorOp; // Tensor cores are to be used for maximum performance.
-    using SmArch = cutlass::arch::Sm80; // Only CC 8.x devices are supported at the moment.
+#if defined(USE_PPU)
+    using ArchTag = cutlass::arch::PPU0010;
+#else
+    using ArchTag = cutlass::arch::Sm80;
+#endif
     using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>; // This choice provides good performance across wide range of operand sizes.
     constexpr int NumStages = 3; // This choice provides good performance across wide range of operand sizes.
     constexpr int NumEVTEpilogueStages = 1;
@@ -86,7 +90,12 @@ void spgemm_cutlass(
     using ApplyAlpha = cutlass::epilogue::threadblock::VisitorCompute<
         cutlass::multiplies, ElementComputeEpilogue, ElementComputeEpilogue,
         cutlass::FloatRoundStyle::round_to_nearest>;
-    using EVTApplyAlpha = cutlass::epilogue::threadblock::Sm80EVT<
+    using EVTApplyAlpha =
+#if defined(USE_PPU)
+        cutlass::epilogue::threadblock::PPU0010EVT<
+#else
+        cutlass::epilogue::threadblock::Sm80EVT<
+#endif
         ApplyAlpha,
         Alpha,
         Accum>;
@@ -108,7 +117,12 @@ void spgemm_cutlass(
     using ApplyBeta = cutlass::epilogue::threadblock::VisitorCompute<
         cutlass::multiplies, ElementComputeEpilogue, ElementComputeEpilogue,
         cutlass::FloatRoundStyle::round_to_nearest>;
-    using EVTApplyBeta = cutlass::epilogue::threadblock::Sm80EVT<
+    using EVTApplyBeta =
+#if defined(USE_PPU)
+        cutlass::epilogue::threadblock::PPU0010EVT<
+#else
+        cutlass::epilogue::threadblock::Sm80EVT<
+#endif
         ApplyBeta,
         Beta,
         TensorC>;
@@ -116,7 +130,12 @@ void spgemm_cutlass(
     using ApplySum = cutlass::epilogue::threadblock::VisitorCompute<
         cutlass::plus, ElementComputeEpilogue, ElementComputeEpilogue,
         cutlass::FloatRoundStyle::round_to_nearest>;
-    using EVTApplySum = cutlass::epilogue::threadblock::Sm80EVT<
+    using EVTApplySum =
+#if defined(USE_PPU)
+        cutlass::epilogue::threadblock::PPU0010EVT<
+#else
+        cutlass::epilogue::threadblock::Sm80EVT<
+#endif
         ApplySum,
         EVTApplyAlpha,
         EVTApplyBeta>;
@@ -125,7 +144,12 @@ void spgemm_cutlass(
         OutputTileThreadMap, ElementOutput, cutlass::FloatRoundStyle::round_to_nearest,
         cute::Stride<int64_t, cute::_1, int64_t>>;
 
-    using EVTOutput = cutlass::epilogue::threadblock::Sm80EVT<
+    using EVTOutput =
+#if defined(USE_PPU)
+        cutlass::epilogue::threadblock::PPU0010EVT<
+#else
+        cutlass::epilogue::threadblock::Sm80EVT<
+#endif
         Output,
         EVTApplySum>;
 
@@ -138,7 +162,7 @@ void spgemm_cutlass(
         LayoutC,
         ElementAccumulator,
         MMAOp,
-        SmArch,
+        ArchTag,
         ThreadblockShape,
         WarpShape,
         InstructionShape,

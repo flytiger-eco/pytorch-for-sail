@@ -39,6 +39,12 @@ namespace native {
 #ifdef build_grouped_gemm
 namespace {
 
+#if defined(USE_PPU)
+using GroupedGemmArch = cutlass::arch::PPU0010;
+#else
+using GroupedGemmArch = cutlass::arch::Sm80;
+#endif
+
 template <
     typename scalar_t,
     unsigned int kPad,
@@ -208,7 +214,7 @@ bool group_gemm_dispatch(
       cutlass::layout::RowMajor,
       cutlass::layout::RowMajor,
       cutlass::arch::OpClassSimt,
-      cutlass::arch::Sm80,
+      GroupedGemmArch,
       cutlass::gemm::GemmShape<128, 128, 8>,
       cutlass::gemm::GemmShape<64, 32, 8>,
       cutlass::gemm::GemmShape<1, 1, 1>>(
@@ -258,7 +264,7 @@ bool group_gemm_dispatch(
         cutlass::layout::RowMajor,
         cutlass::layout::RowMajor,
         cutlass::arch::OpClassTensorOp,
-        cutlass::arch::Sm80,
+        GroupedGemmArch,
         cutlass::gemm::GemmShape<128, 128, 32>,
         cutlass::gemm::GemmShape<64, 64, 32>,
         cutlass::gemm::GemmShape<16, 8, 16>>(
@@ -271,7 +277,7 @@ bool group_gemm_dispatch(
         cutlass::layout::RowMajor,
         cutlass::layout::RowMajor,
         cutlass::arch::OpClassSimt,
-        cutlass::arch::Sm80,
+        GroupedGemmArch,
         cutlass::gemm::GemmShape<128, 128, 8>,
         cutlass::gemm::GemmShape<64, 32, 8>,
         cutlass::gemm::GemmShape<1, 1, 1>>(
@@ -324,7 +330,7 @@ bool group_gemm_dispatch(
         cutlass::layout::RowMajor,
         cutlass::layout::RowMajor,
         cutlass::arch::OpClassTensorOp,
-        cutlass::arch::Sm80,
+        GroupedGemmArch,
         cutlass::gemm::GemmShape<128, 128, 32>,
         cutlass::gemm::GemmShape<64, 64, 32>,
         cutlass::gemm::GemmShape<16, 8, 16>>(
@@ -337,7 +343,7 @@ bool group_gemm_dispatch(
         cutlass::layout::RowMajor,
         cutlass::layout::RowMajor,
         cutlass::arch::OpClassSimt,
-        cutlass::arch::Sm80,
+        GroupedGemmArch,
         cutlass::gemm::GemmShape<128, 128, 8>,
         cutlass::gemm::GemmShape<64, 32, 8>,
         cutlass::gemm::GemmShape<1, 1, 1>>(

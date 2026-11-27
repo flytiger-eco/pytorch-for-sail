@@ -35,9 +35,7 @@ struct MixedGemmArchTraits<float, float, arch> {
 };
 
 #if !defined(USE_PPU)
-// PPU: arch/arch.h aliases Sm70/Sm75/Sm80 -> PPU0010, so these pre-Sm80
-// specializations collapse onto the Ampere one and trigger redefinition.
-// Keep only the Sm80(=PPU0010) specialization under USE_PPU.
+// Instantiate only the native PPU0010 specialization on PPU.
 // ========================= Volta Traits ===========================
 // Volta will always dequantize after the global memory load.
 // This will instantiate any HMMA tensorcore kernels for Volta.
@@ -102,11 +100,19 @@ template<typename TypeA, typename TypeB>
 struct MixedGemmArchTraits<
     TypeA,
     TypeB,
+#if defined(USE_PPU)
+    cutlass::arch::PPU0010,
+#else
     cutlass::arch::Sm80,
+#endif
     typename cutlass::platform::enable_if<cutlass::platform::is_same<TypeA, cutlass::half_t>::value
                                           || cutlass::platform::is_same<TypeA, cutlass::bfloat16_t>::value>::type> {
 private:
+#if defined(USE_PPU)
+    using LayoutDetails = LayoutDetailsB<TypeB, cutlass::arch::PPU0010>;
+#else
     using LayoutDetails = LayoutDetailsB<TypeB, cutlass::arch::Sm80>;
+#endif
 
 public:
     static constexpr int ThreadblockK = LayoutDetails::ThreadblockK;

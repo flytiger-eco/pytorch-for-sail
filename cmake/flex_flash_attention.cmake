@@ -84,18 +84,10 @@ if(NOT EXISTS "${FLEX_FLASH_ATTENTION_BUILD_SCRIPT}")
   return()
 endif()
 
-# setup.py runs the cudafy conversion before cmake configure; warn (not
-# fail) when its stamp is missing, e.g. on a pure-cmake reconfigure after
-# a `git submodule update` reset the tree.
-if(NOT EXISTS
-   "${FLEX_FLASH_ATTENTION_ROOT}/.cudafy-for-sail/flex-flash-attention-2.8.2.stamp")
-  message(WARNING
-          "flex_flash_attention sources at ${FLEX_FLASH_ATTENTION_ROOT} do not look "
-          "cudafied (no .cudafy-for-sail stamp); build torch via setup.py "
-          "or run third_party/cudafy-for-sail/cudafy.py flex-flash-attention "
-          "--version=2.8.2 on the tree, otherwise the kernel compile will "
-          "fail on hggc sources.")
-endif()
+# setup.py runs general conversion and applies the native-name patch before CMake configures.
+# The general converter writes no version-specific stamp. For CMake-only builds, prepare the target first:
+# python third_party/cudafy-for-sail/cudafy.py general <FFA_ROOT>
+# patch -d <FFA_ROOT> -p1 -i <TORCH_ROOT>/third_party/flex_flash_attention_native_names.patch
 
 set(FLEX_FLASH_ATTENTION_SO "${CMAKE_BINARY_DIR}/lib/libflex_flash_attention.so")
 set(FLEX_FLASH_ATTENTION_OBJS "${CMAKE_BINARY_DIR}/flex_flash_attention_objs")
@@ -127,6 +119,14 @@ foreach(_arg ${_fa_include_args})
   string(APPEND _fa_quoted_includes " '${_arg}'")
 endforeach()
 
+# Pass the same native PPU definitions to the standalone build without changing version guards.
+set(_fa_quoted_defines "")
+if(USE_PPU)
+  foreach(_define ${PPU_ACTLIZE_DEFINITIONS})
+    string(APPEND _fa_quoted_defines " --define '${_define}'")
+  endforeach()
+endif()
+
 # Rebuild the so when library sources change.  Globbed at configure time:
 # add/remove files in the library then re-run cmake configure.
 file(GLOB_RECURSE _fa_src_files
@@ -142,7 +142,7 @@ file(GLOB_RECURSE _fa_src_files
 # wrapped in bash because `cmake -E env -u` needs cmake >= 3.22.)
 add_custom_command(
     OUTPUT "${FLEX_FLASH_ATTENTION_SO}"
-    COMMAND bash -c "env -u PPU_SDK '${Python_EXECUTABLE}' '${FLEX_FLASH_ATTENTION_BUILD_SCRIPT}' --out '${FLEX_FLASH_ATTENTION_SO}' --obj-dir '${FLEX_FLASH_ATTENTION_OBJS}' --nvcc '${CMAKE_CUDA_COMPILER}' --cxx '${CMAKE_CXX_COMPILER}' ${_fa_quoted_includes} --define '_GLIBCXX_USE_CXX11_ABI=1'"
+    COMMAND bash -c "env -u PPU_SDK '${Python_EXECUTABLE}' '${FLEX_FLASH_ATTENTION_BUILD_SCRIPT}' --out '${FLEX_FLASH_ATTENTION_SO}' --obj-dir '${FLEX_FLASH_ATTENTION_OBJS}' --nvcc '${CMAKE_CUDA_COMPILER}' --cxx '${CMAKE_CXX_COMPILER}' ${_fa_quoted_includes} ${_fa_quoted_defines} --define '_GLIBCXX_USE_CXX11_ABI=1'"
     # build_lib.py compiles against headers and never links libtorch; we
     # only need the generated headers from both ATen (Register/DispatchKey)
     # and torch (variable_factories.h etc.) to exist before our TU runs.

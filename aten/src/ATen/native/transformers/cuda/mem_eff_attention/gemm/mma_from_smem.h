@@ -36,7 +36,11 @@
 #pragma once
 
 #include <cutlass/aligned_buffer.h>
+#if defined(USE_PPU)
+#include <cutlass/arch/memory_ppu.h>
+#else
 #include <cutlass/arch/memory.h>
+#endif
 #include <cutlass/array.h>
 #include <cutlass/cutlass.h>
 #include <cutlass/epilogue/thread/linear_combination.h>
@@ -783,8 +787,12 @@ class MmaMultistageFromSharedMemory : public MmaBaseFromSharedMemory<
   /// Warp-level Mma
   using Operator1 = typename Policy1::Operator;
 
-  /// Minimum architecture is Sm80 to support cp.async
+  // Use the native architecture tag for asynchronous copies on PPU.
+#if defined(USE_PPU)
+  using ArchTag = arch::PPU0010;
+#else
   using ArchTag = arch::Sm80;
+#endif
 
   /// Complex transform on B operand
   static ComplexTransform const kTransformB1 = Operator1::kTransformB;
