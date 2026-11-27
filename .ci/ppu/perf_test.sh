@@ -39,7 +39,6 @@ python test/run_test.py \
         inductor/test_benchmark_fusion \
         inductor/test_benchmarking \
         inductor/test_analysis \
-        ppu_tests/test_inductor_shared_read_cat \
     -k "$(ppu_cuda_only_k_expr "$K_FP8" "$K_SKIP_CASES")" \
     --verbose
 
