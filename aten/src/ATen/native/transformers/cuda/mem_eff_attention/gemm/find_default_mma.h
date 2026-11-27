@@ -22,7 +22,7 @@
 
 #include <cutlass/gemm/threadblock/default_mma.h>
 #include <cutlass/gemm/threadblock/default_mma_core_simt.h>
-// PPU: sm70/sm75/sm80 default_mma_core 统一映射到 ppu0010（sm80 以下不单独实例化）
+// PPU uses the native MMA core without instantiating legacy NVIDIA architectures.
 #if defined(USE_PPU)
 #include <cutlass/gemm/threadblock/default_mma_core_ppu0010.h>
 #else
@@ -122,7 +122,11 @@ struct FindDefaultMma<
     ElementAccumulator,
     layout::RowMajor,
     arch::OpClassTensorOp,
+#if defined(USE_PPU)
+    arch::PPU0010,
+#else
     arch::Sm80,
+#endif
     ThreadblockShape,
     WarpShape,
     InstructionShape,
@@ -131,7 +135,11 @@ struct FindDefaultMma<
     typename cutlass::platform::enable_if<(kAlignmentA > 1)>::type> {
   using LayoutC = layout::RowMajor;
   using OperatorClass = arch::OpClassTensorOp;
+#if defined(USE_PPU)
+  using ArchTag = arch::PPU0010;
+#else
   using ArchTag = arch::Sm80;
+#endif
 
   using DefaultMma_ = cutlass::gemm::threadblock::DefaultMma<
       ElementA_,

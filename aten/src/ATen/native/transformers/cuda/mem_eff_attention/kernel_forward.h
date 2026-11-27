@@ -37,7 +37,7 @@
 #include <cutlass/gemm/kernel/default_gemm.h>
 #include <cutlass/gemm/threadblock/default_mma.h>
 #include <cutlass/gemm/threadblock/default_mma_core_simt.h>
-// PPU: sm70/sm75/sm80 default_mma_core 统一映射到 ppu0010（sm80 以下不单独实例化）
+// PPU uses the native MMA core without instantiating legacy NVIDIA architectures.
 #if defined(USE_PPU)
 #include <cutlass/gemm/threadblock/default_mma_core_ppu0010.h>
 #else
@@ -86,7 +86,7 @@ static CUTLASS_DEVICE float atomicMaxFloat(float* addr, float value) {
 template <
     // The datatype of Q/K/V
     typename scalar_t_,
-    // Architecture we are targeting (eg `cutlass::arch::Sm80`)
+    // Target architecture; PPU uses cutlass::arch::PPU0010.
     typename ArchTag,
     // If Q/K/V are correctly aligned in memory and we can run a fast kernel
     bool isAligned_,

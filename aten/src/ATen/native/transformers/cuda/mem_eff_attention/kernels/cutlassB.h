@@ -1,3 +1,275 @@
+#if defined(USE_PPU)
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+// This file is auto-generated. See "generate_kernels.py"
+#pragma once
+#include <ATen/native/transformers/cuda/mem_eff_attention/kernel_backward.h>
+using namespace PyTorchMemEffAttention;
+// ======== bf16 / ppu0010 ========
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 32, true>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 32, true>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_64x64_k32_seqaligned_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 32, true>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 32>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 32>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_64x64_k32_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 32>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 64, true>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 64, true>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_64x64_k64_seqaligned_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 64, true>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 64>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 64>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_64x64_k64_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 64>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 128, 64, 96>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 128, 64, 96>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_128x64_k96_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 128, 64, 96>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 128, 128, 128, true>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 128, 128, 128, true>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_128x128_k128_seqaligned_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 128, 128, 128, true>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 128, 128, 128>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 128, 128, 128>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_128x128_k128_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 128, 128, 128>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 64, 64, 128, true>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 64, 64, 128, true>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_64x64_k128_seqaligned_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 64, 64, 128, true>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 64, 64, 128>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 64, 64, 128>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_64x64_k128_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 64, 64, 128>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 128, 64, 65536>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 128, 64, 65536>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_128x64_k65536_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 128, 64, 65536>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 64, 64, 65536>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 64, 64, 65536>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_64x64_k65536_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 64, 64, 65536>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, true, 64, 64, 32>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, true, 64, 64, 32>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_64x64_k32_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, true, 64, 64, 32>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, true, 64, 64, 64>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, true, 64, 64, 64>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_64x64_k64_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, true, 64, 64, 64>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, true, 128, 128, 128>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, true, 128, 128, 128>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_128x128_k128_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, true, 128, 128, 128>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, false, 64, 64, 128>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, false, 64, 64, 128>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_64x64_k128_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, false, 64, 64, 128>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, false, 128, 64, 65536>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, false, 128, 64, 65536>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_128x64_k65536_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, false, 128, 64, 65536>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, false, 64, 64, 65536>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, false, 64, 64, 65536>::kMinBlocksPerSm)
+fmha_cutlassB_bf16_aligned_64x64_k65536_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, false, 64, 64, 65536>::Params p);
+
+template <typename T> void dispatch_cutlassB_bf16_ppu0010(T cb, int cc) {
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 32, true>(), fmha_cutlassB_bf16_aligned_64x64_k32_seqaligned_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 32>(), fmha_cutlassB_bf16_aligned_64x64_k32_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 64, true>(), fmha_cutlassB_bf16_aligned_64x64_k64_seqaligned_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 64, 64, 64>(), fmha_cutlassB_bf16_aligned_64x64_k64_ppu0010);
+    if (cc == 89) cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 128, 64, 96>(), fmha_cutlassB_bf16_aligned_128x64_k96_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 128, 128, 128, true>(), fmha_cutlassB_bf16_aligned_128x128_k128_seqaligned_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, true, 128, 128, 128>(), fmha_cutlassB_bf16_aligned_128x128_k128_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 64, 64, 128, true>(), fmha_cutlassB_bf16_aligned_64x64_k128_seqaligned_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 64, 64, 128>(), fmha_cutlassB_bf16_aligned_64x64_k128_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 128, 64, 65536>(), fmha_cutlassB_bf16_aligned_128x64_k65536_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, false, false, 64, 64, 65536>(), fmha_cutlassB_bf16_aligned_64x64_k65536_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, true, 64, 64, 32>(), fmha_cutlassB_bf16_aligned_64x64_k32_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, true, 64, 64, 64>(), fmha_cutlassB_bf16_aligned_64x64_k64_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, true, 128, 128, 128>(), fmha_cutlassB_bf16_aligned_128x128_k128_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, false, 64, 64, 128>(), fmha_cutlassB_bf16_aligned_64x64_k128_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, false, 128, 64, 65536>(), fmha_cutlassB_bf16_aligned_128x64_k65536_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::bfloat16_t, true, true, false, 64, 64, 65536>(), fmha_cutlassB_bf16_aligned_64x64_k65536_dropout_ppu0010);
+}
+
+// ======== f16 / ppu0010 ========
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 32, true>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 32, true>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_64x64_k32_seqaligned_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 32, true>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 32>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 32>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_64x64_k32_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 32>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 64, true>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 64, true>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_64x64_k64_seqaligned_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 64, true>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 64>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 64>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_64x64_k64_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 64>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 128, 64, 96>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 128, 64, 96>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_128x64_k96_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 128, 64, 96>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 128, 128, 128, true>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 128, 128, 128, true>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_128x128_k128_seqaligned_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 128, 128, 128, true>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 128, 128, 128>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 128, 128, 128>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_128x128_k128_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 128, 128, 128>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 64, 64, 128, true>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 64, 64, 128, true>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_64x64_k128_seqaligned_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 64, 64, 128, true>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 64, 64, 128>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 64, 64, 128>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_64x64_k128_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 64, 64, 128>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 128, 64, 65536>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 128, 64, 65536>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_128x64_k65536_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 128, 64, 65536>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 64, 64, 65536>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 64, 64, 65536>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_64x64_k65536_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 64, 64, 65536>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 64, 64, 32>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 64, 64, 32>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_64x64_k32_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 64, 64, 32>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 64, 64, 64>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 64, 64, 64>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_64x64_k64_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 64, 64, 64>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 128, 128, 128>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 128, 128, 128>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_128x128_k128_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 128, 128, 128>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, false, 64, 64, 128>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, false, 64, 64, 128>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_64x64_k128_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, false, 64, 64, 128>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, false, 128, 64, 65536>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, false, 128, 64, 65536>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_128x64_k65536_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, false, 128, 64, 65536>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, false, 64, 64, 65536>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, false, 64, 64, 65536>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_64x64_k65536_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, false, 64, 64, 65536>::Params p);
+
+template <typename T> void dispatch_cutlassB_f16_ppu0010(T cb, int cc) {
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 32, true>(), fmha_cutlassB_f16_aligned_64x64_k32_seqaligned_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 32>(), fmha_cutlassB_f16_aligned_64x64_k32_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 64, true>(), fmha_cutlassB_f16_aligned_64x64_k64_seqaligned_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 64, 64, 64>(), fmha_cutlassB_f16_aligned_64x64_k64_ppu0010);
+    if (cc == 89) cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 128, 64, 96>(), fmha_cutlassB_f16_aligned_128x64_k96_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 128, 128, 128, true>(), fmha_cutlassB_f16_aligned_128x128_k128_seqaligned_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, true, 128, 128, 128>(), fmha_cutlassB_f16_aligned_128x128_k128_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 64, 64, 128, true>(), fmha_cutlassB_f16_aligned_64x64_k128_seqaligned_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 64, 64, 128>(), fmha_cutlassB_f16_aligned_64x64_k128_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 128, 64, 65536>(), fmha_cutlassB_f16_aligned_128x64_k65536_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, false, false, 64, 64, 65536>(), fmha_cutlassB_f16_aligned_64x64_k65536_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 64, 64, 32>(), fmha_cutlassB_f16_aligned_64x64_k32_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 64, 64, 64>(), fmha_cutlassB_f16_aligned_64x64_k64_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 128, 128, 128>(), fmha_cutlassB_f16_aligned_128x128_k128_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, false, 64, 64, 128>(), fmha_cutlassB_f16_aligned_64x64_k128_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, false, 128, 64, 65536>(), fmha_cutlassB_f16_aligned_128x64_k65536_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, false, 64, 64, 65536>(), fmha_cutlassB_f16_aligned_64x64_k65536_dropout_ppu0010);
+}
+
+// ======== f32 / ppu0010 ========
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 32>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 32>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_64x64_k32_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 32>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 64>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 64>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_64x64_k64_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 64>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 128, 64, 128>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 128, 64, 128>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_128x64_k128_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 128, 64, 128>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 128>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 128>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_64x64_k128_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 128>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 128, 64, 65536>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 128, 64, 65536>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_128x64_k65536_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 128, 64, 65536>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 65536>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 65536>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_64x64_k65536_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 65536>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 32>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 32>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_64x64_k32_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 32>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 64>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 64>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_64x64_k64_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 64>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 128, 64, 128>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 128, 64, 128>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_128x64_k128_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 128, 64, 128>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 128>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 128>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_64x64_k128_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 128>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 128, 64, 65536>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 128, 64, 65536>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_128x64_k65536_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 128, 64, 65536>::Params p);
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 65536>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 65536>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_64x64_k65536_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 65536>::Params p);
+
+template <typename T> void dispatch_cutlassB_f32_ppu0010(T cb, int cc) {
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 32>(), fmha_cutlassB_f32_aligned_64x64_k32_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 64>(), fmha_cutlassB_f32_aligned_64x64_k64_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 128, 64, 128>(), fmha_cutlassB_f32_aligned_128x64_k128_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 128>(), fmha_cutlassB_f32_aligned_64x64_k128_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 128, 64, 65536>(), fmha_cutlassB_f32_aligned_128x64_k65536_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, false, false, 64, 64, 65536>(), fmha_cutlassB_f32_aligned_64x64_k65536_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 32>(), fmha_cutlassB_f32_aligned_64x64_k32_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 64>(), fmha_cutlassB_f32_aligned_64x64_k64_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 128, 64, 128>(), fmha_cutlassB_f32_aligned_128x64_k128_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 128>(), fmha_cutlassB_f32_aligned_64x64_k128_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 128, 64, 65536>(), fmha_cutlassB_f32_aligned_128x64_k65536_dropout_ppu0010);
+    cb(AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 65536>(), fmha_cutlassB_f32_aligned_64x64_k65536_dropout_ppu0010);
+}
+
+
+template <typename DT, typename T>
+void dispatch_cutlassB(T cb, int cc = 0) {
+
+    if (std::is_same_v<DT, cutlass::bfloat16_t> && 80 <= cc && cc < 100) {
+        dispatch_cutlassB_bf16_ppu0010(cb, cc);
+    }
+    if (std::is_same_v<DT, cutlass::half_t> && 80 <= cc && cc < 100) {
+        dispatch_cutlassB_f16_ppu0010(cb, cc);
+    }
+    if (std::is_same_v<DT, float> && 80 <= cc && cc < 100) {
+        dispatch_cutlassB_f32_ppu0010(cb, cc);
+    }
+}
+#else
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
@@ -436,24 +708,29 @@ __global__ void __launch_bounds__(
     AttentionBackwardKernel<cutlass::arch::Sm50, float, true, false, false, 64, 64, 65536>::kNumThreads,
     AttentionBackwardKernel<cutlass::arch::Sm50, float, true, false, false, 64, 64, 65536>::kMinBlocksPerSm)
 fmha_cutlassB_f32_aligned_64x64_k65536_sm50(typename AttentionBackwardKernel<cutlass::arch::Sm50, float, true, false, false, 64, 64, 65536>::Params p);
+#if !(defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM))
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 32>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 32>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_64x64_k32_dropout_sm50(typename AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 32>::Params p);
+#endif
 #if defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM)
 __global__ void __launch_bounds__(
     AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>::kNumThreads,
     AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>::kMinBlocksPerSm)
 fmha_cutlassB_f32_aligned_32x32_k32_dropout_sm50(typename AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>::Params p);
-__global__ void __launch_bounds__(
-    AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 64>::kNumThreads,
-    AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 64>::kMinBlocksPerSm)
-fmha_cutlassB_f32_aligned_32x32_k64_dropout_sm50(typename AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 64>::Params p);
-#else
-__global__ void __launch_bounds__(
-    AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 32>::kNumThreads,
-    AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 32>::kMinBlocksPerSm)
-fmha_cutlassB_f32_aligned_64x64_k32_dropout_sm50(typename AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 32>::Params p);
+#endif
+#if !(defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM))
 __global__ void __launch_bounds__(
     AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 64>::kNumThreads,
     AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 64>::kMinBlocksPerSm)
 fmha_cutlassB_f32_aligned_64x64_k64_dropout_sm50(typename AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 64>::Params p);
+#endif
+#if defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM)
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 64>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 64>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_32x32_k64_dropout_sm50(typename AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 64>::Params p);
 #endif
 __global__ void __launch_bounds__(
     AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 128>::kNumThreads,
@@ -501,12 +778,17 @@ template <typename T> void dispatch_cutlassB_f32_sm50(T cb, int cc) {
     cb(AttentionBackwardKernel<cutlass::arch::Sm50, float, true, false, false, 64, 64, 64>(), fmha_cutlassB_f32_aligned_64x64_k64_sm50);
     cb(AttentionBackwardKernel<cutlass::arch::Sm50, float, true, false, false, 64, 64, 128>(), fmha_cutlassB_f32_aligned_64x64_k128_sm50);
     cb(AttentionBackwardKernel<cutlass::arch::Sm50, float, true, false, false, 64, 64, 65536>(), fmha_cutlassB_f32_aligned_64x64_k65536_sm50);
-#if defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM)
-    cb(AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>(), fmha_cutlassB_f32_aligned_32x32_k32_dropout_sm50);
-    cb(AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 64>(), fmha_cutlassB_f32_aligned_32x32_k64_dropout_sm50);
-#else
+    #if !(defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM))
     cb(AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 32>(), fmha_cutlassB_f32_aligned_64x64_k32_dropout_sm50);
+#endif
+    #if defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM)
+    cb(AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>(), fmha_cutlassB_f32_aligned_32x32_k32_dropout_sm50);
+#endif
+    #if !(defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM))
     cb(AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 64>(), fmha_cutlassB_f32_aligned_64x64_k64_dropout_sm50);
+#endif
+    #if defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM)
+    cb(AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 64>(), fmha_cutlassB_f32_aligned_32x32_k64_dropout_sm50);
 #endif
     cb(AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 128>(), fmha_cutlassB_f32_aligned_64x64_k128_dropout_sm50);
     cb(AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 65536>(), fmha_cutlassB_f32_aligned_64x64_k65536_dropout_sm50);
@@ -912,3 +1194,4 @@ void dispatch_cutlassB(T cb, int cc = 0) {
         dispatch_cutlassB_f32_sm80(cb, cc);
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if defined(USE_PPU)
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
@@ -8,27 +9,29 @@
 // This file is auto-generated. See "generate_kernels.py"
 #include <ATen/native/transformers/cuda/mem_eff_attention/kernel_backward.h>
 using namespace PyTorchMemEffAttention;
-#if defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM)
 __global__ void __launch_bounds__(
-    AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>::kNumThreads,
-    AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>::kMinBlocksPerSm)
-fmha_cutlassB_f32_aligned_32x32_k32_dropout_sm50(typename AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>::Params p) {
-#ifdef __CUDA_ARCH__
-#if __CUDA_ARCH__ >= 500
-#if __CUDA_ARCH__ < 700
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 32>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 32>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_64x64_k32_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 32>::Params p) {
+#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ >= 100
   if (!p.advance_to_block()) {
     return;
   }
-  AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>::attention_kernel(p);
-  return;
-#endif
-#endif
-    printf(
-        "FATAL: kernel `fmha_cutlassB_f32_aligned_32x32_k32_dropout_sm50` is for sm50-sm70, but was built for sm%d\n",
-        int(__CUDA_ARCH__ + 0) / 10);
+  AttentionBackwardKernel<cutlass::arch::PPU0010, float, true, true, false, 64, 64, 32>::attention_kernel(p);
 #endif
 }
 #else
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+// This file is auto-generated. See "generate_kernels.py"
+#include <ATen/native/transformers/cuda/mem_eff_attention/kernel_backward.h>
+using namespace PyTorchMemEffAttention;
+#if !(defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM))
 __global__ void __launch_bounds__(
     AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 32>::kNumThreads,
     AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 64, 64, 32>::kMinBlocksPerSm)
@@ -106,3 +109,25 @@ fmha_cutlassB_f32_aligned_64x64_k32_dropout_sm80(typename AttentionBackwardKerne
         int(__CUDA_ARCH__ + 0) / 10);
 #endif
 }
+#if defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM)
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>::kMinBlocksPerSm)
+fmha_cutlassB_f32_aligned_32x32_k32_dropout_sm50(typename AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>::Params p) {
+#ifdef __CUDA_ARCH__
+#if __CUDA_ARCH__ >= 500
+#if __CUDA_ARCH__ < 700
+  if (!p.advance_to_block()) {
+    return;
+  }
+  AttentionBackwardKernel<cutlass::arch::Sm50, float, true, true, false, 32, 32, 32>::attention_kernel(p);
+  return;
+#endif
+#endif
+    printf(
+        "FATAL: kernel `fmha_cutlassB_f32_aligned_32x32_k32_dropout_sm50` is for sm50-sm70, but was built for sm%d\n",
+        int(__CUDA_ARCH__ + 0) / 10);
+#endif
+}
+#endif
+#endif

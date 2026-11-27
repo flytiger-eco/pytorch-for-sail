@@ -28,10 +28,7 @@ struct LayoutDetailsB {
 };
 
 #if !defined(USE_PPU)
-// PPU: arch::Sm70 aliases to PPU0010, which also matches the generic
-// (kMinComputeCapability>=75) specializations below, making
-// LayoutDetailsB<uint8_t, PPU0010> ambiguous. Disable the Volta-only
-// specialization under USE_PPU; the Sm80 path uses the >=75 ones.
+// PPU uses the generic layout for PPU0010 without instantiating Volta types.
 // Volta specialiations. Volta will dequantize before STS, so we need a different operator
 template<typename TypeB>
 struct LayoutDetailsB<TypeB, arch::Sm70> {

@@ -1,3 +1,5 @@
+#if defined(USE_PPU)
+#else
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
@@ -65,3 +67,4 @@ fmha_cutlassB_f32_notaligned_64x64_k64_sm75(typename AttentionBackwardKernel<cut
         int(__CUDA_ARCH__ + 0) / 10);
 #endif
 }
+#endif

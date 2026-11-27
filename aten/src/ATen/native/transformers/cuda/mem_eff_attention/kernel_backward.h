@@ -35,7 +35,7 @@
 #include <cutlass/gemm/kernel/default_gemm.h>
 #include <cutlass/gemm/threadblock/default_mma.h>
 #include <cutlass/gemm/threadblock/default_mma_core_simt.h>
-// PPU: sm70/sm75/sm80 default_mma_core 统一映射到 ppu0010（sm80 以下不单独实例化）
+// PPU uses the native MMA core without instantiating legacy NVIDIA architectures.
 #if defined(USE_PPU)
 #include <cutlass/gemm/threadblock/default_mma_core_ppu0010.h>
 #else
@@ -174,7 +174,8 @@ struct AtomicLock {
       int thread_id) {
     if (thread_id == 0) {
       while (atomicCAS(lock, 0 /*cmp*/, set_val /*setval*/) != set_val) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
+#if (defined(USE_PPU) && defined(__HGGC_ARCH__) && __HGGC_ARCH__ >= 100) || \
+    (!defined(USE_PPU) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700)
         __nanosleep(40);
 #endif
       }
@@ -184,7 +185,11 @@ struct AtomicLock {
   CUTLASS_DEVICE static void release(int32_t* lock, int thread_id) {
     if (thread_id == 0) {
       int status = 0;
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
+#if defined(USE_PPU) && defined(__HGGC_ARCH__) && __HGGC_ARCH__ >= 100
+      asm volatile("ppu.st.global.release.gpu.b32 [%0], %1;\n"
+                   :
+                   : "l"(lock), "r"(status));
+#elif !defined(USE_PPU) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
       asm volatile("st.global.release.gpu.b32 [%0], %1;\n"
                    :
                    : "l"(lock), "r"(status));
@@ -206,7 +211,7 @@ constexpr int getWarpsPerSmBw() {
 } // namespace
 
 template <
-    // which arch we target (eg `cutlass::arch::Sm80`)
+    // Target architecture; PPU uses cutlass::arch::PPU0010.
     typename ArchTag_,
     // input/output type
     typename scalar_t_,
@@ -729,14 +734,16 @@ struct AttentionBackwardKernel {
     int64_t gB_strideH = 0;
 
     CUTLASS_HOST_DEVICE int16_t num_splits_key_device() const {
-#ifdef __CUDA_ARCH__
+#if (defined(USE_PPU) && defined(__HGGC_ARCH__)) || \
+    (!defined(USE_PPU) && defined(__CUDA_ARCH__))
       return kEnableSplitKeys ? gridDim.x : 1;
 #else
       return num_splits_key; // for host-side tests
 #endif
     }
     CUTLASS_HOST_DEVICE int16_t split_key_device() const {
-#ifdef __CUDA_ARCH__
+#if (defined(USE_PPU) && defined(__HGGC_ARCH__)) || \
+    (!defined(USE_PPU) && defined(__CUDA_ARCH__))
       return kEnableSplitKeys ? blockIdx.x : 0;
 #else
       return 0; // for host-side tests

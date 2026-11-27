@@ -37,7 +37,11 @@
 
 #include <cutlass/aligned_buffer.h>
 #include <cutlass/arch/cache_operation.h>
+#if defined(USE_PPU)
+#include <cutlass/arch/memory_ppu.h>
+#else
 #include <cutlass/arch/memory.h>
+#endif
 #include <cutlass/arch/mma.h>
 #include <cutlass/array.h>
 #include <cutlass/cutlass.h>
@@ -125,8 +129,12 @@ class CustomMmaMultistage : public CustomMmaBase<Shape_, Policy_, Stages> {
   /// Warp-level Mma
   using Operator = typename Policy::Operator;
 
-  /// Minimum architecture is Sm80 to support cp.async
+  // Use the native architecture tag for asynchronous copies on PPU.
+#if defined(USE_PPU)
+  using ArchTag = arch::PPU0010;
+#else
   using ArchTag = arch::Sm80;
+#endif
 
   /// Complex transform on A operand
   static ComplexTransform const kTransformA = Operator::kTransformA;

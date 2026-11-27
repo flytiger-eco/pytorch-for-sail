@@ -11,7 +11,7 @@
 import argparse
 import collections
 import itertools
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional, TypeVar
 
@@ -30,7 +30,7 @@ KERNEL_IMPL_TEMPLATE = """__global__ void __launch_bounds__(
 {NAME}(typename {CPP_CLASS}::Params p) {{
 #ifdef __CUDA_ARCH__
 #if __CUDA_ARCH__ >= {SM}0
-#if __CUDA_ARCH__ < {SM_MAX}0
+#if {ARCH_UPPER}
   if (!p.advance_to_block()) {{
     return;
   }}
@@ -41,6 +41,21 @@ KERNEL_IMPL_TEMPLATE = """__global__ void __launch_bounds__(
     printf(
         "FATAL: kernel `{NAME}` is for sm{SM}-sm{SM_MAX}, but was built for sm%d\\n",
         int(__CUDA_ARCH__ + 0) / 10);
+#endif
+}}
+"""
+
+
+# Use native ACTLIZE architecture conditions on PPU without mapping CUDA_ARCH.
+PPU_KERNEL_IMPL_TEMPLATE = """__global__ void __launch_bounds__(
+    {CPP_CLASS}::kNumThreads,
+    {CPP_CLASS}::kMinBlocksPerSm)
+{NAME}(typename {CPP_CLASS}::Params p) {{
+#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ >= 100
+  if (!p.advance_to_block()) {{
+    return;
+  }}
+  {CPP_CLASS}::attention_kernel(p);
 #endif
 }}
 """
@@ -58,6 +73,7 @@ class FwdKernel:
     supports_dropout: bool = True
     supports_bias: bool = True
     dispatch_cond: Optional[str] = None
+    ppu: bool = False
 
     def __post_init__(self) -> None:
         # Set kernel selection priority
@@ -81,14 +97,19 @@ class FwdKernel:
     @property
     def name(self) -> str:
         acc = "rf" if self.max_k <= self.k else "gmem"
-        return f"fmha_cutlassF_{self.dtype}_{self._aligned_suffix}_{self.q}x{self.k}_{acc}_sm{self.sm_range[0]}"
+        arch = "ppu0010" if self.ppu else f"sm{self.sm_range[0]}"
+        return f"fmha_cutlassF_{self.dtype}_{self._aligned_suffix}_{self.q}x{self.k}_{acc}_{arch}"
 
     @property
     def cpp_class(self) -> str:
         template_args = ", ".join(
             [
                 DTYPES[self.dtype],
-                f"cutlass::arch::Sm{self.sm_range[0]}",
+                (
+                    "cutlass::arch::PPU0010"
+                    if self.ppu
+                    else f"cutlass::arch::Sm{self.sm_range[0]}"
+                ),
                 "true" if self.aligned else "false",
                 str(self.q),
                 str(self.k),
@@ -106,18 +127,24 @@ class FwdKernel:
 
     @property
     def cpp_impl(self) -> str:
-        return KERNEL_IMPL_TEMPLATE.format(
+        template = PPU_KERNEL_IMPL_TEMPLATE if self.ppu else KERNEL_IMPL_TEMPLATE
+        return template.format(
             CPP_CLASS=self.cpp_class,
             NAME=self.name,
             SM=self.sm_range[0],
             SM_MAX=self.sm_range[1],
+            ARCH_UPPER=(
+                "__CUDA_ARCH__ <= 1200"
+                if self.sm_range[0] == 80
+                else f"__CUDA_ARCH__ < {self.sm_range[1]}0"
+            ),
         )
 
     @classmethod
-    def get_all(cls) -> list["FwdKernel"]:
+    def get_all(cls, ppu: bool = False) -> list["FwdKernel"]:
         kernels: list[FwdKernel] = []
         for aligned, dtype, (sm, sm_max) in itertools.product(
-            [True, False], DTYPES.keys(), itertools.pairwise(SM)
+            [True, False], DTYPES.keys(), itertools.pairwise([80, 100] if ppu else SM)
         ):
             # Remove some kernels we don't use
             if dtype == "bf16" and sm < 80:
@@ -138,6 +165,7 @@ class FwdKernel:
                         q=q,
                         k=k,
                         max_k=max_k,
+                        ppu=ppu,
                     )
                 )
         return kernels
@@ -156,6 +184,8 @@ class BwdKernel:
     max_k: int
     dispatch_cond: Optional[str] = None
     keys_queries_aligned_to_blocksizes: bool = False
+    ppu: bool = False
+    compile_condition: Optional[str] = None
 
     def __post_init__(self) -> None:
         # Set kernel selection priority
@@ -184,16 +214,21 @@ class BwdKernel:
         seqlen_aligned_suffix = (
             "_seqaligned" if self.keys_queries_aligned_to_blocksizes else ""
         )
+        arch = "ppu0010" if self.ppu else f"sm{self.sm_range[0]}"
         return (
             f"fmha_cutlassB_{self.dtype}_{self._aligned_suffix}"
-            f"_{self.block_i}x{self.block_j}_k{self.max_k}{dropout_suffix}{seqlen_aligned_suffix}_sm{self.sm_range[0]}"
+            f"_{self.block_i}x{self.block_j}_k{self.max_k}{dropout_suffix}{seqlen_aligned_suffix}_{arch}"
         )
 
     @property
     def cpp_class(self) -> str:
         template_args = ", ".join(
             [
-                f"cutlass::arch::Sm{self.sm_range[0]}",
+                (
+                    "cutlass::arch::PPU0010"
+                    if self.ppu
+                    else f"cutlass::arch::Sm{self.sm_range[0]}"
+                ),
                 DTYPES[self.dtype],
                 "true" if self.aligned else "false",
                 "true" if self.apply_dropout else "false",
@@ -215,20 +250,29 @@ class BwdKernel:
 
     @property
     def cpp_impl(self) -> str:
-        return KERNEL_IMPL_TEMPLATE.format(
+        template = PPU_KERNEL_IMPL_TEMPLATE if self.ppu else KERNEL_IMPL_TEMPLATE
+        impl = template.format(
             CPP_CLASS=self.cpp_class,
             NAME=self.name,
             SM=self.sm_range[0],
             SM_MAX=self.sm_range[1],
+            ARCH_UPPER=(
+                "__CUDA_ARCH__ <= 1200"
+                if self.sm_range[0] == 80
+                else f"__CUDA_ARCH__ < {self.sm_range[1]}0"
+            ),
         )
+        if self.compile_condition:
+            return f"#if {self.compile_condition}\n{impl}#endif\n"
+        return impl
 
     @classmethod
-    def get_all(cls) -> list["BwdKernel"]:
+    def get_all(cls, ppu: bool = False) -> list["BwdKernel"]:
         kernels: list[BwdKernel] = []
         for aligned, dtype, (sm, sm_max), apply_dropout, max_k in itertools.product(
             [True, False],
             DTYPES.keys(),
-            itertools.pairwise(SM),
+            itertools.pairwise([80, 100] if ppu else SM),
             [True, False],
             [32, 64, 128, 2**16],
         ):
@@ -259,6 +303,7 @@ class BwdKernel:
                         block_i=bi,
                         block_j=bj,
                         max_k=max_k,
+                        ppu=ppu,
                     )
                 )
                 # A few specialized kernels that are faster
@@ -277,6 +322,7 @@ class BwdKernel:
                         block_j=bj,
                         max_k=max_k,
                         keys_queries_aligned_to_blocksizes=True,
+                        ppu=ppu,
                     )
                 )
         # Add some specialized kernels for stable diffusion BW (K=80)
@@ -294,22 +340,40 @@ class BwdKernel:
                     block_j=64,
                     max_k=96,
                     # Sm80 has a faster kernel for this case
-                    dispatch_cond="cc == 86 || cc == 89",
+                    dispatch_cond="cc == 89" if ppu else "cc == 86 || cc == 89",
+                    ppu=ppu,
                 )
             )
+        if not ppu:
+            # Retain the existing CUDA 12.4 workaround for compiling f32 dropout.
+            condition = (
+                "defined(CUDA_VERSION) && CUDA_VERSION == 12040 && !defined(USE_ROCM)"
+            )
+            for kernel in list(kernels):
+                if (
+                    kernel.dtype == "f32"
+                    and kernel.aligned
+                    and kernel.apply_dropout
+                    and kernel.sm_range[0] == 50
+                    and kernel.max_k in (32, 64)
+                ):
+                    kernel.compile_condition = f"!({condition})"
+                    kernels.append(
+                        replace(
+                            kernel, block_i=32, block_j=32, compile_condition=condition
+                        )
+                    )
         return kernels
 
 
 T = TypeVar("T", FwdKernel, BwdKernel)
 
 
-def write_decl_impl(
+def render_decl_impl(
     kernels: list[T],
     family_name: str,
     impl_file: str,
-    autogen_dir: Path,
-    disable_def: Optional[str] = None,
-) -> None:
+) -> dict[str, str]:
     cpp_file_header = """/*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
@@ -337,11 +401,15 @@ def write_decl_impl(
         cat_to_kernels[(k.dtype, k.sm_range[0], k.sm_range[1])].append(k)
 
     for (cat_dt, cat_sm, cat_sm_max), kernels in cat_to_kernels.items():
-        declarations += f"// ======== {cat_dt} / sm{cat_sm} ========\n"
+        arch = "ppu0010" if kernels[0].ppu else f"sm{cat_sm}"
+        declarations += f"// ======== {cat_dt} / {arch} ========\n"
         declarations += "\n".join(
-            k.cpp_impl.split("{")[0].rstrip() + ";" for k in kernels
+            k.cpp_impl.split("{")[0].rstrip()
+            + ";"
+            + ("\n#endif" if getattr(k, "compile_condition", None) else "")
+            for k in kernels
         )
-        dispatch_category_fn = f"dispatch_{family_name}_{cat_dt}_sm{cat_sm}"
+        dispatch_category_fn = f"dispatch_{family_name}_{cat_dt}_{arch}"
         declarations += (
             f"\n\ntemplate <typename T> void {dispatch_category_fn}(T cb, int cc) {{\n"
         )
@@ -349,10 +417,17 @@ def write_decl_impl(
             _call = f"cb({k.cpp_class}(), {k.name});\n"
             if k.dispatch_cond is not None:
                 _call = f"if ({k.dispatch_cond}) {_call}"
+            if getattr(k, "compile_condition", None):
+                _call = f"#if {k.compile_condition}\n    {_call}#endif\n"
             declarations += f"    {_call}"
         declarations += "}\n\n"
+        upper = (
+            "cc <= 120"
+            if cat_sm == 80 and not kernels[0].ppu
+            else f"cc < {cat_sm_max}"
+        )
         dispatch_all += f"""
-    if (std::is_same_v<DT, {DTYPES[cat_dt]}> && {cat_sm} <= cc && cc < {cat_sm_max}) {{
+    if (std::is_same_v<DT, {DTYPES[cat_dt]}> && {cat_sm} <= cc && {upper}) {{
         {dispatch_category_fn}(cb, cc);
     }}"""
 
@@ -364,8 +439,7 @@ void dispatch_{family_name}(T cb, int cc = 0) {{
 """
     # declarations += f"#endif // {disable_def}\n"
 
-    # Write declarations to family header
-    (autogen_dir / f"{family_name}.h").write_text(declarations)
+    outputs = {f"{family_name}.h": declarations}
 
     for f, f_kernels in implfile_to_kernels.items():
         impl_cu = cpp_file_header
@@ -375,7 +449,29 @@ void dispatch_{family_name}(T cb, int cc = 0) {{
         for k in f_kernels:
             impl_cu += k.cpp_impl
         # impl_cu += f"#endif // {disable_def}\n"
-        (autogen_dir / f"{family_name}_{f}.cu").write_text(impl_cu)
+        outputs[f"{family_name}_{f}.cu"] = impl_cu
+    return outputs
+
+
+def write_decl_impl(
+    kernels: list[T],
+    family_name: str,
+    impl_file: str,
+    autogen_dir: Path,
+    ppu_kernels: list[T],
+) -> None:
+    cuda_outputs = render_decl_impl(kernels, family_name, impl_file)
+    ppu_outputs = render_decl_impl(ppu_kernels, family_name, impl_file)
+    for filename in sorted(cuda_outputs.keys() | ppu_outputs.keys()):
+        # Instantiate NVIDIA and PPU architecture types separately without aliases.
+        content = (
+            "#if defined(USE_PPU)\n"
+            + ppu_outputs.get(filename, "")
+            + "#else\n"
+            + cuda_outputs.get(filename, "")
+            + "#endif\n"
+        )
+        (autogen_dir / filename).write_text(content)
 
 
 def main(output_dir: Optional[str]) -> None:
@@ -388,12 +484,14 @@ def main(output_dir: Optional[str]) -> None:
         "cutlassF",
         impl_file="<ATen/native/transformers/cuda/mem_eff_attention/kernel_forward.h>",
         autogen_dir=output_dir,
+        ppu_kernels=FwdKernel.get_all(ppu=True),
     )
     write_decl_impl(
         BwdKernel.get_all(),
         "cutlassB",
         impl_file="<ATen/native/transformers/cuda/mem_eff_attention/kernel_backward.h>",
         autogen_dir=output_dir,
+        ppu_kernels=BwdKernel.get_all(ppu=True),
     )
 
 

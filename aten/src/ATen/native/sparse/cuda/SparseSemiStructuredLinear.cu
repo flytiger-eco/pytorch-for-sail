@@ -60,7 +60,11 @@ Tensor two_four_sgemm(
     // alias for particular instantiation of this template.
     using LayoutOutput = cutlass::layout::RowMajor; // Result of the operation will be provided in row-major format.
     using MMAOp = cutlass::arch::OpClassTensorOp; // Tensor cores are to be used for maximum performance.
+#if defined(USE_PPU)
+    using SmArch = cutlass::arch::PPU0010;
+#else
     using SmArch = cutlass::arch::Sm80; // Only CC 8.x devices are supported at the moment.
+#endif
     using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>; // This choice provides good performance across wide range of operand sizes.
     constexpr int NumStages = 3; // This choice provides good performance across wide range of operand sizes.
     constexpr int NumEVTEpilogueStages = 1;
@@ -97,7 +101,12 @@ Tensor two_four_sgemm(
     using ApplyBias = cutlass::epilogue::threadblock::VisitorCompute<
         cutlass::plus, ElementComputeEpilogue, ElementComputeEpilogue,
         cutlass::FloatRoundStyle::round_to_nearest>;
-    using EVTApplyBias = cutlass::epilogue::threadblock::Sm80EVT<
+    using EVTApplyBias =
+#if defined(USE_PPU)
+        cutlass::epilogue::threadblock::PPU0010EVT<
+#else
+        cutlass::epilogue::threadblock::Sm80EVT<
+#endif
         ApplyBias,
         Accum,
         Bias>;
@@ -125,7 +134,12 @@ Tensor two_four_sgemm(
                 activation == Activation::RELU,
                 ApplyActivationReLu,
                 ApplyActivationSiLu>>;
-    using EVTApplyActivation = cutlass::epilogue::threadblock::Sm80EVT<
+    using EVTApplyActivation =
+#if defined(USE_PPU)
+        cutlass::epilogue::threadblock::PPU0010EVT<
+#else
+        cutlass::epilogue::threadblock::Sm80EVT<
+#endif
         ApplyActivation,
         EVTApplyBias>;
 
@@ -133,7 +147,12 @@ Tensor two_four_sgemm(
         OutputTileThreadMap, ElementOutput, cutlass::FloatRoundStyle::round_to_nearest,
         cute::Stride<int64_t, cute::_1, int64_t>>;
 
-    using EVTOutput = cutlass::epilogue::threadblock::Sm80EVT<
+    using EVTOutput =
+#if defined(USE_PPU)
+        cutlass::epilogue::threadblock::PPU0010EVT<
+#else
+        cutlass::epilogue::threadblock::Sm80EVT<
+#endif
         Output,
         EVTApplyActivation>;
 

@@ -43,9 +43,14 @@
 #include <cutlass/numeric_conversion.h>
 #include <cutlass/numeric_types.h>
 
+#if defined(USE_PPU)
+#include <cutlass/arch/memory_ppu.h>
+#include <cutlass/arch/mma_ppu0010.h>
+#else
 #include <cutlass/arch/memory_sm75.h>
 #include <cutlass/arch/mma_sm75.h>
 #include <cutlass/arch/mma_sm80.h>
+#endif
 
 #include <cutlass/gemm/gemm.h>
 #include <cutlass/gemm/warp/mma.h>
@@ -253,7 +258,7 @@ public:
         MmaOperandB const* ptr_B = reinterpret_cast<MmaOperandB const*>(&B);
         MmaOperandC*       ptr_D = reinterpret_cast<MmaOperandC*>(&D);
 
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 800)
+#if !defined(USE_PPU) && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 800)
         // Serpentine visitation order maximizing reuse of Rb
         CUTLASS_PRAGMA_UNROLL
         for (int n = 0; n < MmaIterations::kColumn; ++n) {
@@ -278,7 +283,8 @@ public:
                 }
             }
         }
-#elif defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
+#elif (defined(USE_PPU) && defined(__HGGC_ARCH__) && __HGGC_ARCH__ >= 100) || \
+      (!defined(USE_PPU) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800)
         // Serpentine visitation order maximizing reuse of Ra
         CUTLASS_PRAGMA_UNROLL
         for (int m = 0; m < MmaIterations::kRow; ++m) {

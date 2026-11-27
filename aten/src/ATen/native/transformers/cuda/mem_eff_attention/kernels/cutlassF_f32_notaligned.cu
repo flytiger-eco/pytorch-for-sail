@@ -1,3 +1,5 @@
+#if defined(USE_PPU)
+#else
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
@@ -179,3 +181,4 @@ fmha_cutlassF_f32_notaligned_32x128_gmem_sm75(typename AttentionKernel<float, cu
         int(__CUDA_ARCH__ + 0) / 10);
 #endif
 }
+#endif

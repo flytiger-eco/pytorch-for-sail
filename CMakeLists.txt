@@ -407,6 +407,9 @@ if(USE_PPU)
   add_definitions(-DUSE_HGGC)
   add_definitions(-DHAS_PYTORCH)
   add_definitions(-DUSE_PYTORCH_SDPA)
+  # Enable native ACTLIZE LDSM explicitly; PPU SDK and CUDA version numbers differ.
+  set(PPU_ACTLIZE_DEFINITIONS CUTE_ARCH_LDSM_PPU_ENABLED=1)
+  add_compile_definitions(${PPU_ACTLIZE_DEFINITIONS})
 endif()
 option(USE_MIMALLOC "Use mimalloc" OFF)
 # Enable third party mimalloc library to improve memory allocation performance

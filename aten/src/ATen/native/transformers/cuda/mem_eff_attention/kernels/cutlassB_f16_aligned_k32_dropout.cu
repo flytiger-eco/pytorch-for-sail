@@ -1,3 +1,26 @@
+#if defined(USE_PPU)
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+// This file is auto-generated. See "generate_kernels.py"
+#include <ATen/native/transformers/cuda/mem_eff_attention/kernel_backward.h>
+using namespace PyTorchMemEffAttention;
+__global__ void __launch_bounds__(
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 64, 64, 32>::kNumThreads,
+    AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 64, 64, 32>::kMinBlocksPerSm)
+fmha_cutlassB_f16_aligned_64x64_k32_dropout_ppu0010(typename AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 64, 64, 32>::Params p) {
+#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ >= 100
+  if (!p.advance_to_block()) {
+    return;
+  }
+  AttentionBackwardKernel<cutlass::arch::PPU0010, cutlass::half_t, true, true, true, 64, 64, 32>::attention_kernel(p);
+#endif
+}
+#else
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
@@ -84,3 +107,4 @@ fmha_cutlassB_f16_aligned_64x64_k32_dropout_sm80(typename AttentionBackwardKerne
         int(__CUDA_ARCH__ + 0) / 10);
 #endif
 }
+#endif

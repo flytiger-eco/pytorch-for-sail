@@ -138,8 +138,12 @@ public:
     /// Warp-level Mma
     using Operator = typename Policy::Operator;
 
-    /// Minimum architecture is Sm80 to support cp.async
+    // Use the native architecture tag that supports asynchronous copies.
+#if defined(USE_PPU)
+    using ArchTag = arch::PPU0010;
+#else
     using ArchTag = arch::Sm80;
+#endif
 
     using Dequantizer =
         warp::MmaTensorOpDequantizer<Operator, typename Base::WarpGemm, Operand::kB, ElementScale, LayoutScale, 32>;

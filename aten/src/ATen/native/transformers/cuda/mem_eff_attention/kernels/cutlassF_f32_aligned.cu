@@ -1,3 +1,48 @@
+#if defined(USE_PPU)
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+// This file is auto-generated. See "generate_kernels.py"
+#include <ATen/native/transformers/cuda/mem_eff_attention/kernel_forward.h>
+using namespace PyTorchMemEffAttention;
+__global__ void __launch_bounds__(
+    AttentionKernel<float, cutlass::arch::PPU0010, true, 64, 64, 64, true, true>::kNumThreads,
+    AttentionKernel<float, cutlass::arch::PPU0010, true, 64, 64, 64, true, true>::kMinBlocksPerSm)
+fmha_cutlassF_f32_aligned_64x64_rf_ppu0010(typename AttentionKernel<float, cutlass::arch::PPU0010, true, 64, 64, 64, true, true>::Params p) {
+#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ >= 100
+  if (!p.advance_to_block()) {
+    return;
+  }
+  AttentionKernel<float, cutlass::arch::PPU0010, true, 64, 64, 64, true, true>::attention_kernel(p);
+#endif
+}
+__global__ void __launch_bounds__(
+    AttentionKernel<float, cutlass::arch::PPU0010, true, 64, 128, 128, true, true>::kNumThreads,
+    AttentionKernel<float, cutlass::arch::PPU0010, true, 64, 128, 128, true, true>::kMinBlocksPerSm)
+fmha_cutlassF_f32_aligned_64x128_rf_ppu0010(typename AttentionKernel<float, cutlass::arch::PPU0010, true, 64, 128, 128, true, true>::Params p) {
+#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ >= 100
+  if (!p.advance_to_block()) {
+    return;
+  }
+  AttentionKernel<float, cutlass::arch::PPU0010, true, 64, 128, 128, true, true>::attention_kernel(p);
+#endif
+}
+__global__ void __launch_bounds__(
+    AttentionKernel<float, cutlass::arch::PPU0010, true, 32, 128, 65536, true, true>::kNumThreads,
+    AttentionKernel<float, cutlass::arch::PPU0010, true, 32, 128, 65536, true, true>::kMinBlocksPerSm)
+fmha_cutlassF_f32_aligned_32x128_gmem_ppu0010(typename AttentionKernel<float, cutlass::arch::PPU0010, true, 32, 128, 65536, true, true>::Params p) {
+#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ >= 100
+  if (!p.advance_to_block()) {
+    return;
+  }
+  AttentionKernel<float, cutlass::arch::PPU0010, true, 32, 128, 65536, true, true>::attention_kernel(p);
+#endif
+}
+#else
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
@@ -236,3 +281,4 @@ fmha_cutlassF_f32_aligned_32x128_gmem_sm80(typename AttentionKernel<float, cutla
         int(__CUDA_ARCH__ + 0) / 10);
 #endif
 }
+#endif

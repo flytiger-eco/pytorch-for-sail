@@ -42,7 +42,11 @@
 #include <cutlass/tensor_ref.h>
 
 #include <cutlass/arch/arch.h>
+#if defined(USE_PPU)
+#include <cutlass/arch/memory_ppu.h>
+#else
 #include <cutlass/arch/memory_sm75.h>
+#endif
 #include <cutlass/gemm/gemm.h>
 
 #include <cutlass/layout/matrix.h>
@@ -156,7 +160,8 @@ public:
     void dequantize(FragmentDequantizedOperand& operand_frag, const FragmentScale& scale_frag)
     {
 //#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800) && defined(ENABLE_BF16))
-#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800))
+#if (defined(USE_PPU) && defined(__HGGC_ARCH__) && __HGGC_ARCH__ >= 100) || \
+    (!defined(USE_PPU) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800)
         using _MmaOperandB        = typename ArchMmaOperator::FragmentB;
         using ExpandedMmaOperandB = Array<typename _MmaOperandB::Element, kExpansionFactor * _MmaOperandB::kElements>;
         static_assert(ExpandedMmaOperandB::kElements * MmaOperator::MmaIterations::kColumn
@@ -285,10 +290,7 @@ private:
 ////////////////////////////////////////////////////////////////////////////////
 
 #if !defined(USE_PPU)
-// PPU: ArchTag Sm70 aliases to PPU0010, whose kMinComputeCapability(80) also
-// satisfies the Turing+ (>=75) specialization above, making these Volta-only
-// specializations ambiguous. Disable them under USE_PPU; the Sm80 path uses
-// the Turing&Ampere specialization.
+// PPU uses the generic PPU0010 specialization, not the Volta specialization.
 // Specialization for Volta A x RowMajor B tensorOp, for 32x32x4 interleaved gemm
 template<
     /// Underlying matrix multiply operator (concept: MmaTensorOp)
