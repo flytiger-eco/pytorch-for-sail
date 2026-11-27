@@ -208,7 +208,11 @@ bool group_gemm_dispatch(
       cutlass::layout::RowMajor,
       cutlass::layout::RowMajor,
       cutlass::arch::OpClassSimt,
+#if defined(USE_PPU)
+      cutlass::arch::PPU0010,
+#else
       cutlass::arch::Sm80,
+#endif
       cutlass::gemm::GemmShape<128, 128, 8>,
       cutlass::gemm::GemmShape<64, 32, 8>,
       cutlass::gemm::GemmShape<1, 1, 1>>(
@@ -258,7 +262,11 @@ bool group_gemm_dispatch(
         cutlass::layout::RowMajor,
         cutlass::layout::RowMajor,
         cutlass::arch::OpClassTensorOp,
+#if defined(USE_PPU)
+        cutlass::arch::PPU0010,
+#else
         cutlass::arch::Sm80,
+#endif
         cutlass::gemm::GemmShape<128, 128, 32>,
         cutlass::gemm::GemmShape<64, 64, 32>,
         cutlass::gemm::GemmShape<16, 8, 16>>(
@@ -271,7 +279,11 @@ bool group_gemm_dispatch(
         cutlass::layout::RowMajor,
         cutlass::layout::RowMajor,
         cutlass::arch::OpClassSimt,
+#if defined(USE_PPU)
+        cutlass::arch::PPU0010,
+#else
         cutlass::arch::Sm80,
+#endif
         cutlass::gemm::GemmShape<128, 128, 8>,
         cutlass::gemm::GemmShape<64, 32, 8>,
         cutlass::gemm::GemmShape<1, 1, 1>>(
@@ -324,7 +336,11 @@ bool group_gemm_dispatch(
         cutlass::layout::RowMajor,
         cutlass::layout::RowMajor,
         cutlass::arch::OpClassTensorOp,
+#if defined(USE_PPU)
+        cutlass::arch::PPU0010,
+#else
         cutlass::arch::Sm80,
+#endif
         cutlass::gemm::GemmShape<128, 128, 32>,
         cutlass::gemm::GemmShape<64, 64, 32>,
         cutlass::gemm::GemmShape<16, 8, 16>>(
@@ -337,7 +353,11 @@ bool group_gemm_dispatch(
         cutlass::layout::RowMajor,
         cutlass::layout::RowMajor,
         cutlass::arch::OpClassSimt,
+#if defined(USE_PPU)
+        cutlass::arch::PPU0010,
+#else
         cutlass::arch::Sm80,
+#endif
         cutlass::gemm::GemmShape<128, 128, 8>,
         cutlass::gemm::GemmShape<64, 32, 8>,
         cutlass::gemm::GemmShape<1, 1, 1>>(

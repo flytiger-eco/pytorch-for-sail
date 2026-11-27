@@ -84,10 +84,7 @@ if(NOT EXISTS "${FLEX_FLASH_ATTENTION_BUILD_SCRIPT}")
   return()
 endif()
 
-# setup.py runs general conversion and applies the native-name patch before CMake configures.
-# The general converter writes no version-specific stamp. For CMake-only builds, prepare the target first:
 # python third_party/cudafy-for-sail/cudafy.py general <FFA_ROOT>
-# patch -d <FFA_ROOT> -p1 -i <TORCH_ROOT>/third_party/flex_flash_attention_native_names.patch
 
 set(FLEX_FLASH_ATTENTION_SO "${CMAKE_BINARY_DIR}/lib/libflex_flash_attention.so")
 set(FLEX_FLASH_ATTENTION_OBJS "${CMAKE_BINARY_DIR}/flex_flash_attention_objs")

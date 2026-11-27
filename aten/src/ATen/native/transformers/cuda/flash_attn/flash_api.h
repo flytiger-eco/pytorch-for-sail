@@ -1,7 +1,13 @@
 #pragma once
 #include <cstddef>
 
+#if defined(USE_PPU)
+#ifndef FLASH_NAMESPACE
+#error "PPU FlashAttention requires the build-defined FLASH_NAMESPACE"
+#endif
+#else
 #include <namespace_config.h>
+#endif
 #include <ATen/core/Tensor.h>
 #include <c10/util/Exception.h>
 

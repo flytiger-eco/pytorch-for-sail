@@ -73,7 +73,7 @@
 #ifdef USE_FLASH_ATTENTION
 // FlashAttention Specific Imports
 #include <ATen/native/transformers/cuda/flash_attn/flash_api.h>
-#if !defined(__HIP_PLATFORM_AMD__)
+#if !defined(__HIP_PLATFORM_AMD__) && !defined(USE_PPU)
 #include <namespace_config.h>
 #endif
 #endif

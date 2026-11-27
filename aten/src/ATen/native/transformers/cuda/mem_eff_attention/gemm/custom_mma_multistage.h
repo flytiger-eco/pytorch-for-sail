@@ -130,7 +130,11 @@ class CustomMmaMultistage : public CustomMmaBase<Shape_, Policy_, Stages> {
   using Operator = typename Policy::Operator;
 
   // Use the native architecture tag for asynchronous copies on PPU.
+#if defined(USE_PPU)
+  using ArchTag = arch::PPU0010;
+#else
   using ArchTag = arch::Sm80;
+#endif
 
   /// Complex transform on A operand
   static ComplexTransform const kTransformA = Operator::kTransformA;

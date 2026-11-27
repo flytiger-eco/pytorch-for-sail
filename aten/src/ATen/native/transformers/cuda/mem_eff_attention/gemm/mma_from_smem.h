@@ -788,7 +788,11 @@ class MmaMultistageFromSharedMemory : public MmaBaseFromSharedMemory<
   using Operator1 = typename Policy1::Operator;
 
   // Use the native architecture tag for asynchronous copies on PPU.
+#if defined(USE_PPU)
+  using ArchTag = arch::PPU0010;
+#else
   using ArchTag = arch::Sm80;
+#endif
 
   /// Complex transform on B operand
   static ComplexTransform const kTransformB1 = Operator1::kTransformB;

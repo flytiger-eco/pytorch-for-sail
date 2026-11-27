@@ -1687,32 +1687,6 @@ def print_box(msg: str) -> None:
     print("+" + "-" * (max_width + 4) + "+", file=sys.stderr, flush=True)
 
 
-def apply_patch(patch_file: str, target_root: str) -> None:
-    import re
-
-    if not os.path.isfile(patch_file):
-        raise FileNotFoundError(f"The patch file doesn't exist: {patch_file}")
-    try:
-        subprocess.run(
-            ["patch", "-p1", "-i", patch_file],
-            cwd=target_root,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        print(f"Apply patch: {patch_file}")
-    except subprocess.CalledProcessError as e:
-        error_output = e.stderr or e.stdout
-        print(f"error_output: {error_output}")
-        if error_output and re.search(
-            "already exists|Reversed|previously applied", error_output, re.IGNORECASE
-        ):
-            print("Patch already applied, skipping.")
-        else:
-            print(f"Failed to apply patch: {e}")
-            sys.exit(1)
-
-
 def _missing_submodule_error(torch_root: str, submodule_path: str) -> FileNotFoundError:
     return FileNotFoundError(
         "Required third-party source is missing: "
@@ -1722,57 +1696,6 @@ def _missing_submodule_error(torch_root: str, submodule_path: str) -> FileNotFou
         "Or initialize all required submodules with:\n"
         "  git submodule update --init --recursive"
     )
-
-
-def _restore_pristine(target_root: str) -> None:
-    """Reset a cudafy target subtree back to its committed (pristine) state.
-
-    General conversion updates SDK names and paths without adding aliases.
-    Restore the committed sources before each conversion so stale output or
-    patches cannot affect the build. Restore only the specified dependency trees.
-    """
-    try:
-        toplevel = subprocess.run(
-            ["git", "-C", target_root, "rev-parse", "--show-toplevel"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    except (subprocess.CalledProcessError, OSError):
-        # Sources vendored without a git working tree: nothing to reset.
-        print(f"Skip pristine restore for {target_root}: not a git working tree.")
-        return
-
-    pathspec = os.path.relpath(target_root, toplevel)
-    print(f"Restore pristine: {pathspec} in {toplevel}")
-    subprocess.run(["git", "-C", toplevel, "checkout", "--", pathspec], check=True)
-    subprocess.run(["git", "-C", toplevel, "clean", "-fdx", "--", pathspec], check=True)
-
-
-def _cudafy_restore_roots(command: str, target_root: str) -> list[str]:
-    """Restore the explicit conversion target and repository-local util headers."""
-    target = os.path.abspath(target_root)
-    if os.path.realpath(target) != target:
-        raise RuntimeError(f"Refuse cudafy restore through symlink: {target}")
-    roots = [target]
-    if command == "actlize":
-        if os.path.basename(target) != "include":
-            return roots
-        include = target
-    elif command in ("flash-attention", "flex-flash-attention"):
-        include = os.path.join(target, "csrc", "actlize", "include")
-        if not os.path.isdir(include):
-            raise RuntimeError(f"Missing repo-local ACTLIZE include: {include}")
-        roots.append(include)
-    else:
-        return roots
-    util = os.path.join(os.path.dirname(include), "tools", "util", "include")
-    if os.path.isdir(util):
-        roots.append(util)
-    for root in roots:
-        if os.path.realpath(root) != root:
-            raise RuntimeError(f"Refuse cudafy restore through symlink: {root}")
-    return roots
 
 
 def run_cudafy_once(
@@ -1790,9 +1713,8 @@ def run_cudafy_once(
         target_arg = os.path.relpath(target_root, torch_root)
         raise _missing_submodule_error(torch_root, target_arg)
 
-    # Convert the pristine dependencies before the caller applies integration patches.
-    for restore_root in _cudafy_restore_roots(command, target_root):
-        _restore_pristine(restore_root)
+    if os.path.realpath(target_root) != os.path.abspath(target_root):
+        raise RuntimeError(f"Refuse cudafy conversion through symlink: {target_root}")
 
     target_arg = os.path.relpath(target_root, torch_root)
     cudafy_arg = os.path.relpath(cudafy_script, torch_root)
@@ -1871,13 +1793,13 @@ def main() -> None:
     if on_ppu:
         Init_ppu_build_env()
         torch_root = os.path.dirname(os.path.abspath(__file__))
-        patch_root = os.path.join(torch_root, "third_party")
-        cutlass_root = os.path.join(patch_root, "cutlass")
+        third_party_root = os.path.join(torch_root, "third_party")
+        cutlass_root = os.path.join(third_party_root, "cutlass")
         if not os.path.exists(cutlass_root):
             raise _missing_submodule_error(torch_root, "third_party/cutlass")
         cutlass_include_root = os.path.join(cutlass_root, "include")
 
-        cudafy_root = os.path.join(patch_root, "cudafy-for-sail")
+        cudafy_root = os.path.join(third_party_root, "cudafy-for-sail")
         if not os.path.exists(cudafy_root):
             raise _missing_submodule_error(torch_root, "third_party/cudafy-for-sail")
 
@@ -1888,18 +1810,10 @@ def main() -> None:
             "v0.8.0",
             cutlass_include_root,
         )
-        cutlass_patch_file = os.path.join(
-            patch_root, "cutlass_platform_numeric_limits.patch"
-        )
-        apply_patch(cutlass_patch_file, cutlass_root)
-        apply_patch(
-            os.path.join(patch_root, "cutlass_native_arch_alias.patch"),
-            cutlass_root,
-        )
 
         use_fa = os.environ.get("USE_FLASH_ATTENTION")
         if use_fa in ["True", "1", "TRUE"]:
-            fa_root = os.path.join(patch_root, "flash-attention")
+            fa_root = os.path.join(third_party_root, "flash-attention")
             if not os.path.exists(fa_root):
                 raise _missing_submodule_error(torch_root, "third_party/flash-attention")
 
@@ -1909,14 +1823,10 @@ def main() -> None:
                 "2.7.2",
                 fa_root,
             )
-            fa_patch_file = os.path.join(
-                patch_root, "flash_attention_namespace_config.patch"
-            )
-            apply_patch(fa_patch_file, fa_root)
 
         use_flex_fa = os.environ.get("USE_FLEX_FLASH_ATTENTION")
         if use_flex_fa in ["True", "1", "TRUE"]:
-            fa_flex_root = os.path.join(patch_root, "flex-flash-attention")
+            fa_flex_root = os.path.join(third_party_root, "flex-flash-attention")
             actlize_root = os.path.join(fa_flex_root, "csrc", "actlize")
             actlize_include_root = os.path.join(actlize_root, "include")
             if not os.path.exists(fa_flex_root):
@@ -1927,10 +1837,6 @@ def main() -> None:
                 )
 
             run_cudafy_once(torch_root, "flex-flash-attention", "2.8.2", fa_flex_root)
-            apply_patch(
-                os.path.join(patch_root, "flex_flash_attention_native_names.patch"),
-                fa_flex_root,
-            )
 
     install_requires = [
         "filelock",

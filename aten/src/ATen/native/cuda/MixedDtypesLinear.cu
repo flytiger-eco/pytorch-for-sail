@@ -46,7 +46,11 @@ mixed_dtypes_linear_cutlass(
 
   using ElementOutput = ElementInputA;
 
+#if defined(USE_PPU)
+  using SmArch = cutlass::arch::PPU0010;
+#else
   using SmArch = cutlass::arch::Sm80;
+#endif
   using ThreadblockShape = cutlass::gemm::GemmShape<32, 128, 64>;
   using WarpShape = cutlass::gemm::GemmShape<32, 32, 64>;
   using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
